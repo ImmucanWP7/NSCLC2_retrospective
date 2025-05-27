@@ -1,0 +1,495 @@
+---
+title: "Sub-cell-typing"
+author: "Daniel Schulz"
+date: "7/06/2022"
+output: html_document
+---
+
+in this script we will use either gating or gaussian mixture models to define the following sub-cell types:
+- BnT_CD4 -> we will also classify BnT_CD84_PD1 positive cells as CD4_PD1 since if they are T cell and PD1 it seems likely that they are T cells with spill over B cells signal
+- BnT_CD8 -> we will also classify BnT_CD8_PD1 positive cells as CD8_PD1
+- CD8_PD1: PD1+
+- CD4_PD1: PD1+
+- CD8_cycling: Ki67+PD1-
+- CD8_cyt: GrzB+PD1-
+
+From images inspection with cytomapper the following seem like reasonable cut-offs:
+PD1: 1.2
+GrzB: 2.2
+Ki67: 2.5
+CD8a: 2.2
+
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+# Set path
+if (Sys.info()["sysname"] == "Darwin"){
+  mount_path <- "/Volumes/"
+} else if (Sys.info()["sysname"] == "Linux"){
+  mount_path <- "/mnt/"
+} else {
+  stop("Operating system is not supported")
+}
+```
+
+
+# paths
+```{r}
+mount_path <- paste0(mount_path,"immucan_volume/processed_data/NSCLC2_cohort/data/IMC/Panel_1/")
+```
+
+```{r}
+library(SingleCellExperiment)
+library(imcRtools)
+library(cytomapper)
+library(tidyverse)
+library(dittoSeq)
+library(viridis)
+library(doParallel)
+library(BiocParallel)
+library(BiocNeighbors)
+library(scran)
+library(bluster)
+library(scater)
+library(cowplot)
+```
+
+```{r}
+sce <- readRDS(paste0(mount_path,"Rout/sce.rds"))
+sce$cell_id <- colnames(sce)
+```
+
+```{r}
+cur_sce <- sce[,sce$celltypes == "CD8"]
+dittoScatterPlot(object = cur_sce,x.var = "PD1",y.var = "TCF7",assay.x = "exprs",assay.y = "exprs", color.var = "PD1_pos", legend.show = FALSE)
+library(LSD)
+cur_dat <- as.data.frame(t(assay(cur_sce,"exprs")))
+LSD::heatscatter(cur_dat$PD1,cur_dat$TCF7)+abline(v = 1, h = 1.5)
+tumor_sce <- sce[,sce$celltypes == "Tumor"]
+tumor_sce <-tumor_sce[,sample(colnames(tumor_sce),50000,replace=FALSE)]
+cur_dat_tumor <- as.data.frame(t(assay(tumor_sce,"exprs")))
+LSD::heatscatter(cur_dat_tumor$PDL1,cur_dat_tumor$Ki67)
+myel_sce <- sce[,sce$celltypes %in% c("MacCD163","DC")]
+cur_dat_myel <- as.data.frame(t(assay(myel_sce,"exprs")))
+LSD::heatscatter(cur_dat_tumor$PDL1,cur_dat_tumor$CD11c)+abline(v=1.3)
+```
+
+# update positivity
+we will select thresholds below
+```{r}
+sce$PD1_pos <- assay(sce, "exprs")["PD1",] > 1
+sce$GrzB_pos <- assay(sce, "exprs")["GrzB",] > 2
+sce$Ki67_pos <- assay(sce, "exprs")["Ki67",] > 1
+sce$TCF7_pos <- assay(sce, "exprs")["TCF7",] >1.5
+sce$PDL1_pos <- assay(sce, "exprs")["PDL1",] >1.3
+```
+
+
+# minor cell types
+
+```{r}
+# define BnT_CD8 cells
+cur_sce <- sce[,sce$celltypes == "BnT"]
+BnT_CD8_ids <- cur_sce[,which(assay(cur_sce,"exprs")["CD8a",]>2)]$cell_id
+BnT_CD4_ids <- cur_sce[,which(assay(cur_sce,"exprs")["CD8a",]<2)]$cell_id
+
+
+dat <- as.data.frame(colData(sce))
+dat$celltypes_minor <- dat$celltypes
+
+dat <- dat %>%
+  mutate(celltypes_minor = ifelse(cell_id %in% BnT_CD8_ids,"BnT_CD8",celltypes_minor),
+         celltypes_minor = ifelse(cell_id %in% BnT_CD4_ids,"BnT_CD4",celltypes_minor),
+         celltypes_minor = ifelse(celltypes_minor %in% c("CD8","BnT_CD8") & PD1_pos == TRUE & Ki67_pos == TRUE & GrzB_pos == TRUE,"CD8_PD1_Ki67_GRZB", celltypes_minor),
+         celltypes_minor = ifelse(celltypes_minor %in% c("CD8","BnT_CD8") & PD1_pos == TRUE & Ki67_pos == TRUE & GrzB_pos == FALSE & TCF7_pos == FALSE,"CD8_PD1_Ki67", celltypes_minor),
+         celltypes_minor = ifelse(celltypes_minor %in% c("CD8","BnT_CD8") & PD1_pos == TRUE & Ki67_pos == FALSE & GrzB_pos == FALSE & TCF7_pos == FALSE,"CD8_PD1", celltypes_minor),
+         celltypes_minor = ifelse(celltypes_minor %in% c("CD8","BnT_CD8") & PD1_pos == FALSE & Ki67_pos == TRUE & GrzB_pos == TRUE,"CD8_Ki67_GRZB", celltypes_minor),
+         celltypes_minor = ifelse(celltypes_minor %in% c("CD8","BnT_CD8") & PD1_pos == FALSE & Ki67_pos == TRUE & GrzB_pos == FALSE & TCF7_pos == FALSE,"CD8_Ki67", celltypes_minor),
+         celltypes_minor = ifelse(celltypes_minor %in% c("CD8","BnT_CD8") & PD1_pos == FALSE & Ki67_pos == FALSE & GrzB_pos == TRUE & TCF7_pos == TRUE,"CD8_GRZB_TCF7", celltypes_minor),
+         celltypes_minor = ifelse(celltypes_minor %in% c("CD8","BnT_CD8") & PD1_pos == FALSE & Ki67_pos == FALSE & GrzB_pos == FALSE & TCF7_pos == TRUE,"CD8_TCF7", celltypes_minor),
+         celltypes_minor = ifelse(celltypes_minor %in% c("CD8","BnT_CD8") & PD1_pos == FALSE & Ki67_pos == FALSE & GrzB_pos == TRUE & TCF7_pos == FALSE,"CD8_GRZB", celltypes_minor),
+         celltypes_minor = ifelse(celltypes_minor %in% c("CD8","BnT_CD8") & PD1_pos == FALSE & Ki67_pos == TRUE & GrzB_pos == FALSE & TCF7_pos == FALSE,"CD8_Ki67", celltypes_minor),
+         celltypes_minor = ifelse(celltypes_minor %in% c("CD8","BnT_CD8") & PD1_pos == TRUE & Ki67_pos == TRUE & GrzB_pos == TRUE & TCF7_pos == FALSE,"CD8_PD1_GRZB", celltypes_minor),
+         celltypes_minor = ifelse(celltypes_minor %in% c("CD8","BnT_CD8") & PD1_pos == TRUE & Ki67_pos == FALSE & GrzB_pos == FALSE & TCF7_pos == TRUE,"CD8_PD1_TCF7", celltypes_minor),
+         celltypes_minor = ifelse(celltypes_minor %in% c("CD4","BnT_CD4") & PD1_pos == TRUE & TCF7_pos == TRUE,"CD4_PD1_TCF7", celltypes_minor),
+         celltypes_minor = ifelse(celltypes_minor %in% c("CD4","BnT_CD4") & PD1_pos == TRUE & TCF7_pos == FALSE,"CD4_PD1", celltypes_minor),
+         celltypes_minor = ifelse(celltypes_minor %in% c("CD4","BnT_CD4") & PD1_pos == FALSE & TCF7_pos == TRUE,"CD4_TCF7", celltypes_minor),
+         celltypes_minor = ifelse(celltypes_minor == "MacCD163" & PDL1_pos == TRUE ,"MacCD163_PDL1", celltypes_minor),
+         celltypes_minor = ifelse(celltypes_minor == "DC" & PDL1_pos == TRUE ,"DC_PDL1", celltypes_minor))
+
+table(dat$celltypes_minor)
+# define minor cell types
+colData(sce) <- DataFrame(dat)
+```
+
+
+# color cell types
+```{r}
+library(pals)
+cell_types <- unique(sce$celltypes)
+
+names(cell_types) <- cell_types
+cell_types["B"] <- "red3"
+cell_types["BnT"] <- "orangered"
+cell_types["plasma"] <- "goldenrod2"
+cell_types["CD4"] <- "deeppink"
+cell_types["Treg"] <- "hotpink"
+cell_types["CD8"] <- "darkorchid"
+cell_types["DC"] <- "green4"
+cell_types["HLADR"] <- "darkgreen"
+cell_types["MacCD163"] <- "green"
+cell_types["Neutrophil"] <- "blue1"
+cell_types["NK"] <- "yellow"
+cell_types["pDC"] <- "cyan4"
+cell_types["Mural"] <- "deepskyblue"
+cell_types["Tumor"] <- "sienna4"
+cell_types["undefined"] <- "gray"
+
+pie(c(rep(1,length(cell_types))),col = cell_types,labels = names(cell_types))
+
+metadata(sce)$colour_vectors$celltypes <- cell_types
+```
+
+```{r determine markers for clustering}
+markers <- list()
+# we will not subcluters "uncertain" cells as the merging will be very difficult. we may inspect this at a later time point again
+
+#functional markers for T cells
+markers[["CD4"]] <- rownames(sce)[grepl(pattern = "CD27|LAG3|PD1|CD7|GrzB|ICOS|Ki67|TCF7",rownames(sce))]
+
+markers[["CD8"]] <- rownames(sce)[grepl(pattern = "CD27|LAG3|PD1|CD7|GrzB|ICOS|Ki67|TCF7",rownames(sce))]
+
+markers[["Treg"]] <- rownames(sce)[grepl(pattern = "CD27|LAG3|ICOS|Ki67|TCF7",rownames(sce))]
+
+# B and BnT cell markers
+markers[["BnT"]] <- rownames(sce)[grepl(pattern = "CD27|CD45RA|CD45RO|LAG3|PD1|CD7|GrzB|FOXP3|ICOS|Ki67|TCF7|VISTA|CD40|HLADR|CD38",rownames(sce))]
+
+markers[["B"]] <- rownames(sce)[grepl(pattern = "CD27|CD40|Ki67",rownames(sce))]
+
+# myeloid markers
+markers[["MacCD163"]] <- rownames(sce)[grepl(pattern = "CD68|CD11c|PDL1|VISTA|CD40|CD14|CD206|IDO1|CD16",rownames(sce))]
+
+# we will also use CD20 for DCs to detect those DCs that sit in TLS
+markers[["DC"]] <- rownames(sce)[grepl(pattern = "PDL1|VISTA|CD40|IDO1|CD20",rownames(sce))]
+
+# we will also use E-cad for HLADR cells as there may still be tumor cells in these cells
+markers[["HLADR"]] <- rownames(sce)[grepl(pattern = "CD11b|CD163|CD68|CD11c|PDL1|ICOS|VISTA|TIM3|CD40|CD14|CD206|CD163|HLADR|Ecad",rownames(sce))]
+
+# NK markers
+markers[["NK"]] <- rownames(sce)[grepl(pattern = "CD7|GrzB|CD16|CD45RA|CD45RO",rownames(sce))]
+
+# Neutrophil markers
+markers[["Neutrophil"]] <- rownames(sce)[grepl(pattern = "MPO|PDL1|VISTA",rownames(sce))]
+
+# pDC markers
+markers[["pDC"]] <- rownames(sce)[grepl(pattern = "CD303|CD4|GrzB|CD45RA|CD45RO|CD27",rownames(sce))]
+
+# Plasma cell markers
+markers[["plasma"]] <- rownames(sce)[grepl(pattern = "CD38|TCF7|CD27|CD45RA|CD45RO|",rownames(sce))]
+
+# stroma markers
+markers[["Mural"]] <- rownames(sce)[grepl(pattern = "PDGFR|SMA",rownames(sce))]
+
+# tumor markers
+markers[["Tumor"]] <- rownames(sce)[grepl(pattern = "HLADR|CarbonicAnhydrase|cleavedPARP|PDL1|IDO1|CD15|Ki67|Ido|B2M",rownames(sce))]
+
+good_markers <- rownames(sce)[!grepl("DNA|Histone",rownames(sce))]
+```
+
+# tumor subclustering
+This does not work using graph based clustering from the bluster package. we will stick to the Rphenograp implementation.
+We will then group or meta cluster the phenograph clusters
+
+
+```{r, fig.height=15,fig.width=15}
+
+library(Rphenograph)
+library(Rphenoannoy)
+tumor_sce <- sce[,sce$celltypes %in% c("Tumor")]
+
+set.seed(12345)
+tumor_sce <- runUMAP(tumor_sce, exprs_values = "exprs", 
+               subset_row = markers$Tumor,
+               name = "tumor_UMAP_exprs",
+               external_neighbors = TRUE, BNPARAM = AnnoyParam(),
+               BPPARAM = MulticoreParam(workers = 12))
+
+plotReducedDim(tumor_sce,dimred = "tumor_UMAP_exprs",colour_by = "immucan_id")+theme(legend.position = "none")
+
+# time tests
+test_sce <- tumor_sce[,sample(colnames(tumor_sce),100000, replace = FALSE)]
+test_mat <-  t(assay(test_sce, "exprs")[markers$Tumor,])
+graph_time_start <- Sys.time()
+out <- Rphenograph(test_mat, k = 70)
+graph_time_end <- Sys.time()
+graph_time <- graph_time_end-graph_time_start
+
+annoy_time_start <- Sys.time()
+out <- Rphenoannoy(test_mat, k = 70)
+annoy_time_end <- Sys.time()
+annoy_time <- annoy_time_end-annoy_time_start
+
+
+mat <- t(assay(tumor_sce, "exprs")[markers$Tumor,])
+
+
+set.seed(12345)
+out_40 <- Rphenoannoy(threshold = ,mat, k = 40)
+
+set.seed(12345)
+out_50 <- Rphenoannoy(threshold = ,mat, k = 50)
+
+
+set.seed(12345)
+out_60 <- Rphenoannoy(threshold = ,mat, k = 60)
+
+set.seed(12345)
+out_70 <- Rphenoannoy(threshold = ,mat, k = 70)
+
+set.seed(12345)
+out_80 <- Rphenoannoy(threshold = ,mat, k = 80)
+
+clusters_40 <- factor(membership(out_40[[2]]))
+clusters_50 <- factor(membership(out_50[[2]]))
+clusters_60 <- factor(membership(out_60[[2]]))
+clusters_70 <- factor(membership(out_70[[2]]))
+clusters_80 <- factor(membership(out_80[[2]]))
+
+tumor_sce$tumor_clust_40 <- clusters_40
+tumor_sce$tumor_clust_50 <- clusters_50
+tumor_sce$tumor_clust_60 <- clusters_60
+tumor_sce$tumor_clust_70 <- clusters_70
+tumor_sce$tumor_clust_80 <- clusters_80
+
+
+
+p1 <- dittoDimPlot(tumor_sce, var = "tumor_clust_50", 
+             reduction.use = "tumor_UMAP_exprs", size = 0.2,
+             do.label = TRUE) +
+    ggtitle("PG clusters on UMAP")
+p2 <- dittoDimPlot(tumor_sce, var = "tumor_clust_60", 
+             reduction.use = "tumor_UMAP_exprs", size = 0.2,
+             do.label = TRUE) +
+    ggtitle("PG clusters on UMAP")
+p3 <- dittoDimPlot(tumor_sce, var = "tumor_clust_70", 
+             reduction.use = "tumor_UMAP_exprs", size = 0.2,
+             do.label = TRUE) +
+    ggtitle("PG clusters on UMAP")
+p4 <- dittoDimPlot(tumor_sce, var = "tumor_clust_80", 
+             reduction.use = "tumor_UMAP_exprs", size = 0.2,
+             do.label = TRUE) +
+    ggtitle("PG clusters on UMAP")
+p5 <- dittoDimPlot(tumor_sce, var = "tumor_clust_40", 
+             reduction.use = "tumor_UMAP_exprs", size = 0.2,
+             do.label = TRUE) +
+    ggtitle("PG clusters on UMAP")
+
+unique(tumor_sce$tumor_clust)
+
+plot_grid(p1, p2, p3, p4, p5)
+```
+
+__there is not a big difference in cluster numbers between 50 and 80 nearest neighbors for phenograph clustering__
+
+## Single cell tumor cluster heatmap
+```{r, fig.height=8, fig.width=20}
+set.seed(12345)
+dittoHeatmap(tumor_sce[,sample(colnames(tumor_sce),20000,replace = FALSE)],genes = markers$Tumor, assay = "exprs",
+            annot.by = c("tumor_clust_40", "tumor_clust_70", "tumor_clust_60", "tumor_clust_50", "tumor_clust_80", "celltypes_minor"),
+            cluster_rows = TRUE,
+            scale = "none",
+            show_colnames = FALSE,
+            heatmap.colors = viridis(100))
+```
+
+## merge tumor clusters
+there are two small clusters that are either Caspase/Parp high or Ido1 high. we will keep those and metacluster the remaining clusters
+we will metacluster on the z-scaled mean intensity of the clusters
+```{r, fig.height=8, fig.width=10}
+tumor_mean <- aggregateAcrossCells(tumor_sce,ids=tumor_sce$tumor_clust_40,statistics = "mean")
+assay(tumor_mean,"exprs") <- asinh(assay(tumor_mean,"counts"))
+
+
+dittoHeatmap(tumor_mean,genes =markers$Tumor, assay = "exprs",
+             annot.by = c("tumor_clust_40"),
+             cluster_rows = TRUE,
+             show_colnames = TRUE,
+             heatmap.colors = colorRampPalette(c("dark blue", "white", "dark red"))(100),
+             breaks = seq(-3, 3, length.out = 101))
+
+dittoHeatmap(tumor_mean,genes =c("CD15","B2M","HLADR","PDL1","CarbonicAnhydrase","Ki67"), assay = "exprs",
+             annot.by = c("tumor_clust_40"),
+             cluster_rows = TRUE,
+             show_colnames = TRUE,
+             heatmap.colors = colorRampPalette(c("dark blue", "white", "dark red"))(100),
+             breaks = seq(-3, 3, length.out = 101))
+
+#sub_tumor_sce <- tumor_sce[,!tumor_sce$tumor_clust_40 %in% c(7,12)]
+
+#sub_tumor_mean <- aggregateAcrossCells(sub_tumor_sce,ids=sub_tumor_sce$tumor_clust_40,statistics = "mean")
+#assay(sub_tumor_mean,"exprs") <- asinh(assay(tumor_mean,"counts"))
+
+# we will meta cluster on the z-scaled mean cluster intensity
+meta_mat <- t(assay(tumor_mean[markers$Tumor,],"exprs"))
+meta_mat <- scale(meta_mat)
+
+library(factoextra)
+set.seed(12356)
+fviz_nbclust(meta_mat, kmeans, method = "wss",k.max = 20)
+fviz_nbclust(meta_mat, kmeans, method = "silhouette",k.max = 20)
+fviz_nbclust(meta_mat, kmeans, method = "gap_stat",k.max = 20)
+
+# it seems that 11 clusters are reasonable
+set.seed(12356)
+meta_clusters <- kmeans(meta_mat,11)
+
+tumor_mean$meta_cluster <- as.factor(meta_clusters$cluster)
+
+
+dittoHeatmap(tumor_mean,genes = markers$Tumor, assay = "exprs",
+             annot.by = c( "meta_cluster", "tumor_clust_40"),
+             cluster_rows = TRUE,
+             show_colnames = TRUE,
+             heatmap.colors = colorRampPalette(c("dark blue", "white", "dark red"))(100),
+             breaks = seq(-3, 3, length.out = 101))
+
+table(tumor_sce$tumor_clust_40)
+tumor_meta_cluster <- tumor_mean$meta_cluster
+names(tumor_meta_cluster) <- tumor_mean$tumor_clust_40
+
+tumor_sce$tumor_meta_clusters <- as.factor(tumor_meta_cluster[tumor_sce$tumor_clust_40])
+```
+
+
+## investigate meta clusters on single cells
+```{r, fig.height=15, fig.width=20}
+set.seed(12345)
+dittoHeatmap(tumor_sce[,sample(colnames(tumor_sce),20000,replace = FALSE)],genes = markers$Tumor, assay = "exprs",
+            annot.by = c("tumor_meta_clusters","tumor_clust_40", "celltypes_minor"),
+            cluster_rows = TRUE,
+            scale = "none",
+            show_colnames = FALSE,
+            heatmap.colors = viridis(100))
+
+plot_mean <- aggregateAcrossCells(tumor_mean,ids=tumor_mean$meta_cluster,statistics = "mean")
+assay(plot_mean,"exprs") <- asinh(assay(plot_mean,"counts"))
+dittoHeatmap(plot_mean,genes = markers$Tumor, assay = "exprs",
+             annot.by = c( "meta_cluster"),
+             cluster_rows = TRUE,
+             scale =  "none",
+             show_colnames = TRUE,
+             heatmap.colors = viridis(100))
+dittoHeatmap(plot_mean,genes = markers$Tumor, assay = "exprs",
+             annot.by = c( "meta_cluster"),
+             cluster_rows = TRUE,
+             heatmap.colors = colorRampPalette(c("dark blue", "white", "dark red"))(100),
+             breaks = seq(-3, 3, length.out = 101))
+```
+
+# assign names and save tumor_sce
+```{r}
+tumor_sce$tumor_clust_50 <- NULL
+tumor_sce$tumor_clust_60 <- NULL
+tumor_sce$tumor_clust_70 <- NULL
+tumor_sce$tumor_clust_80 <- NULL
+
+tumor_clust_names <- as.character(c(1:11))
+names(tumor_clust_names) <- c("Tumor_apoptotic","Tumor_CD15_Ki67","Tumor_CD15","Tumor_B2M_HLADR_IDO1","Tumor_HLADR","Tumor_Ki67_CD15_HLADR","Tumor_all_low", "Tumor_CD15_HLADR_B2M_CAIX", "Tumor_PDL1","Tumor_CAIX_Ki67","Tumor_B2Mlow_HLADRlow_Ki67")
+
+tumor_sce$tumor_meta_clusters <- names(tumor_clust_names[tumor_sce$tumor_meta_clusters])
+
+saveRDS(tumor_sce,paste0(mount_path,"Rout/tumor_sce.rds"))
+```
+
+# merge with sce object to cell types minor
+```{r}
+tumor_cells <- tumor_sce$tumor_meta_clusters
+names(tumor_cells) <- tumor_sce$cell_id
+
+sce[,names(tumor_cells)]$celltypes_minor <- tumor_cells
+table(sce$celltypes_minor)
+```
+
+# color for minor cell types and cell types
+```{r, fig.height=10, fig.width=10, eval=FALSE}
+library(pals)
+cell_types <- sort(unique(sce$celltypes_minor))
+
+names(cell_types) <- cell_types
+cell_types[grepl("CD8",cell_types)] <- c("darkorchid1","darkorchid2","darkorchid3","darkorchid4","darkmagenta")
+cell_types[grepl("CD4",cell_types)] <- c("deeppink1","deeppink2","deeppink3")
+cell_types[grepl("Mac",cell_types)] <- c("green","yellowgreen")
+cell_types[grepl("^DC",cell_types)] <- c("green3","forestgreen")
+cell_types[grepl("Tumor",cell_types)] <- c("sienna", "sienna2","sienna3","sienna4","lightsalmon3","lightsalmon4","tan4","salmon4","peru","lightsalmon4","chocolate4")
+cell_types["B"] <- "red3"
+cell_types["BnT"] <- "orangered"
+cell_types["plasma"] <- "goldenrod2"
+cell_types["Treg"] <- "hotpink"
+cell_types["HLADR"] <- "darkgreen"
+cell_types["Neutrophil"] <- "blue1"
+cell_types["NK"] <- "yellow"
+cell_types["pDC"] <- "cyan4"
+cell_types["Mural"] <- "deepskyblue"
+cell_types["undefined"] <- "gray"
+
+pie(c(rep(1,length(cell_types))),col = cell_types,labels = names(cell_types))
+
+metadata(sce)$colour_vectors$celltypes_minor <- cell_types
+```
+
+# Heatmap all cell types minor 
+```{r, fig.height=10, fig.width=15}
+cur_dat <- colData(sce)
+ids <- as_tibble(cur_dat) %>%
+  group_by(celltypes_minor) %>%
+  slice_sample(n = 150,replace = FALSE) %>%
+  pull(cell_id)
+
+cur_sce <- sce[,sce$cell_id %in% ids]
+
+dittoHeatmap(cur_sce,
+             genes = !grepl("DNA|Histone",rownames(cur_sce)),
+             annot.by = c("celltypes_minor","celltypes"),
+             assay = "exprs",
+             annotation_colors = list(celltypes = metadata(sce)$colour_vectors$celltypes,
+                                      celltypes_minor = metadata(sce)$colour_vectors$celltypes_minor),
+             heatmap.colors = colorRampPalette(c("dark blue", "white", "dark red"))(100),breaks = seq(-3, 3, length.out = 101))
+```
+
+
+# save
+```{r}
+saveRDS(sce,paste0(mount_path,"Rout/sce.rds"))
+```
+
+```{r, fig.height=10, fig.width=10}
+sce <- readRDS(paste0(mount_path,"Rout/sce.rds"))
+old_sce <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IMC/Rout/data/sce.rds")
+
+table(sce$celltypes_minor)
+table(old_sce$celltypes_minor)
+table(sce$celltypes)
+table(old_sce$celltypes)
+
+cur_dat <- data.frame(ID = sce$cell_id,
+                      new_minor = sce$celltypes_minor)
+cur_dat_old <- data.frame(ID = old_sce$cell_id,
+                      old_minor = old_sce$celltypes_minor)
+
+cur_dat <- left_join(cur_dat,cur_dat_old,"ID")
+cur_dat <- cur_dat %>%
+  mutate(new_minor = paste0(new_minor,"_new"))
+caret::confusionMatrix(data= as.factor(cur_dat$new_minor),reference = as.factor(cur_dat$old_minor))
+plot_dat <- as.data.frame(unclass(table(cur_dat$new_minor,cur_dat$old_minor)))
+pheatmap::pheatmap(as.matrix(plot_dat/rowSums(plot_dat)))
+unique(cur_dat$old_minor)
+```
+
+
+
+
+
+
+
