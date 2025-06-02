@@ -1,0 +1,842 @@
+---
+title: "11_sub-clustering"
+author: "Daniel Schulz"
+date: "5/16/2022"
+output: html_document
+---
+
+Here we will subcluster some of the individual cell types to obtain more fine grained phenotypes.
+we will sub-cluster the cell types only with cell-type relevant markers.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+```{r}
+mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/IMC/Panel_2/"
+```
+
+
+```{r, message=FALSE}
+library(SingleCellExperiment)
+library(imcRtools)
+library(cytomapper)
+library(tidyverse)
+library(dittoSeq)
+library(viridis)
+library(doParallel)
+library(BiocParallel)
+library(BiocNeighbors)
+library(scran)
+library(bluster)
+library(scater)
+library(cowplot)
+library(Rphenoannoy)
+```
+
+```{r}
+sce <- readRDS(paste0(mount_path,"Rout/sce.rds"))
+```
+
+
+# cell type marker definition
+
+```{r determine markers for clustering}
+markers <- list()
+# we will not subcluters "uncertain" cells as the merging will be very difficult. we may inspect this at a later time point again
+
+#functional markers for T cells
+markers[["Tcells"]] <- rownames(sce)[grepl(pattern = "CD7$|CD8|FOXP3|Bcl2|GATA3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",rownames(sce))]
+markers[["CD8"]] <- rownames(sce)[grepl(pattern = "CD7$|PD1|Bcl2|GATA3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",rownames(sce))]
+markers[["CD4"]] <- rownames(sce)[grepl(pattern = "CD7$|PD1|Bcl2|GATA3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",rownames(sce))]
+markers[["Treg"]] <- rownames(sce)[grepl(pattern = "CD7$|Bcl2|GATA3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",rownames(sce))]
+
+
+# NK markers
+markers[["NK"]] <- rownames(sce)[grepl(pattern = "Tbet|Bcl2|GATA3|NKG2A|EOMES|GITR",rownames(sce))]
+
+
+# B and BnT cell markers
+markers[["B"]] <- rownames(sce)[grepl(pattern = "Bcl2|Ki67",rownames(sce))]
+markers[["BnT"]] <- rownames(sce)[grepl(pattern = "CD7$|PD1|FOXP3|Bcl2|GATA3|CD8a|LAG3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",rownames(sce))]
+
+
+# myeloid markers
+markers[["all_Myeloid"]] <- rownames(sce)[grepl(pattern = "CD204|CD209|CD11c|CD155|Arg1|MMP9|CD73|CD10|Tim3",rownames(sce))]
+#markers[["MacCD204"]] <- rownames(sce)[grepl(pattern = "CD11c|Arg1|MMP9|CD73|CD10|Tim3",rownames(sce))]
+#markers[["MacCD209"]] <- rownames(sce)[grepl(pattern = "CD11c|Arg1|MMP9|CD73|CD10|Tim3",rownames(sce))]
+#markers[["MacCD204_CD209"]] <- rownames(sce)[grepl(pattern = "CD11c|Arg1|MMP9|CD73|CD10|Tim3",rownames(sce))]
+# DCs
+markers[["DC"]] <- rownames(sce)[grepl(pattern = "CD137|Tim3|CD20$",rownames(sce))]
+markers[["mregDC"]] <- rownames(sce)[grepl(pattern = "CD11c|CD137|Tim3",rownames(sce))]
+
+
+# MDSCs
+markers[["all_MDSC"]] <- rownames(sce)[grepl(pattern = "CD11b|CD15$|CD66b|CD10|CXCL8|Arg1|MMP9",rownames(sce))]
+#markers[["MDSC"]] <- rownames(sce)[grepl(pattern = "CD11b|CD10|CXCL8|Arg1|MMP9",rownames(sce))]
+#markers[["PMN_MDSC"]] <- rownames(sce)[grepl(pattern = "CD11b|CD15$|CD66b|CD10|CXCL8|Arg1|MMP9",rownames(sce))]
+#markers[["Neutrophil"]] <- rownames(sce)[grepl(pattern = "CD11b|CD15$|CD66b|CD10|CXCL8|Arg1|MMP9",rownames(sce))]
+
+
+# stroma markers
+markers[["all_stromal"]] <- rownames(sce)[grepl(pattern = "Podoplanin|CD10|MMP9|SMA|CD31|CD146",rownames(sce))]
+#markers[["Vasculature"]] <- rownames(sce)[grepl(pattern = "CD31|CD146",rownames(sce))]
+#markers[["vCAF"]] <- rownames(sce)[grepl(pattern = "SMA|CD146",rownames(sce))]
+#markers[["Fibro"]] <- rownames(sce)[grepl(pattern = "Podoplanin|CD10|MMP9|SMA",rownames(sce))]
+
+
+# tumor markers
+markers[["Tumor"]] <- rownames(sce)[grepl(pattern = "panCK|Ecad|Arg1|EGFR|MMP9|p53|Lamp3|CD73|Bcl2|GATA3|CD155|CD10|CD56|CXCL8|Ki67|Podoplanin|IgG",rownames(sce))]
+
+good_markers <- rownames(sce)[!grepl("DNA|Histone",rownames(sce))]
+```
+
+# different normalization
+scaled: z-scaled arcsinh transformated counts
+normalized: 99th percentile normalized counts
+```{r}
+# assay(sce,"scaled") <- t(scale(t(assay(sce,"exprs"))))
+# norm_counts <- t(apply(assay(sce, "counts"), 1, function(x)(x-min(x))/(quantile(x,0.99)-min(x))))
+# normalized_count <- t(apply(norm_counts,1,function(x) pmin(x,1)))
+# assay(sce,"normalized") <- normalized_count
+```
+
+# cell type heatmap
+```{r,fig.width=15, fig.height=8}
+cur_sce <- sce[,order(sce$celltypes)]
+cur_dat <- as_tibble(colData(cur_sce))
+ids <- cur_dat %>%
+  slice_sample(n = 500,replace = FALSE, by = "celltypes") %>%
+  mutate(names = paste(SampleId,ROI,ObjectNumber,sep = "_")) %>%
+  pull(names)
+cur_sce <- cur_sce[,colnames(cur_sce) %in% ids]
+dittoHeatmap(cur_sce,genes = good_markers, assay = "exprs",
+            annot.by = c("celltypes"),
+            cluster_rows = TRUE,
+            show_colnames = FALSE,
+            heatmap.colors = colorRampPalette(c("dark blue", "white", "dark red"))(100),
+            breaks = seq(-3, 3, length.out = 101))
+```
+
+# cluster sweeps
+
+```{r, include=FALSE, eval=FALSE}
+# create necessary directory first
+if (!dir.exists(paste0(mount_path, "Rout/subclustering"))) {
+  dir.create(paste0(mount_path, "Rout/subclustering"))
+}
+
+celltypes <- list("CD4","CD8","Treg","all_Myeloid","DC","mregDC","B","BnT","all_MDSC","all_stromal", "NK")
+celltypes
+
+lapply(celltypes, function(x){
+  if(x == "all_Myeloid"){
+    cur_sce <- sce[,sce$celltypes %in% c("MacCD204","MacCD209","MacCD204_CD209")]
+  } else if(x == "all_MDSC"){
+    cur_sce <- sce[,sce$celltypes %in% c("MDSC","PMN_MDSC","Neutrophil")]
+  } else if(x == "all_stromal"){
+    cur_sce <- sce[,sce$celltypes %in% c("vCAF","Vasculature","Fibro")]
+  } else {
+    cur_sce <- sce[,sce$celltypes %in% x]
+  }
+
+  mat <- t(assay(cur_sce, "exprs")[markers[[x]],])  
+  
+  set.seed(12345)
+  
+  combinations <- clusterSweep(mat, 
+                                   BLUSPARAM=SNNGraphParam(),
+                                   k=c(30L, 40L, 50L, 60L, 70L, 80L), 
+                                   type = c("rank", "jaccard"), 
+                                   cluster.fun = "louvain",
+                                   BPPARAM = MulticoreParam(RNGseed = 220427,workers = 10))
+  
+  saveRDS(combinations,paste0(mount_path,"Rout/subclustering/",x,".rds"))
+  rm(cur_sce)
+  gc()
+})
+
+```
+
+# plot silhouette width and cluster purity
+```{r}
+# create necessary directory first
+if (!dir.exists(paste0(mount_path, "Rout/subclustering/plots"))) {
+  dir.create(paste0(mount_path, "Rout/subclustering/plots"))
+}
+
+files <- list.files(paste0(mount_path,"Rout/subclustering"), full.names = TRUE, pattern = "*.rds")
+
+for (x in files){
+  
+  combination <- readRDS(x)
+  
+  cts <- gsub(".rds","",basename(x))
+  if(cts == "all_Myeloid"){
+    cur_sce <- sce[,sce$celltypes %in% c("MacCD204","MacCD209","MacCD204_CD209")]
+  } else if(cts == "all_MDSC"){
+    cur_sce <- sce[,sce$celltypes %in% c("MDSC","PMN_MDSC","Neutrophil")]
+  } else if(cts == "all_stromal"){
+    cur_sce <- sce[,sce$celltypes %in% c("vCAF","Vasculature","Fibro")]
+  } else {
+    cur_sce <- sce[,sce$celltypes %in% cts]
+  }
+  
+  mat <- t(assay(cur_sce, "exprs")[markers[[cts]],])  
+  
+  sil <- vapply(as.list(combination$clusters), 
+                function(x) mean(approxSilhouette(mat, x)$width), 
+                0)
+  pur <- vapply(as.list(combination$clusters), 
+                function(x) mean(neighborPurity(mat, x)$purity), 
+                0)
+  
+  sil_plot <- ggplot(data.frame(method = names(sil),
+                                sil = sil)) +
+    geom_point(aes(method, sil)) +
+    theme_classic(base_size = 15) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    xlab("Cluster parameter combination") +
+    ylab("Average silhouette width")+
+    ggtitle(cts)
+  
+  ggsave(filename = paste0(mount_path,"Rout/subclustering/plots/",cts,"_sil",".png"),sil_plot)
+
+  pur_plot <- ggplot(data.frame(method = names(pur),
+                                pur = pur)) +
+    geom_point(aes(method, pur)) +
+    theme_classic(base_size = 15) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    xlab("Cluster parameter combination") +
+    ylab("Average neighborhood purity")+
+    ggtitle(cts)
+  
+  ggsave(filename = paste0(mount_path,"Rout/subclustering/plots/",cts,"_pure",".png"),pur_plot)
+  
+}
+```
+
+# parameter selection
+based on the images saved above we will select max silhouette width and max purity.
+```{r}
+celltypes <- c("CD4","CD8","Treg","all_Myeloid","DC","mregDC","B","BnT","all_MDSC","all_stromal", "NK")
+k <- c(70,70,80,80,60,70,80,80,50,60,60)
+type <- c("rank","rank","rank","rank","rank","rank","jaccard","rank","rank","rank","rank")
+param <- data.frame(celltype = celltypes,
+                    k = k,
+                    type = type)
+
+# clustering
+lapply(celltypes, function(x){
+
+  if(x == "all_Myeloid"){
+    cur_sce <- sce[,sce$celltypes %in% c("MacCD204","MacCD209","MacCD204_CD209")]
+  } else if(x == "all_MDSC"){
+    cur_sce <- sce[,sce$celltypes %in% c("MDSC","PMN_MDSC","Neutrophil")]
+  } else if(x == "all_stromal"){
+    cur_sce <- sce[,sce$celltypes %in% c("vCAF","Vasculature","Fibro")]
+  } else {
+    cur_sce <- sce[,sce$celltypes %in% x]
+  }
+  
+  set.seed(220620)
+  clusters <- clusterCells(cur_sce[markers[[x]],], 
+                           assay.type = "exprs", 
+                           BLUSPARAM = SNNGraphParam(k=param[param$celltype == x,"k"], 
+                                                     cluster.fun = "louvain",
+                                                     type = param[param$celltype == x,"type"],
+                                                     BPPARAM = MulticoreParam(workers = 12)))
+
+
+  cur_sce$cluster <- paste0(x,"_",clusters)
+  saveRDS(cur_sce,paste0(mount_path,"Rout/subclustering/",x,"_sce.rds"))
+  rm(cur_sce)
+  gc()
+
+})
+```
+
+# heatmaps scaled {.tabset}
+
+```{r,results='asis',fig.height=4, fig.width=20}
+
+# function to generate the header for the plotting with tabset
+catHeader <- function(text = "", level = 2) {
+    cat(paste0("\n\n", 
+               paste(rep("#", level), collapse = ""), 
+               " ", text, "\n"))
+}
+
+sces <- list.files(paste0(mount_path,"Rout/subclustering/"), full.names = TRUE, pattern= "*._sce.rds")
+
+p.list <- list()
+for (i in sces) {
+  x <- readRDS(i)
+  set.seed(1235)
+  
+  cur_sce <- x[,sample(colnames(x),ncol(x)/10, replace = FALSE)]
+  name <- gsub("_sce.rds","",basename(i))
+  
+  
+  p1 <- dittoHeatmap(cur_sce,genes = markers[[name]], assay = "exprs",
+             annot.by = c("cluster", "celltypes"),
+             cluster_rows = TRUE,
+             show_colnames = FALSE,
+             heatmap.colors = colorRampPalette(c("dark blue", "white", "dark red"))(100),
+             breaks = seq(-3, 3, length.out = 101))
+
+  
+  p.list[[name]] <- (p1$gtable)
+
+  p.list[[name]] <- list(p.list[[name]],name)
+  
+}
+
+for(i in seq_along(p.list)){
+    tmp <- p.list[[i]]
+    # As you want to use tabset level here has to be lower than 
+    # parent level (ie, parent is 1, so here you have to use 2)
+    catHeader(tmp[[2]], 2)
+    plot(tmp[[1]])
+}
+
+```
+
+# {}
+
+# heatmaps exprs {.tabset}
+
+```{r,results='asis',fig.height=4, fig.width=20}
+
+p.list <- list()
+for (i in sces) {
+  x <- readRDS(i)
+  set.seed(1235)
+  
+  cur_sce <- x[,sample(colnames(x),ncol(x)/10, replace = FALSE)]
+  name <- gsub("_sce.rds","",basename(i))
+  
+  p1 <- dittoHeatmap(cur_sce,genes = markers[[name]], assay = "exprs",
+            annot.by = c("cluster", "celltypes"),
+            cluster_rows = TRUE,
+            show_colnames = FALSE,
+            scale = "none",
+            heatmap.colors = viridis(100))
+
+  
+  p.list[[name]] <- (p1$gtable)
+
+  p.list[[name]] <- list(p.list[[name]],name)
+  
+}
+
+for(i in seq_along(p.list)){
+    tmp <- p.list[[i]]
+    # As you want to use tabset level here has to be lower than 
+    # parent level (ie, parent is 1, so here you have to use 2)
+    catHeader(tmp[[2]], 2)
+    plot(tmp[[1]])
+}
+
+```
+
+# {}
+
+__we will not sub-cluster B cells, DCs and mregDCs. there are only very few markers to sub-cluster those cell types and the clustering identifies too many clusters for only those few markers__
+
+# B cell sub types 
+
+```{r}
+library(mclust)
+library(mixtools)
+B_sce <- readRDS(paste0(mount_path,"Rout/subclustering/B_sce.rds"))
+B_sce$cluster <- B_sce$celltypes
+
+# Ki67
+Ki67 <- assay(B_sce,"exprs")["Ki67",]
+fit <- Mclust(Ki67, G = 2)
+
+# get cut point
+post <- fit$z[, 1]
+# Approximate cut point: where posteriors are equal (0.5)
+idx <- which.min(abs(post - 0.5))
+cut_point_mclust <- Ki67[idx]
+cut_point_mclust
+
+fit2 <- mixtools::normalmixEM(Ki67,k = 2)
+
+# get cut point
+post <- fit2$posterior[, 1]
+# Approximate cut point: where posteriors are equal (0.5)
+idx <- which.min(abs(post - 0.5))
+cut_point_mixtools <- Ki67[idx]
+cut_point_mixtools
+
+p1 <- ggplot(data.frame(Ki67 = assay(B_sce, "exprs")["Ki67",],
+                  positivity = fit$classification)) +
+  geom_histogram(aes(x = Ki67, fill = positivity, group = positivity), binwidth = 0.01) +
+  theme_minimal()+
+  geom_vline(xintercept = mean(cut_point_mclust, cut_point_mixtools), color = "red")
+p2 <- ggplot(data.frame(Ki67 = assay(B_sce, "exprs")["Ki67",],
+                  positivity = apply(fit2$posterior, 1, which.max))) +
+  geom_histogram(aes(x = Ki67, fill = positivity, group = positivity), binwidth = 0.01) +
+  theme_minimal()+
+  geom_vline(xintercept = mean(cut_point_mclust, cut_point_mixtools), color = "red")
+
+p1 
+p2
+
+# Bcl2
+Bcl2 <- assay(B_sce,"exprs")["Bcl2",]
+
+fit <- Mclust(Bcl2, G = 2)
+# get cut point
+post <- fit$z[, 1]
+# Approximate cut point: where posteriors are equal (0.5)
+idx <- which.min(abs(post - 0.5))
+cut_point_Bcl2_mclust <- Bcl2[idx]
+cut_point_Bcl2_mclust
+
+fit2 <- mixtools::normalmixEM(Bcl2,k = 2)
+# get cut point
+post <- fit2$posterior[, 1]
+# Approximate cut point: where posteriors are equal (0.5)
+idx <- which.min(abs(post - 0.5))
+cut_point_Bcl2_mixtools <- Bcl2[idx]
+cut_point_Bcl2_mixtools
+
+
+p1 <- ggplot(data.frame(Bcl2 = assay(B_sce, "exprs")["Bcl2",],
+                  positivity = fit$classification)) +
+  geom_histogram(aes(x = Bcl2, fill = positivity, group = positivity), binwidth = 0.01) +
+  theme_minimal()+
+  geom_vline(xintercept = mean(cut_point_Bcl2_mclust, cut_point_Bcl2_mixtools), color = "red")
+p2 <- ggplot(data.frame(Bcl2 = assay(B_sce, "exprs")["Bcl2",],
+                  positivity = apply(fit2$posterior, 1, which.max))) +
+  geom_histogram(aes(x = Bcl2, fill = positivity, group = positivity), binwidth = 0.01) +
+  theme_minimal()+
+  geom_vline(xintercept = mean(cut_point_Bcl2_mclust, cut_point_Bcl2_mixtools), color = "red")
+
+p1 
+p2
+
+Bcl2_cutoff <- mean(cut_point_Bcl2_mclust,cut_point_Bcl2_mixtools)
+Ki67_cutoff <-  mean(cut_point_mclust, cut_point_mixtools)
+
+# we will choose a more conservative cut off of 1 then the mixture models propose
+Ki67_cutoff <- 1
+Bcl2_cutoff <- 0.75
+
+B_sce[,assay(B_sce,"exprs")["Bcl2",] < Bcl2_cutoff  & assay(B_sce,"exprs")["Ki67",] > Ki67_cutoff]$cluster <- "B_Ki67"
+B_sce[,assay(B_sce,"exprs")["Bcl2",] > Bcl2_cutoff & assay(B_sce,"exprs")["Ki67",] > Ki67_cutoff]$cluster <- "B_Ki67_Bcl2"
+B_sce[,assay(B_sce,"exprs")["Bcl2",] > Bcl2_cutoff & assay(B_sce,"exprs")["Ki67",] < Ki67_cutoff]$cluster <- "B_Bcl2"
+table(B_sce$cluster)
+saveRDS(B_sce,paste0(mount_path,"Rout/subclustering/B_sce.rds"))
+```
+
+# DC sub types
+
+```{r}
+DC_sce <- readRDS(paste0(mount_path,"Rout/subclustering/DC_sce.rds"))
+DC_sce$cluster <- DC_sce$celltypes
+
+# CD20
+CD20 <- assay(DC_sce,"exprs")["CD20",]
+
+fit <- Mclust(CD20, G = 2)
+# get cut point
+post <- fit$z[, 1]
+# Approximate cut point: where posteriors are equal (0.5)
+idx <- which.min(abs(post - 0.5))
+cut_point_mclust <- CD20[idx]
+cut_point_mclust
+
+fit2 <- mixtools::normalmixEM(CD20,k = 2)
+# get cut point
+post <- fit2$posterior[, 1]
+# Approximate cut point: where posteriors are equal (0.5)
+idx <- which.min(abs(post - 0.5))
+cut_point_mixtools <- CD20[idx]
+cut_point_mixtools
+
+p1 <- ggplot(data.frame(CD20 = assay(DC_sce, "exprs")["CD20",],
+                  positivity = fit$classification)) +
+  geom_histogram(aes(x = CD20, fill = positivity, group = positivity), binwidth = 0.01) +
+  theme_minimal()
+p2 <- ggplot(data.frame(CD20 = assay(DC_sce, "exprs")["CD20",],
+                  positivity = apply(fit2$posterior, 1, which.max))) +
+  geom_histogram(aes(x = CD20, fill = positivity, group = positivity), binwidth = 0.01) +
+  theme_minimal()
+
+p1 
+p2
+
+# Tim3
+Tim3 <- assay(DC_sce,"exprs")["Tim3",]
+
+fit <- Mclust(Tim3, G = 2)
+# get cut point
+post <- fit$z[, 1]
+# Approximate cut point: where posteriors are equal (0.5)
+idx <- which.min(abs(post - 0.5))
+cut_point_Tim3_mclust <- Tim3[idx]
+cut_point_Tim3_mclust
+
+fit2 <- mixtools::normalmixEM(Tim3,k = 2)
+# get cut point
+post <- fit2$posterior[, 1]
+# Approximate cut point: where posteriors are equal (0.5)
+idx <- which.min(abs(post - 0.5))
+cut_point_Tim3_mixtools <- Tim3[idx]
+cut_point_Tim3_mixtools
+
+p1 <- ggplot(data.frame(Tim3 = assay(DC_sce, "exprs")["Tim3",],
+                  positivity = fit$classification)) +
+  geom_histogram(aes(x = Tim3, fill = positivity, group = positivity), binwidth = 0.01) +
+  theme_minimal()
+p2 <- ggplot(data.frame(Tim3 = assay(DC_sce, "exprs")["Tim3",],
+                  positivity = apply(fit2$posterior, 1, which.max))) +
+  geom_histogram(aes(x = Tim3, fill = positivity, group = positivity), binwidth = 0.01) +
+  theme_minimal()
+
+p1 
+p2
+
+CD20_cutoff <-  mean(cut_point_mclust, cut_point_mixtools)
+Tim3_cutoff <- mean(cut_point_Tim3_mclust,cut_point_Tim3_mixtools)
+
+# we will choose a more conservative cut off of 1 then the mixture models propose
+CD20_cutoff <- 0.5
+Tim3_cutoff <- 1
+
+# we will choose a more conservative cut off of 1 then the mixture models propose
+DC_sce[,assay(DC_sce,"exprs")["Tim3",] > Tim3_cutoff & assay(DC_sce,"exprs")["CD20",] < CD20_cutoff]$cluster <- "DC_Tim3"
+DC_sce[,assay(DC_sce,"exprs")["Tim3",] > Tim3_cutoff & assay(DC_sce,"exprs")["CD20",] > CD20_cutoff]$cluster <- "DC_CD20_Tim3"
+DC_sce[,assay(DC_sce,"exprs")["Tim3",] < Tim3_cutoff & assay(DC_sce,"exprs")["CD20",] > CD20_cutoff]$cluster <- "DC_CD20"
+table(DC_sce$cluster)
+
+# save file
+saveRDS(DC_sce,paste0(mount_path,"Rout/subclustering/DC_sce.rds"))
+```
+
+# mregDC sub types
+
+```{r}
+library(mclust)
+library(mixtools)
+mregDC_sce <- readRDS(paste0(mount_path,"Rout/subclustering/mregDC_sce.rds"))
+mregDC_sce$cluster <- mregDC_sce$celltypes
+
+# CD11c
+CD11c <- assay(mregDC_sce,"exprs")["CD11c",]
+
+fit <- Mclust(CD11c, G = 2)
+# get cut point
+post <- fit$z[, 1]
+# Approximate cut point: where posteriors are equal (0.5)
+idx <- which.min(abs(post - 0.5))
+cut_point_CD11c_mclust <- CD11c[idx]
+cut_point_CD11c_mclust
+
+fit2 <- mixtools::normalmixEM(CD11c,k = 2)
+# get cut point
+post <- fit2$posterior[, 1]
+# Approximate cut point: where posteriors are equal (0.5)
+idx <- which.min(abs(post - 0.5))
+cut_point_CD11c_mixtools <- CD11c[idx]
+cut_point_CD11c_mixtools
+
+
+p1 <- ggplot(data.frame(CD11c = assay(mregDC_sce, "exprs")["CD11c",],
+                  positivity = fit$classification)) +
+  geom_histogram(aes(x = CD11c, fill = positivity, group = positivity), binwidth = 0.01) +
+  theme_minimal()
+p2 <- ggplot(data.frame(CD11c = assay(mregDC_sce, "exprs")["CD11c",],
+                  positivity = apply(fit2$posterior, 1, which.max))) +
+  geom_histogram(aes(x = CD11c, fill = positivity, group = positivity), binwidth = 0.01) +
+  theme_minimal()
+
+p1 
+p2
+
+# Tim3
+Tim3 <- assay(mregDC_sce,"exprs")["Tim3",]
+
+fit <- Mclust(Tim3, G = 2)
+# get cut point
+post <- fit$z[, 1]
+# Approximate cut point: where posteriors are equal (0.5)
+idx <- which.min(abs(post - 0.5))
+cut_point_Tim3_mclust <- Tim3[idx]
+cut_point_Tim3_mclust
+
+fit2 <- mixtools::normalmixEM(Tim3,k = 2)
+# get cut point
+post <- fit2$posterior[, 1]
+# Approximate cut point: where posteriors are equal (0.5)
+idx <- which.min(abs(post - 0.5))
+cut_point_Tim3_mixtools <- Tim3[idx]
+cut_point_Tim3_mixtools
+
+p1 <- ggplot(data.frame(Tim3 = assay(mregDC_sce, "exprs")["Tim3",],
+                  positivity = fit$classification)) +
+  geom_histogram(aes(x = Tim3, fill = positivity, group = positivity), binwidth = 0.01) +
+  theme_minimal()
+p2 <- ggplot(data.frame(Tim3 = assay(mregDC_sce, "exprs")["Tim3",],
+                  positivity = apply(fit2$posterior, 1, which.max))) +
+  geom_histogram(aes(x = Tim3, fill = positivity, group = positivity), binwidth = 0.01) +
+  theme_minimal()
+
+p1 
+p2
+
+
+CD11c_cutoff <-  mean(cut_point_CD11c_mclust, cut_point_CD11c_mixtools)
+Tim3_cutoff <- mean(cut_point_Tim3_mclust,cut_point_Tim3_mixtools)
+
+# we will choose a more conservative cut off of 1 then the mixture models propose
+CD11c_cutoff <- 0.8
+Tim3_cutoff <- 1
+
+
+
+# we will choose a more conservative cut off of 1 then the mixture models propose
+mregDC_sce[,assay(mregDC_sce,"exprs")["Tim3",] > Tim3_cutoff & assay(mregDC_sce,"exprs")["CD11c",] < CD11c_cutoff]$cluster <- "mregDC_Tim3"
+mregDC_sce[,assay(mregDC_sce,"exprs")["Tim3",] > Tim3_cutoff & assay(mregDC_sce,"exprs")["CD11c",] > CD11c_cutoff]$cluster <- "mregDC_CD11c_Tim3"
+mregDC_sce[,assay(mregDC_sce,"exprs")["Tim3",] < Tim3_cutoff & assay(mregDC_sce,"exprs")["CD11c",] > CD11c_cutoff]$cluster <- "mregDC_CD11c"
+table(mregDC_sce$cluster)
+
+# save file
+saveRDS(mregDC_sce,paste0(mount_path,"Rout/subclustering/mregDC_sce.rds"))
+```
+
+
+# meta clustering
+we will meta cluster CD4, CD8, myeloid cells, BnT and NK.
+for Treg and MDSC I am not convinced they can be metaclustered
+
+
+```{r}
+cell_types <- c("8","9")
+names(cell_types) <- c("CD4","CD8")
+
+sces <- list.files(paste0(mount_path,"Rout/subclustering"),full.names = TRUE, pattern = "*._sce.rds")
+for (i in c("CD4", "CD8")) {
+  cur_sce <- readRDS(sces[grepl(i,sces)])
+  name <- colnames(colData(cur_sce))[grepl("^cluster",colnames(colData(cur_sce)))]
+  mean_sce <- aggregateAcrossCells(cur_sce,ids = cur_sce[[name]],statistics = "mean")
+  assay(mean_sce,"exprs") <- asinh(counts(mean_sce))
+
+  marker_names <- cell_types
+  dittoHeatmap(mean_sce,genes = markers[[i]], assay = "exprs",
+               annot.by = c( "cluster"),
+               cluster_rows = TRUE,
+               show_colnames = TRUE,
+               cluster_cols = TRUE,
+               clustering_method = "ward.D2",
+               cutree_cols = cell_types[i],
+               heatmap.colors = colorRampPalette(c("dark blue", "white", "dark red"))(100),
+               breaks = seq(-3, 3, length.out = 101))
+  
+  dittoHeatmap(mean_sce,genes = markers[[i]], assay = "exprs",
+               annot.by = c( "cluster"),
+               cluster_rows = TRUE,
+               show_colnames = TRUE,
+               cluster_cols = TRUE,
+               scale = "none",
+               clustering_method = "ward.D2",
+               cutree_cols = cell_types[i],
+               heatmap.colors = viridis(100))
+ 
+}
+```
+
+## assign meta cluster names
+```{r}
+CD4_vec <- c("CD4_PD1_CXCL13","CD4_activated","CD4_BCL2","CD4_CD7_BCL2","CD4_Ki67","CD4_Tim3","CD4_EOMES","CD4","CD4","CD4")
+names(CD4_vec) <- paste0("CD4_",c(2,1,7,8,3,4,10,6,5,9))
+
+CD8_vec <- c("CD8_BCL2","CD8","CD8","CD8_EOMES","CD8_TIM3","CD8_Ki67","CD8_exh","CD8_PD1_CXCL13","CD8_NKG2A","CD8_GATA3_BCL2")
+names(CD8_vec) <- paste0("CD8_",c(10,5,7,9,1,2,3,4,6,8))
+```
+
+
+# cell types minor definition
+we will substitute CD4, CD8 and will manually gate CD137+ Tregs with the subclusters
+we will also fix a typo
+```{r}
+CD8_sce <- readRDS(paste0(mount_path,"Rout/subclustering/CD8_sce.rds"))
+CD8_sce$meta_cluster <- CD8_vec[CD8_sce$cluster]
+
+CD4_sce <- readRDS(paste0(mount_path,"Rout/subclustering/CD4_sce.rds"))
+CD4_sce$meta_cluster <- CD4_vec[CD4_sce$cluster]
+
+
+dittoSeq::dittoRidgePlot(sce[,sce$celltypes == "Treg"],"CD137", group.by = "celltypes",assay  = "exprs")
+
+Treg_sce <- readRDS(paste0(mount_path,"Rout/subclustering/Treg_sce.rds"))
+
+CD137 <- assay(Treg_sce,"exprs")["CD137",]
+
+fit <- Mclust(CD137, G = 2)
+# get cut point
+post <- fit$z[, 1]
+# Approximate cut point: where posteriors are equal (0.5)
+idx <- which.min(abs(post - 0.5))
+cut_point_CD137_mclust <- CD137[idx]
+cut_point_CD137_mclust
+
+fit2 <- mixtools::normalmixEM(CD137,k = 2)
+# get cut point
+post <- fit2$posterior[, 1]
+# Approximate cut point: where posteriors are equal (0.5)
+idx <- which.min(abs(post - 0.5))
+cut_point_CD137_mixtools <- CD137[idx]
+cut_point_CD137_mixtools
+
+p1 <- ggplot(data.frame(CD137 = assay(Treg_sce, "exprs")["CD137",],
+                  positivity = fit$classification)) +
+  geom_histogram(aes(x = CD137, fill = positivity, group = positivity), binwidth = 0.01) +
+  theme_minimal()
+p2 <- ggplot(data.frame(CD137 = assay(Treg_sce, "exprs")["CD137",],
+                  positivity = apply(fit2$posterior, 1, which.max))) +
+  geom_histogram(aes(x = CD137, fill = positivity, group = positivity), binwidth = 0.01) +
+  theme_minimal()
+
+p1 
+p2
+
+# define cut off more conservative than gaussian mixture model
+sce$CD137_pos <- assay(sce, "exprs")["CD137",] > 0.5
+
+# merge CD8 and CD4 meta_cluster info
+sce$meta_cluster <- sce$celltypes
+
+#CD8
+sce[,colnames(CD8_sce)]$meta_cluster <- CD8_sce$meta_cluster
+#CD4
+sce[,colnames(CD4_sce)]$meta_cluster <- CD4_sce$meta_cluster
+
+
+x <- as.data.frame(colData(sce))
+
+x <- x %>%
+  mutate(celltypes_minor = celltypes,
+         celltypes_minor = ifelse(celltypes == "Treg" & CD137_pos == TRUE,"Treg_CD137",celltypes_minor),
+         celltypes_minor = ifelse(celltypes == "CD4",meta_cluster,celltypes_minor),
+         celltypes_minor = ifelse(celltypes == "CD8",meta_cluster,celltypes_minor))
+unique(x$celltypes_minor)
+
+colData(sce) <- DataFrame(x)
+```
+
+
+# merge data
+
+## add clustering to sce
+```{r}
+sces  <- lapply(list.files("/mnt/immucan_volume/processed_data/Panel_2/IMMUcan_NSCLC2/IMC/Rout/data/subclustering/sce_files/",
+                           full.names = TRUE,
+                           pattern = "*.rds"),readRDS)
+sces  <- list.files("/mnt/immucan_volume/processed_data/Panel_2/IMMUcan_NSCLC2/IMC/Rout/data/subclustering/sce_files",
+                           full.names = TRUE,
+                           pattern = "*.rds")
+
+test <- readRDS("/mnt/immucan_volume/processed_data/Panel_2/IMMUcan_NSCLC2/IMC/Rout/data/subclustering/sce_files//B.rds")
+sces[1]
+
+sce$clusters <- sce$celltypes
+
+for (i in sces){
+  x <- readRDS(i)
+  cur_var <- colnames(colData(x))[grep("cluster",colnames(colData(x)))]
+  sce[,colnames(x)]$clusters <- x[[cur_var]]
+}
+
+unique(sce$clusters)
+
+```
+
+## add meta clustering to sce
+```{r}
+# add info to sce
+sce$meta_cluster <- sce$celltypes
+sce[,sce$celltypes == "Treg"]$meta_cluster <- Treg_vec[sce[,sce$celltypes == "Treg"]$clusters]
+sce[,sce$celltypes == "NK"]$meta_cluster <- NK_vec[sce[,sce$celltypes == "NK"]$clusters]
+sce[,sce$celltypes == "CD4"]$meta_cluster <- CD4_vec[sce[,sce$celltypes == "CD4"]$clusters]
+sce[,sce$celltypes == "CD8"]$meta_cluster <- CD8_vec[sce[,sce$celltypes == "CD8"]$clusters]
+sce[,sce$celltypes %in% c("MacCD204","MacCD209","MacCD204_CD209")]$meta_cluster <- myel_vec[sce[,sce$celltypes %in% c("MacCD204","MacCD209","MacCD204_CD209")]$clusters]
+sce[,sce$celltypes == "BnT"]$meta_cluster <- BnT_vec[sce[,sce$celltypes == "BnT"]$clusters]
+sce[,sce$celltypes == "Tumor"]$meta_cluster <- sce[,sce$celltypes == "Tumor"]$clusters 
+sce[,sce$celltypes == "B"]$meta_cluster <- sce[,sce$celltypes == "B"]$clusters 
+
+```
+
+```{r, fig.height=20, fig.width=25}
+set.seed(7496)
+dittoHeatmap(sce[,sample(colnames(sce),20000,replace = FALSE)],
+             genes = rownames(sce)[!grepl("DNA|Histone",rownames(sce))],
+             assay = "exprs",
+             annot.by = c("clusters"),
+             cluster_rows = TRUE,
+             scale = "none",
+             show_colnames = FALSE,
+             heatmap.colors = viridis(100))
+```
+
+```{r, fig.height=20, fig.width=40}
+set.seed(7496)
+dittoHeatmap(sce[,sample(colnames(sce),20000,replace = FALSE)],
+             genes = rownames(sce)[!grepl("DNA|Histone",rownames(sce))],
+             assay = "exprs",
+             annot.by = c("meta_cluster"),
+             cluster_rows = TRUE,
+             show_colnames = FALSE,
+             heatmap.colors = colorRampPalette(c("dark blue", "white", "dark red"))(100),
+             breaks = seq(-3, 3, length.out = 101))
+```
+
+# UMAP
+```{r, fig.height=15, fig.width=20}
+sce <- runUMAP(sce,
+               exprs_values = "exprs", 
+               subset_row = rownames(sce)[!grepl("DNA|Histone",rownames(sce))],
+               name = "UMAP",
+               external_neighbors = TRUE, BNPARAM = AnnoyParam(),
+               BPPARAM = MulticoreParam(workers = 12))
+
+dittoDimPlot(sce,var = "celltypes",reduction.use = "UMAP",do.label = TRUE)+
+  scale_color_manual(values = metadata(sce)$colour_vectors$cell_types)
+```
+
+
+# mean meta-cluster expression
+
+```{r, fig.width=25, fig.height=10}
+mean_sce <- aggregateAcrossCells(sce,ids = sce$celltypes_minor,statistics = "mean")
+assay(mean_sce,"exprs") <- asinh(counts(mean_sce))
+
+dittoHeatmap(mean_sce,
+             genes = rownames(sce)[!grepl("DNA|Histone",rownames(sce))],
+             assay = "exprs",
+             #annot.by = c("meta_cluster"),
+             cluster_rows = TRUE,
+             cluster_cols = TRUE,
+             show_colnames = TRUE,
+             heatmap.colors = colorRampPalette(c("dark blue", "white", "dark red"))(100),
+             breaks = seq(-4, 4, length.out = 101))
+```
+
+
+
+
+```{r}
+table(sce$celltypes_minor)/ncol(sce)
+```
+
+# save results
+```{r}
+saveRDS(sce,paste0(mount_path,"Rout/sce.rds"))
+```
+

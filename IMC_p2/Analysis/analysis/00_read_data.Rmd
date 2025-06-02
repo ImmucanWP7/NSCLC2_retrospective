@@ -1,0 +1,421 @@
+---
+title: "Reading in the data, from single patient folders"
+site: workflowr::wflow_site
+output:
+  workflowr::wflow_html:
+    toc: true
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+# Set path
+if (Sys.info()["sysname"] == "Darwin"){
+  mount_path <- "/Volumes/"
+} else if (Sys.info()["sysname"] == "Linux"){
+  mount_path <- "/mnt/"
+} else {
+  stop("Operating system is not supported")
+}
+```
+
+# Load libraries
+
+First, we will load the libraries needed
+
+```{r load-libraries, message=FALSE}
+library(S4Vectors)
+library(SingleCellExperiment)
+library(tidyverse)
+library(imcRtools)
+library(dplyr)
+library(stringr)
+```
+
+```{r}
+mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/IMC/Panel_2/"
+```
+
+
+# check overlap in data
+
+```{r}
+cur_paths <- list.files(paste0(mount_path,"data"), pattern = "*.zip")
+old_paths <- list.files("/mnt/immucan_volume/processed_data/Panel_2/IMMUcan_NSCLC2/IMC/data")
+
+test <- sapply(basename(cur_paths), function(x) gsub(pattern = ".zip",replacement = "",x = str_split_i(string = x,pattern = "_#_",4)))
+old <- sapply(basename(old_paths), function(x) gsub(pattern = ".zip",replacement = "",x = str_split_i(string = x,pattern = "_#_",4)))
+sum(test %in% old)/length(test)
+sum(old %in% test)/length(old)
+
+cur_dat <- data.frame(UZH_names = old_paths,
+                        MD5 = old)
+rownames(cur_dat) <- NULL
+
+cur_dat2 <- data.frame(KMS_names = cur_paths,
+                      MD5 = test)
+rownames(cur_dat2) <- NULL
+
+
+cur_dat <- left_join(cur_dat,cur_dat2,"MD5")
+
+```
+
+# Read in the single-cell data and concatenate into one SCE
+
+```{r read-data}
+
+cur_paths <- list.files(paste0(mount_path,"data"), full.names = TRUE)
+
+cur_sces <- BiocParallel::bplapply(cur_paths, function(x){
+  
+  # read in data
+  counts <- read.csv(unz(x, filename = "raw_counts.csv"), row.names = 1)
+  cell_meta <- read.csv(unz(x, filename = "cell_metadata.csv"), row.names = 1)
+  row_data <- read.csv(unz(x, filename = "panel_metadata.csv"), row.names = 1)
+  
+  # create SCE
+  sce <- SingleCellExperiment(assays = list(counts = t(counts)))
+  colData(sce) <- as(cell_meta, "DataFrame")
+  rowData(sce) <- as(row_data, "DataFrame")
+  
+  # Read in graph
+  cur_graph <- read.csv(unz(x, filename = "cell_relationships.csv"), row.names = 1)
+  cur_graph <- SelfHits(from = cur_graph$from, to = cur_graph$to, nnode = ncol(sce))
+  colPair(sce, "neighborhood") <- cur_graph
+  
+  return(sce)
+
+},BPPARAM = MulticoreParam(workers=4))
+```
+
+```{r unify-colnames}
+# clean up colnames
+colData_names <- Reduce(intersect, lapply(cur_sces, function(x) colnames(colData(x))))
+excluded_colData_names <- unique(unlist(lapply(cur_sces, function(x) colnames(colData(x))[!colnames(colData(x)) %in% colData_names])))
+excluded_colData_names # "Sample.Type"   "Pooled"        "Specimen.Type" "Is.Pooled"    
+
+# clean up rownames
+rowData_names <- Reduce(intersect, lapply(cur_sces, function(x) colnames(rowData(x))))
+excluded_rowData_names <- unique(unlist(lapply(cur_sces, function(x) colnames(colData(x))[!colnames(rowData(x)) %in% rowData_names])))
+excluded_rowData_names # none
+```
+
+
+```{r concatenate-sces}
+# clean up assays
+assay_names <- c("counts")
+
+cur_sces <- lapply(cur_sces, function(x) {
+  cur_sce <- x
+
+  # unify colnames in excluded_colData_names
+  if (is.null(cur_sce$Pooled)){
+    cur_sce$Pooled <- cur_sce$Is.Pooled
+    cur_sce$Is.Pooled <- NULL
+  }
+  
+  if (is.null(cur_sce$Sample.Type)){
+    cur_sce$Sample.Type <- cur_sce$Specimen.Type
+    cur_sce$Specimen.Type <- NULL
+  }
+  
+  colData(cur_sce) <- colData(cur_sce)[,c(colData_names, "Pooled", "Sample.Type")]
+  rowData(cur_sce) <- rowData(cur_sce)[,rowData_names, drop=FALSE]
+  
+  
+  reducedDims(cur_sce) <- NULL
+  
+  assays(cur_sce) <- assays(cur_sce)[assay_names]
+  
+  return(cur_sce)
+})
+
+sce <- do.call(cbind, cur_sces)
+
+sce$image <- paste0(sce$sample_id, ".tiff")
+assay(sce, "exprs") <- asinh(counts(sce))
+```
+
+
+
+Check for unexpected duplicates
+```{r, check-duplicates}
+cur_duplicates <- duplicated(paste(sce$SlideId, sce$Position, sce$ROI, sce$ObjectNumber))
+unique(paste(sce$SlideId, sce$Position, sce$ROI)[cur_duplicates])
+
+stopifnot(sum(cur_duplicates) == 0)
+```
+
+```{r}
+# we will get the short IBBL IDS to get the mapping to immucan ids 
+IBBL_ids <- unique(sce$SampleId)
+IBBL_ids <- sapply(IBBL_ids, function(x) str_split_i(string = x,pattern = "-",1))
+write_csv(as.data.frame(IBBL_ids),file = paste0(mount_path,"data/IMMUcanIDMapping.csv"))
+
+# get info of imumucan ids that we actually have data of
+ids <- sapply(list.files(paste0(mount_path,"data"),pattern = "*.zip"), function(x) str_split_i(string = x,pattern = "_#_",1))
+ids <- sapply(ids, function(x) str_split_i(pattern = "-FIXT",string = x,i = 1))
+
+# we will get the precise tissue ids that we have data from
+tissue_ids <- unique(sce$SampleId)
+tissue_ids <- sapply(tissue_ids, function(x) gsub(pattern = "-PB","",x = x))
+
+# load mapping data retrieved from the KMS with the IBBL_ids
+mapping <- read.csv(paste0(mount_path,"data/IMMUcanIDMapping_returned.csv"))
+
+# clean and filter mapping according to tissue blocks we used
+mapping <- mapping %>%
+  separate_longer_delim(cols = ibbl_kit_ids,delim=",") %>%
+  separate_longer_delim(cols = ibbl_ids,delim=",") %>%
+  mutate(ibbl_ids_check = str_split_i(ibbl_ids,"-",1)) %>%
+  filter(ibbl_ids_check == ibbl_kit_ids) %>%
+  filter(ibbl_ids %in% tissue_ids) %>%
+  distinct()
+
+# no duplicated kit ids
+mapping %>%
+  filter(duplicated(ibbl_kit_ids))
+
+# are we missing samples. yes, one!
+ids[!ids %in% mapping$immucan_id]
+
+# create ibbl_kit_ids for matching
+sce$ibbl_kit_ids <- str_split(sce$SampleId,"-", simplify = TRUE)[,1]
+
+unique(sce$ibbl_kit_ids) %in% mapping$ibbl_kit_ids
+
+# add clinical information to colData
+coldata <- as.data.frame(colData(sce)) %>%
+  left_join(mapping, by = "ibbl_kit_ids")
+
+dim(coldata)
+ncol(sce)
+
+# check if all immucan IDs are available
+sum(is.na(coldata$immucan_id))
+
+colData(sce) <- as(coldata, "DataFrame")
+```
+
+
+```{r set-colnames}
+colnames(sce) <- paste(sce$SampleId, sce$ROI, sce$ObjectNumber, sep = "_")
+```
+
+
+## Generate colour vectors
+
+At this point we want to generate colour vectors that we can reproducibly and consistently use throughout the analysis.
+Primarily, we will define colours for 1. the samples, 2. the slides, 3. the ROI, 4. the Indication, 5. the tumour mask.
+
+```{r generate-colour-vectors}
+library(dittoSeq)
+library(RColorBrewer)
+colour_vectors <- list()
+
+col_vec_sampleIds <- dittoColors(reps = 3)[seq_len(length(unique(sce$SampleId)))]
+names(col_vec_sampleIds) <- unique(sce$SampleId)
+
+col_vec_slideIds <- dittoColors(reps = 3)[seq_len(length(unique(sce$SlideId)))]
+names(col_vec_slideIds) <- unique(sce$Slide.ID)
+
+col_vec_ROIs <- colorRampPalette(c("dark green", "white", "dark red"))(length(unique(sce$ROI)))
+names(col_vec_ROIs) <- unique(sce$ROI)
+
+col_vec_subBatchIds <- brewer.pal(name = "Set3", n = length(unique(sce$SubBatchId)))
+names(col_vec_subBatchIds) <- unique(sce$SubBatchId)
+
+# Here we can use these five colours for the five indications:
+# Breast = "#3F85A7"
+# Kidney = "#5B1C55"
+# Gastrointestinal = "#C81F43"
+# Lung = "#F79C1D"
+# Head and Neck = "#39BEB4"
+
+col_vec_indication <- c(GU = "#5B1C55", HN = "#39BEB4", THOR = "#F79C1D", 
+                        BREAS = "#3F85A7", GI = "#C81F43")
+
+col_vec_tumour <- c(Tumour = "#8c510a", Non_Tumour = "#01665e", 
+                    Ambigous = "black", Error = "dark red")
+
+colour_vectors$SampleIds <- col_vec_sampleIds
+colour_vectors$SlideIds <- col_vec_slideIds
+colour_vectors$ROIs <- col_vec_ROIs
+colour_vectors$Indication <- col_vec_indication
+colour_vectors$Tumour <- col_vec_tumour
+colour_vectors$SubBatchIds <- col_vec_subBatchIds
+
+# Save in metadata slot
+metadata(sce)$colour_vectors <- colour_vectors
+```
+
+# Filter samples
+
+sample "10022145" is a distant metastasis and will be excluded
+
+sample 10040831 is a duplicated sample from patient LUNG-NSCLC2-0598. we will store this under the same immucan patient id
+```{r}
+sce <- sce[,sce$ibbl_kit_ids != "10022145"]
+```
+
+
+
+# generate color vectors
+```{r}
+cell_types <- unique(sce$celltypes)
+cell_types <- c("B", "Igg", "CD4", "CD8", "Treg", "BnT",
+                "DC", "mregDC", "MacCD204_CD209", "MacCD204","MacCD209",
+                "Neutrophil", "NK", "PMN_MDSC", "MDSC",
+                "Fibro", "Tumor", "SMA", "Vasculature","vCAF", "undefined")
+
+# new color scheme
+names(cell_types) <- cell_types
+cell_types["B"] <- "red3"
+cell_types["Igg"] <- "goldenrod2"
+cell_types["CD4"] <- "deeppink"
+cell_types["CD8"] <- "darkorchid"
+cell_types["Treg"] <- "hotpink"
+cell_types["BnT"] <- "orangered"
+cell_types["DC"] <- "green4"
+cell_types["mregDC"] <- "green"
+cell_types["MacCD204_CD209"] <- "olivedrab4"
+cell_types["MacCD204"] <- "olivedrab3"
+cell_types["MacCD209"] <- "olivedrab1"
+cell_types["Neutrophil"] <- "cornflowerblue"
+cell_types["NK"] <- "yellow"
+cell_types["Fibro"] <- "deepskyblue"
+cell_types["Tumor"] <- "sienna4"
+cell_types["undefined"] <- "black"
+cell_types["unlabelled"] <- "gray"
+cell_types["PMN_MDSC"] <- "blue1"
+cell_types["MDSC"] <- "lightseagreen"
+cell_types["Vasculature"] <- "firebrick1"
+cell_types["SMA"] <- "deepskyblue2"
+cell_types["vCAF"] <- "lightblue1"
+
+
+pie(rep(1,length(cell_types)), col = cell_types,labels = names(cell_types))
+
+metadata(sce)$colour_vectors$cell_types <- cell_types
+```
+
+## Save SCE object
+
+Finally, for easy accessability, we will write the SCE object out.
+The object will be stored on the server so that everyone can work with it.
+
+```{r save-RDS}
+# create necessary directory first
+if (!dir.exists(paste0(mount_path,"Rout"))) {
+  dir.create(paste0(mount_path,"Rout"))
+}
+
+saveRDS(sce, paste0(mount_path,"Rout/sce.rds"))
+```
+
+# Read in image data
+
+Here, we read in the images and masks and save them on disk.
+
+```{r read-images, message = FALSE}
+library(cytomapper)
+# create necessary directory first
+if (!dir.exists(paste0(mount_path, "Rout/h5/"))) {
+  dir.create(paste0(mount_path, "Rout/h5/"))
+}
+if (!dir.exists(paste0(mount_path, "Rout/h5/images"))) {
+  dir.create(paste0(mount_path, "Rout/h5/images"))  
+}
+if (!dir.exists(paste0(mount_path, "Rout/h5/masks"))) {
+  dir.create(paste0(mount_path, "Rout/h5/masks"))  
+}
+
+
+# load masks to disk
+masks_path <- list.files(paste0(mount_path,"data"), full.names = TRUE, pattern = "*.zip")
+
+# Loop through zip files
+for (zip_file in masks_path) {
+  zip_name <- tools::file_path_sans_ext(basename(zip_file))
+
+  # Create temp dir for unzipping
+  temp_dir <- tempfile(pattern = "unzip_")
+  dir.create(temp_dir)
+
+  # List contents of zip
+  contents <- unzip(zip_file, list = TRUE)
+  mask_files <- contents$Name[grepl("^masks/|/masks/", contents$Name)]
+
+  # Unzip only masks
+  unzip(zip_file, files = mask_files, exdir = temp_dir)
+
+  # Find the masks subfolder
+  cur_mask_path <- list.dirs(temp_dir, recursive = TRUE, full.names = TRUE)
+  cur_mask_path <- cur_mask_path[grepl("masks$", cur_mask_path)]
+
+  # Load images directly (onDisk = TRUE avoids loading all into RAM)
+  mask_imgs <- cytomapper::loadImages(x = cur_mask_path, on_disk = TRUE,h5FilesPath = paste0(mount_path,"Rout/h5/masks"))
+
+  # Optional: clean up temp_dir if needed
+  unlink(temp_dir, recursive = TRUE)
+}
+
+
+# load images to disk
+img_path <- list.files(paste0(mount_path,"data"), full.names = TRUE, pattern = "*.zip")
+
+# Loop through zip files
+for (zip_file in img_path) {
+  zip_name <- tools::file_path_sans_ext(basename(zip_file))
+
+  # Create temp dir for unzipping
+  temp_dir <- tempfile(pattern = "unzip_")
+  dir.create(temp_dir)
+
+  # List contents of zip
+  contents <- unzip(zip_file, list = TRUE)
+  img_files <- contents$Name[grepl("^img/|/img/", contents$Name)]
+
+  # Unzip only images
+  unzip(zip_file, files = img_files, exdir = temp_dir)
+
+  # Find the masks subfolder
+  cur_img_path <- list.dirs(temp_dir, recursive = TRUE, full.names = TRUE)
+  cur_img_path <- cur_img_path[grepl("img$", cur_img_path)]
+
+  # Load images directly (onDisk = TRUE avoids loading all into RAM)
+  img_images <- cytomapper::loadImages(x = cur_img_path, on_disk = TRUE,h5FilesPath = paste0(mount_path,"Rout/h5/images"))
+
+  # Optional: clean up temp_dir if needed
+  unlink(temp_dir, recursive = TRUE)
+}
+
+
+  
+# get path to images and masks per patient
+imgs_path <- paste0(mount_path, "Rout/h5/images")
+masks_path <- paste0(mount_path, "Rout/h5/masks/")
+
+
+
+images <- loadImages(imgs_path, on_disk = TRUE, h5FilesPath = paste0(mount_path, "Rout/h5/images"))
+masks <- loadImages(masks_path, on_disk = TRUE, h5FilesPath = paste0(mount_path, "Rout/h5/masks"))
+
+
+
+# Remove duplicated images
+sum(!(names(images) %in% gsub("\\.tiff", "", sce$image)))
+sum(!(names(masks) %in% gsub("\\.tiff", "", sce$image)))
+
+images <- images[names(images) %in% gsub("\\.tiff", "", sce$image)]
+masks <- masks[names(masks) %in% gsub("\\.tiff", "", sce$image)]
+
+mcols(images) <- mcols(masks) <- DataFrame(image = names(images))
+
+saveRDS(images, paste0(mount_path, "Rout/images.rds"))
+saveRDS(masks, paste0(mount_path, "Rout/masks.rds"))
+```
