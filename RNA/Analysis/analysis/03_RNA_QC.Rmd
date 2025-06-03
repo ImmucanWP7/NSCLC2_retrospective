@@ -1,0 +1,1103 @@
+---
+title: "RNA QC"
+author: "Flavia Marzettat"
+date: "2024-06-14"
+output: html_document
+---
+
+Analysis description:
+Here we want to explore the lung NSCLC2 RNAseq dataset (data were found in the custom cohort "IMMUcan_NSCLC2" directory)
+Old Specta Lung (retrospective cohort, a.k.a. NSCLC2)
+the most updated clinical table was prepared by Daniel on 25.08.2023
+
+1) Plotting counts (distribution before/after TMM norm, barplot total raw counts, boxplot counts before/after TMM norm)
+2) PCA (biplots, hclust) using: 
+vst counts (lib.norm + log2 + variance stabilization + scaling) ("/PCA")
+log2CPM (lib.norm + log2 + scaling) ("/PCA_normcounts")
+vst counts UNSCALED (lib.norm + log2 + variance stabilization)  ("/PCA_unscaled")
+
+## Set wkdir ##
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+## Libraries ##
+```{r}
+library(edgeR)
+library(limma)
+library(PCAtools)
+library(scales)
+library(ComplexHeatmap)
+library(data.table)
+library(gridExtra)
+library(RColorBrewer)
+library(gplots)
+library(GGally)
+```
+
+
+```{r}
+mnt_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/plots/QC/"
+
+if (!dir.exists(out_folder)) {
+  dir.create(path = out_folder, recursive = TRUE)
+}
+```
+
+
+# 1. Plotting counts
+
+## Read in raw filtered counts, metadata and qc
+```{r}
+rawcounts_unfiltered <- read.delim(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/rawcounts_unfiltered.txt"), check.names = FALSE)
+rawcounts_filt <- read.delim(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/rawcounts_filtered.txt"), check.names = FALSE)
+norm.counts <- read.delim(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/log2normcounts.txt"), check.names = FALSE)
+metadata <- read.delim(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/metadata.txt"), stringsAsFactors = T)
+stopifnot(rownames(metadata)==colnames(rawcounts_unfiltered))
+
+lib.kit.tb <- metadata[,"lib.kit",drop=F]
+myCol <- hue_pal()(2)
+```
+
+
+## Raw unfiltered
+```{r}
+log2.raw.unfilt <- log2(rawcounts_unfiltered+1)
+log2.raw.unfilt.long <- melt(t(log2.raw.unfilt))
+names(log2.raw.unfilt.long) <- c("sample_id", "ensemblID", "counts")
+lib.kit.tb <- metadata[,"lib.kit",drop=F]
+lib.kit <- lib.kit.tb$lib.kit[match(log2.raw.unfilt.long$sample_id, rownames(lib.kit.tb))]
+pdf(paste0(out_folder,"density_plot_raw_unfilt_counts.pdf"), width=10, height = 5)
+ggplot(log2.raw.unfilt.long, aes(x=counts, col=sample_id), size=2) + geom_density() + xlab("Log2 Counts") + theme_light() +
+  scale_color_manual(name="lib.kit", values = myCol[lib.kit]) +
+  theme(legend.position="none")+
+  ggtitle("Raw unfiltered counts")
+dev.off()
+```
+
+## Raw filtered
+```{r}
+log2.raw.filt <- log2(rawcounts_filt+1)
+log2.raw.filt.long <- melt(t(log2.raw.filt))
+names(log2.raw.filt.long) <- c("sample_id", "ensemblID", "counts")
+lib.kit <- lib.kit.tb$lib.kit[match(log2.raw.filt.long$sample_id, rownames(lib.kit.tb))]
+pdf(paste0(out_folder,"density_plot_raw_filt_counts.pdf"), width=10, height = 5)
+ggplot(log2.raw.filt.long, aes(x=counts, col=sample_id)) + geom_density() + xlab("Log2 Counts") + theme_light() +
+  scale_color_manual(name="lib.kit", values = myCol[lib.kit]) +
+  theme(legend.position="none") + ggtitle("Raw filtered counts")
+dev.off()
+```
+
+## Norm + filtered
+```{r}
+
+norm.long <- melt(t(norm.counts)) #TMM normalized expression values on the log2 scale
+names(norm.long) <- c("sample_id", "ensemblID", "counts")
+lib.kit <- lib.kit.tb$lib.kit[match(norm.long$sample_id, rownames(lib.kit.tb))]
+pdf(paste0(out_folder,"density_plot_norm_counts.pdf"), width=10, height = 5)
+ggplot(norm.long, aes(x=counts, col=sample_id)) + geom_density() + xlab("Log2 Counts") + theme_light() +
+  scale_color_manual(name="lib.kit", values = myCol[lib.kit]) +
+  theme(legend.position="none") + ggtitle("Normalised filtered counts")
+dev.off()
+```
+
+## Plotting density of counts split by sample
+```{r}
+norm.long.by.sample <- split(norm.long, norm.long$sample_id)
+gg_list <- lapply(1:length(norm.long.by.sample), function(i) {
+  longID=names(norm.long.by.sample)[i]
+  ID <- strsplit(longID, split = "-")[[1]][3]
+  ggplot(norm.long.by.sample[[longID]], aes(x=counts)) +
+    geom_density() + xlab("Log2 Counts") +
+    theme_light() +
+    ggtitle(paste0("Sample_", ID)) +
+    theme(legend.key.size = unit(0.5,"line"),
+          axis.text = element_text(size=6),
+          axis.title = element_text(size=8),
+          plot.title = element_text(size=10))
+})
+ml <- marrangeGrob(grobs=gg_list, nrow=6, ncol=6, top=FALSE)
+ml
+ggsave(ml, filename = paste0(out_folder,"density_plots_by_sample.pdf"), width=15, height = 15)
+```
+
+## Barplot total counts
+```{r}
+# before filtering
+tot_counts <- data.frame(tot_counts_Million=apply(rawcounts_unfiltered, 2, function(x) sum(x)/10^6))
+tot_counts$sample_id <- rownames(tot_counts)
+data_to_plot <- Reduce(function(x,y) merge(x,y,by="sample_id",sort=F), list(tot_counts,metadata))
+data_to_plot$short_id <- as.character(data_to_plot$short_id)
+# data_to_plot$lib_kit <- factor(data_to_plot$lib_kit, levels=c("kapa", "takara"))
+pdf(paste0(out_folder,"barplot_HTSeq_totcounts.pdf"), height = 7, width = 15)
+ggplot(data_to_plot, aes(fill=lib.kit, y=tot_counts_Million, x=short_id)) + #x=reorder(short_id, -cohort))) +
+  geom_bar(stat = "identity") +
+  facet_grid(~ lib.kit, scales = "free", space = "free") + #, space = "free_x") +
+  ylab("# Counts on genes (Millions)") +
+  xlab("") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ggtitle(paste("Total HTSeq-counts"))
+dev.off()
+
+```
+
+
+
+## Boxplot of read counts
+```{r}
+pdf(paste0(out_folder,"boxplots_counts.pdf"), width = 20)
+par(mfrow=c(2, 1))
+par(mar=c(2, 4.1, 4.1, 2.1))
+boxplot(log2.raw.filt, outline=F, las=2, cex.axis=.3, ylab='Log2 counts', names=metadata$short_id, main='Filtered counts before normalisation')
+boxplot(norm.counts, outline=F, las=2, cex.axis=.3, ylab='Log2 counts', names=metadata$short_id, main='Filtered counts after TMM normalisation')
+dev.off()
+
+```
+
+
+# 2. PCA
+
+```{r}
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNAseq/Rout/plots/QC/PCA/"
+
+if (!dir.exists(out_folder)) {
+  dir.create(path = out_folder)
+}
+```
+
+## Read in vst-counts and metadata
+```{r}
+vst_counts <- read.delim(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/vstcounts.txt"), check.names = F)
+metadata <- read.delim(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/metadata.txt"), stringsAsFactors = T)
+stopifnot(rownames(metadata)==colnames(vst_counts))
+
+```
+
+
+## clean metadata and run PCA
+```{r}
+metadata_clean <- data.frame(metadata[,c("sample_id", "short_id", "immucan_id",
+                                         "lib.kit", 
+                                         "gender", "simple_histology", "simple_stage",
+                                         "metastatic_treatment","neo_adjuvant_treatment", "adjuvant_treatment",
+                                         "age_at_diagnosis", 
+                                         "side_localization", "primary_localization", "smoking_status", "environmental_exposure")])
+metadata_clean$date_of_extraction_num <- as.numeric(metadata$date_of_extraction)
+
+uq_values <- apply(vst_counts,1,function(x) length(unique(x)))==1
+p <- pca(vst_counts[!uq_values,], metadata=metadata_clean, scale = TRUE, transposed = FALSE)
+pca_df <- p$rotated
+```
+
+
+
+## screeplot
+```{r}
+elbow <- findElbowPoint(p$variance)
+pdf(paste0(out_folder,"pca_screeplot.pdf"))
+screeplot(p, axisLabSize = 18, titleLabSize = 22, components=getComponents(p)[1:15], vline = elbow)+
+  geom_label(aes(x = elbow - 1, y = 50,
+                 label = 'Elbow point', vjust = -1, size = 8))
+dev.off()
+```
+
+
+
+## pairsplot
+```{r, message=FALSE}
+clin_var <- colnames(metadata_clean)[grepl("simple|lib.kit|age|smoking|adjuvant_treatment", colnames(metadata_clean))]
+pdf(paste0(out_folder,"pca_pairsplot.pdf"), width=6, height=6)
+lapply(clin_var, function(trait) {
+  pp <- pairsplot(p,
+                  components = getComponents(p, c(1:10)),
+                  triangle = TRUE, trianglelabSize = 12,
+                  hline = 0, vline = 0,
+                  pointSize = 0.4,
+                  gridlines.major = FALSE, gridlines.minor = FALSE,
+                  colby = trait,
+                  title = trait,
+                  plotaxes = FALSE,
+                  margingaps = unit(c(-0.01, -0.01, -0.01, -0.01), 'cm'))
+  pp
+})
+dev.off()
+pdf(paste0(out_folder,"pca_pairsplot_PC1toPC4.pdf"), width=8, height=8)
+lapply(clin_var, function(trait) {
+  pp <- pairsplot(p,
+                  components = getComponents(p, c(1:4)),
+                  triangle = TRUE, trianglelabSize = 12,
+                  hline = 0, vline = 0,
+                  pointSize = 1,
+                  gridlines.major = FALSE, gridlines.minor = FALSE,
+                  colby = trait,
+                  title = trait,
+                  plotaxes = FALSE,legendPosition = "none",
+                  margingaps = unit(c(-0.01, -0.01, -0.01, -0.01), 'cm'))
+  pp
+})
+dev.off()
+```
+
+
+
+
+## biplots 
+
+### PC1 vs PC2
+```{r}
+pdf(paste0(out_folder,"pca_PC1vsPC2_labeled.pdf"), width=6, height=4)
+lapply(colnames(metadata_clean)[-(1:3)], function(trait) {
+  bp <- biplot(p,
+               x="PC1",y="PC2",
+               lab = p$metadata$short_id,
+               colby = trait,
+               hline = 0, vline = 0,
+               pointSize=2,
+               legendPosition = 'right',
+               legendTitleSize = 8,
+               legendLabSize = 6,
+               legendIconSize = 2) + ggtitle(trait)
+  bp
+})
+dev.off()
+```
+
+
+
+### PC3 vs PC4
+```{r}
+pdf(paste0(out_folder,"pca_PC3vsPC4_labeled.pdf"), width=6, height=4)
+lapply(colnames(metadata_clean)[-(1:3)], function(trait) {
+  bp <- biplot(p,
+               x="PC3",y="PC4",
+               lab = p$metadata$short_id,
+               colby = trait,
+               hline = 0, vline = 0,
+               pointSize=2,
+               legendPosition = 'right',
+               legendTitleSize = 8,
+               legendLabSize = 6,
+               legendIconSize = 2) + ggtitle(trait)
+  bp
+})
+dev.off()
+```
+
+
+
+
+
+## biplots unlabeled
+
+### PC1 vs PC2
+```{r}
+
+pdf(paste0(out_folder,"pca_PC1vsPC2.pdf"), width=6, height=4)
+lapply(colnames(metadata_clean)[-(1:3)], function(trait) {
+  bp <- biplot(p,
+               x="PC1",y="PC2",
+               lab = NULL,
+               colby = trait,
+               hline = 0, vline = 0,
+               pointSize=2,
+               legendPosition = 'right',
+               legendTitleSize = 8,
+               legendLabSize = 6,
+               legendIconSize = 2) + ggtitle(trait)
+  bp
+})
+dev.off()
+```
+
+
+### PC3 vs PC4
+```{r}
+pdf(paste0(out_folder,"pca_PC3vsPC4.pdf"), width=6, height=4)
+lapply(colnames(metadata_clean)[-(1:3)], function(trait) {
+  bp <- biplot(p,
+               x="PC3",y="PC4",
+               lab = NULL,
+               colby = trait,
+               hline = 0, vline = 0,
+               pointSize=2,
+               legendPosition = 'right',
+               legendTitleSize = 8,
+               legendLabSize = 6,
+               legendIconSize = 2) +
+    ggtitle(trait)
+  bp
+})
+dev.off()
+```
+
+
+
+
+
+## pca hclust
+```{r}
+# Retrieve PCA scores
+scores <- p$rotated
+rownames(scores) <- p$metadata$short_id
+# Prepare colors for side bar annotation
+ggplot_colors2 <- hue_pal()(2)
+ggplot_colors <- hue_pal()(10)
+rb_colors <- rainbow(4)
+col.anno <- HeatmapAnnotation(stage = p$metadata$simple_stage,
+                              adjuvant_treatment=p$metadata$adjuvant_treatment,
+                              histology = p$metadata$simple_histology,
+                              gender = p$metadata$gender,
+                              smoking_status = p$metadata$smoking_status,
+                              lib.kit = p$metadata$lib.kit,
+                              col = list(stage=c("I"="yellow",
+                                                 "II"="orange",
+                                                 "III"="red",
+                                                 "IV"="brown"),
+                                         adjuvant_treatment=c("No"=ggplot_colors2[1], "Yes"=ggplot_colors2[2]),
+                                         histology=c("Adenocarcinoma"=ggplot_colors[2],
+                                                     "Squamous cell carcinoma"=ggplot_colors[8],
+                                                     "Adenosquamous carcinoma"=ggplot_colors[3],
+                                                     "LCNEC" = ggplot_colors[5],
+                                                     "Other"=ggplot_colors[4],
+                                                     "unknown" = "gray"),
+                                         gender = c("Female" = "pink", "Male"="cyan"),
+                                         smoking_status = c("Non-smoker"="yellow", "Ex-smoker"="orange", "Current smoker"="red"),
+                                         lib.kit = c("kapa"=ggplot_colors2[1], "takara"=ggplot_colors2[2])))
+```
+
+
+## pca hclust using top 10 PCs
+```{r}
+pdf(paste0(out_folder,"pca_hclust_top10PCs_avgClust.pdf"), width=15, height=7)
+sel_scores <- as.matrix(scores[,1:10])
+Heatmap(t((sel_scores)),
+        name = "PCA score",
+        row_title = "PCs", row_title_side = "left",
+        column_title = "Hierarchical clustering of samples based on top 10 PCs",
+        column_title_gp = gpar(fontsize = 11),
+        top_annotation = col.anno,
+        cluster_rows = FALSE,
+        clustering_method_columns = "average",
+        show_row_names = T,
+        row_names_gp = gpar(fontsize = 8),
+        column_names_gp = gpar(fontsize = 5))
+dev.off()
+
+pdf(paste0(out_folder,"pca_hclust_top8PCs_complClust.pdf"), width=15, height=7)
+sel_scores <- as.matrix(scores[,1:10])
+Heatmap(t((sel_scores)),
+        name = "PCA score",
+        row_title = "PCs", row_title_side = "left",
+        column_title = "Hierarchical clustering of samples based on top 10 PCs",
+        column_title_gp = gpar(fontsize = 11),
+        top_annotation = col.anno,
+        cluster_rows = FALSE,
+        clustering_method_columns = "complete",
+        show_row_names = T,
+        row_names_gp = gpar(fontsize = 8),
+        column_names_gp = gpar(fontsize = 5))
+dev.off()
+
+```
+
+
+## pca hclust using PCs that explains 90% variance (sum(p$variance[1:74]))
+```{r}
+pdf(paste0(out_folder,"pca_hclust_PCs90percVar_avglClust.pdf"), width=15, height=9)
+sel_scores <- as.matrix(scores[,1:74])
+Heatmap(t((sel_scores)),
+        name = "PCA score",
+        row_title = "PCs", row_title_side = "left",
+        column_title = "Hierarchical clustering of samples based on PCs that explain 90% variance",
+        column_title_gp = gpar(fontsize = 11),
+        top_annotation = col.anno,
+        cluster_rows = FALSE,
+        clustering_method_columns = "average",
+        show_row_names = T,
+        row_names_gp = gpar(fontsize = 7),
+        column_names_gp = gpar(fontsize = 5))
+dev.off()
+
+pdf(paste0(out_folder,"pca_hclust_PCs90percVar_complClust.pdf"), width=15, height=9)
+sel_scores <- as.matrix(scores[,1:74])
+Heatmap(t((sel_scores)),
+        name = "PCA score",
+        row_title = "PCs", row_title_side = "left",
+        column_title = "Hierarchical clustering of samples based on PCs that explain 90% variance",
+        column_title_gp = gpar(fontsize = 11),
+        top_annotation = col.anno,
+        cluster_rows = FALSE,
+        clustering_method_columns = "complete",
+        show_row_names = T,
+        row_names_gp = gpar(fontsize = 7),
+        column_names_gp = gpar(fontsize = 5))
+dev.off()
+```
+
+
+## Run F.test
+table of stat (ANOVA/t.test)
+```{r}
+sel_traits <- c("simple_stage", "side_localization", "primary_localization",
+                "age_at_diagnosis", "gender", "smoking_status",
+                "neo_adjuvant_treatment",  "adjuvant_treatment", "metastatic_treatment", "simple_histology",
+                "lib.kit")
+allTraits_allPCs <- lapply(sel_traits, function(trait) {
+  allPCs <- lapply(colnames(p$rotated)[1:6], function(pc) {
+    res.aov <- summary(aov(p$rotated[,pc] ~ p$metadata[,trait]))[[1]][["Pr(>F)"]][1]
+    return(res.aov)
+  })
+  names(allPCs) <- colnames(p$rotated)[1:6]
+  return(allPCs)
+})
+names(allTraits_allPCs) <- sel_traits
+aov_traits_PCs <- do.call(rbind.data.frame, allTraits_allPCs)
+
+pdf(paste0(out_folder,"Ftest_PC_traits.pdf"), width=7, height=5)
+cellnotes <- ifelse(aov_traits_PCs<0.001, "***",
+                    ifelse(aov_traits_PCs<0.01, "**",
+                           ifelse(aov_traits_PCs<0.05, "*", "")))
+myCol <- brewer.pal(n=9, name = "Reds")
+heatmap.2(as.matrix(-log10(aov_traits_PCs)),
+          cellnote = cellnotes,
+          notecol="gray1",
+          notecex=1.5,
+          margin=c(5,15), 
+          density.info="none", trace="none",
+          Colv = FALSE, Rowv = TRUE, dendrogram="row",
+          key=T, key.xlab="-log10 pvalue (F-test)",
+          col=myCol,
+          sepcolor="white", colsep=c(1:ncol(aov_traits_PCs)),
+          rowsep=c(1:nrow(aov_traits_PCs)), sepwidth=c(0.01,0.01))
+dev.off()    
+```
+
+    
+# 3. PCA using logCPM (TMM-normalisation)
+
+```{r}
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/plots/QC/PCA_normcounts/"
+if (!dir.exists(out_folder)) {
+  dir.create(path = out_folder)
+}
+```
+
+## Read in raw filtered counts and metadata
+```{r}
+normcounts <- read.delim(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/log2normcounts.txt"), check.names = FALSE)
+metadata <- read.delim(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/metadata.txt"), stringsAsFactors = T)
+stopifnot(rownames(metadata)==colnames(normcounts))
+```
+
+
+
+# clean metadata and run PCA
+```{r}
+metadata_clean <- data.frame(metadata[,c("sample_id", "short_id", "immucan_id",
+                                         "lib.kit", 
+                                         "gender", "simple_histology", "simple_stage",
+                                         "metastatic_treatment","neo_adjuvant_treatment", "adjuvant_treatment",
+                                         "age_at_diagnosis",
+                                         "side_localization", "primary_localization", "smoking_status", "environmental_exposure")])
+metadata_clean$date_of_extraction_num <- as.numeric(metadata$date_of_extraction)
+
+uq_values <- apply(normcounts,1,function(x) length(unique(x)))==1
+p <- pca(normcounts[!uq_values,], metadata=metadata_clean, scale = TRUE, transposed = FALSE)
+pca_df <- p$rotated
+```
+
+## screeplot
+```{r}
+elbow <- findElbowPoint(p$variance)
+pdf(paste0(out_folder,"pca_screeplot.pdf"))
+screeplot(p, axisLabSize = 18, titleLabSize = 22, components=getComponents(p)[1:15], vline = elbow)+
+  geom_label(aes(x = elbow - 1, y = 50,
+                 label = 'Elbow point', vjust = -1, size = 8))
+dev.off()
+```
+
+
+
+## pairsplot
+```{r, message=FALSE}
+clin_var <- colnames(metadata_clean)[grepl("simple|lib.kit|age|smoking|adjuvant_treatment", colnames(metadata_clean))]
+pdf(paste0(out_folder,"pca_pairsplot.pdf"), width=6, height=6)
+lapply(clin_var, function(trait) {
+  pp <- pairsplot(p,
+                  components = getComponents(p, c(1:10)),
+                  triangle = TRUE, trianglelabSize = 12,
+                  hline = 0, vline = 0,
+                  pointSize = 0.4,
+                  gridlines.major = FALSE, gridlines.minor = FALSE,
+                  colby = trait,
+                  title = trait,
+                  plotaxes = FALSE,
+                  margingaps = unit(c(-0.01, -0.01, -0.01, -0.01), 'cm'))
+  pp
+})
+dev.off()
+pdf(paste0(out_folder,"pca_pairsplot_PC1toPC4.pdf"), width=8, height=8)
+lapply(clin_var, function(trait) {
+  pp <- pairsplot(p,
+                  components = getComponents(p, c(1:4)),
+                  triangle = TRUE, trianglelabSize = 12,
+                  hline = 0, vline = 0,
+                  pointSize = 1,
+                  gridlines.major = FALSE, gridlines.minor = FALSE,
+                  colby = trait,
+                  title = trait,
+                  plotaxes = FALSE,legendPosition = "none",
+                  margingaps = unit(c(-0.01, -0.01, -0.01, -0.01), 'cm'))
+  pp
+})
+dev.off()
+```
+
+
+
+
+## biplots 
+
+### PC1 vs PC2
+```{r}
+pdf(paste0(out_folder,"pca_PC1vsPC2_labeled.pdf"), width=6, height=4)
+lapply(colnames(metadata_clean)[-(1:3)], function(trait) {
+  bp <- biplot(p,
+               x="PC1",y="PC2",
+               lab = p$metadata$short_id,
+               colby = trait,
+               hline = 0, vline = 0,
+               pointSize=2,
+               legendPosition = 'right',
+               legendTitleSize = 8,
+               legendLabSize = 6,
+               legendIconSize = 2) + ggtitle(trait)
+  bp
+})
+dev.off()
+```
+
+
+
+### PC3 vs PC4
+```{r}
+pdf(paste0(out_folder,"pca_PC3vsPC4_labeled.pdf"), width=6, height=4)
+lapply(colnames(metadata_clean)[-(1:3)], function(trait) {
+  bp <- biplot(p,
+               x="PC3",y="PC4",
+               lab = p$metadata$short_id,
+               colby = trait,
+               hline = 0, vline = 0,
+               pointSize=2,
+               legendPosition = 'right',
+               legendTitleSize = 8,
+               legendLabSize = 6,
+               legendIconSize = 2) + ggtitle(trait)
+  bp
+})
+dev.off()
+```
+
+
+## biplots unlabeled
+
+### PC1 vs PC2
+```{r}
+
+pdf(paste0(out_folder,"pca_PC1vsPC2.pdf"), width=6, height=4)
+lapply(colnames(metadata_clean)[-(1:3)], function(trait) {
+  bp <- biplot(p,
+               x="PC1",y="PC2",
+               lab = NULL,
+               colby = trait,
+               hline = 0, vline = 0,
+               pointSize=2,
+               legendPosition = 'right',
+               legendTitleSize = 8,
+               legendLabSize = 6,
+               legendIconSize = 2) + ggtitle(trait)
+  bp
+})
+dev.off()
+```
+
+
+### PC3 vs PC4
+```{r}
+pdf(paste0(out_folder,"pca_PC3vsPC4.pdf"), width=6, height=4)
+lapply(colnames(metadata_clean)[-(1:3)], function(trait) {
+  bp <- biplot(p,
+               x="PC3",y="PC4",
+               lab = NULL,
+               colby = trait,
+               hline = 0, vline = 0,
+               pointSize=2,
+               legendPosition = 'right',
+               legendTitleSize = 8,
+               legendLabSize = 6,
+               legendIconSize = 2) +
+    ggtitle(trait)
+  bp
+})
+dev.off()
+```
+
+## pca hclust
+```{r}
+# Retrieve PCA scores
+scores <- p$rotated
+rownames(scores) <- p$metadata$short_id
+# Prepare colors for side bar annotation
+ggplot_colors2 <- hue_pal()(2)
+ggplot_colors <- hue_pal()(10)
+rb_colors <- rainbow(4)
+col.anno <- HeatmapAnnotation(stage = p$metadata$simple_stage,
+                              adjuvant_treatment=p$metadata$adjuvant_treatment,
+                              histology = p$metadata$simple_histology,
+                              gender = p$metadata$gender,
+                              smoking_status = p$metadata$smoking_status,
+                              lib.kit = p$metadata$lib.kit,
+                              col = list(stage=c("I"="yellow",
+                                                 "II"="orange",
+                                                 "III"="red",
+                                                 "IV"="brown"),
+                                         adjuvant_treatment=c("No"=ggplot_colors2[1], "Yes"=ggplot_colors2[2]),
+                                         histology=c("Adenocarcinoma"=ggplot_colors[2],
+                                                     "Squamous cell carcinoma"=ggplot_colors[8],
+                                                     "Adenosquamous carcinoma"=ggplot_colors[3],
+                                                     "LCNEC" = ggplot_colors[5],
+                                                     "Other"=ggplot_colors[4],
+                                                     "unknown" = "gray"),
+                                         gender = c("Female" = "pink", "Male"="cyan"),
+                                         smoking_status = c("Non-smoker"="yellow", "Ex-smoker"="orange", "Current smoker"="red"),
+                                         lib.kit = c("kapa"=ggplot_colors2[1], "takara"=ggplot_colors2[2])))
+```
+
+## pca hclust using top 10 PCs
+```{r}
+pdf(paste0(out_folder,"pca_hclust_top10PCs_avgClust.pdf"), width=15, height=7)
+sel_scores <- as.matrix(scores[,1:10])
+Heatmap(t((sel_scores)),
+        name = "PCA score",
+        row_title = "PCs", row_title_side = "left",
+        column_title = "Hierarchical clustering of samples based on top 10 PCs",
+        column_title_gp = gpar(fontsize = 11),
+        top_annotation = col.anno,
+        cluster_rows = FALSE,
+        clustering_method_columns = "average",
+        show_row_names = T,
+        row_names_gp = gpar(fontsize = 8),
+        column_names_gp = gpar(fontsize = 5))
+dev.off()
+
+pdf(paste0(out_folder,"pca_hclust_top8PCs_complClust.pdf"), width=15, height=7)
+sel_scores <- as.matrix(scores[,1:10])
+Heatmap(t((sel_scores)),
+        name = "PCA score",
+        row_title = "PCs", row_title_side = "left",
+        column_title = "Hierarchical clustering of samples based on top 10 PCs",
+        column_title_gp = gpar(fontsize = 11),
+        top_annotation = col.anno,
+        cluster_rows = FALSE,
+        clustering_method_columns = "complete",
+        show_row_names = T,
+        row_names_gp = gpar(fontsize = 8),
+        column_names_gp = gpar(fontsize = 5))
+dev.off()
+
+```
+
+## pca hclust using PCs that explains 90% variance (sum(p$variance[1:74]))
+```{r}
+pdf(paste0(out_folder,"pca_hclust_PCs90percVar_avglClust.pdf"), width=15, height=9)
+sel_scores <- as.matrix(scores[,1:74])
+Heatmap(t((sel_scores)),
+        name = "PCA score",
+        row_title = "PCs", row_title_side = "left",
+        column_title = "Hierarchical clustering of samples based on PCs that explain 90% variance",
+        column_title_gp = gpar(fontsize = 11),
+        top_annotation = col.anno,
+        cluster_rows = FALSE,
+        clustering_method_columns = "average",
+        show_row_names = T,
+        row_names_gp = gpar(fontsize = 7),
+        column_names_gp = gpar(fontsize = 5))
+dev.off()
+
+pdf(paste0(out_folder,"pca_hclust_PCs90percVar_complClust.pdf"), width=15, height=9)
+sel_scores <- as.matrix(scores[,1:74])
+Heatmap(t((sel_scores)),
+        name = "PCA score",
+        row_title = "PCs", row_title_side = "left",
+        column_title = "Hierarchical clustering of samples based on PCs that explain 90% variance",
+        column_title_gp = gpar(fontsize = 11),
+        top_annotation = col.anno,
+        cluster_rows = FALSE,
+        clustering_method_columns = "complete",
+        show_row_names = T,
+        row_names_gp = gpar(fontsize = 7),
+        column_names_gp = gpar(fontsize = 5))
+dev.off()
+```
+
+## Run F.test
+table of stat (ANOVA/t.test)
+```{r}
+sel_traits <- c("simple_stage", "side_localization", "primary_localization",
+                "age_at_diagnosis", "gender", "smoking_status",
+                "neo_adjuvant_treatment",  "adjuvant_treatment", "metastatic_treatment", "simple_histology",
+                "lib.kit")
+allTraits_allPCs <- lapply(sel_traits, function(trait) {
+  allPCs <- lapply(colnames(p$rotated)[1:6], function(pc) {
+    res.aov <- summary(aov(p$rotated[,pc] ~ p$metadata[,trait]))[[1]][["Pr(>F)"]][1]
+    return(res.aov)
+  })
+  names(allPCs) <- colnames(p$rotated)[1:6]
+  return(allPCs)
+})
+names(allTraits_allPCs) <- sel_traits
+aov_traits_PCs <- do.call(rbind.data.frame, allTraits_allPCs)
+
+pdf(paste0(out_folder,"Ftest_PC_traits.pdf"), width=7, height=5)
+cellnotes <- ifelse(aov_traits_PCs<0.001, "***",
+                    ifelse(aov_traits_PCs<0.01, "**",
+                           ifelse(aov_traits_PCs<0.05, "*", "")))
+myCol <- brewer.pal(n=9, name = "Reds")
+heatmap.2(as.matrix(-log10(aov_traits_PCs)),
+          cellnote = cellnotes,
+          notecol="gray1",
+          notecex=1.5,
+          margin=c(5,15), 
+          density.info="none", trace="none",
+          Colv = FALSE, Rowv = TRUE, dendrogram="row",
+          key=T, key.xlab="-log10 pvalue (F-test)",
+          col=myCol,
+          sepcolor="white", colsep=c(1:ncol(aov_traits_PCs)),
+          rowsep=c(1:nrow(aov_traits_PCs)), sepwidth=c(0.01,0.01))
+dev.off()    
+```
+
+
+
+# 4. PCA ( scale=F)
+
+```{r}
+out_folder <- "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/RNAseq/Rout/plots/QC/PCA_unscaled/"
+if (!dir.exists(out_folder)) {
+  dir.create(path = out_folder)
+}
+
+```
+
+
+## Read in vst-counts and metadata
+```{r}
+vst_counts <- read.delim(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/vstcounts.txt"), check.names = F)
+metadata <- read.delim(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/metadata.txt"), stringsAsFactors = T)
+stopifnot(rownames(metadata)==colnames(vst_counts))
+```
+
+
+
+
+# clean metadata and run PCA
+```{r}
+metadata_clean <- data.frame(metadata[,c("sample_id", "short_id", "immucan_id",
+                                         "lib.kit", 
+                                         "gender", "simple_histology", "simple_stage",
+                                         "metastatic_treatment","neo_adjuvant_treatment", "adjuvant_treatment",
+                                         "age_at_diagnosis",
+                                         "side_localization", "primary_localization", "smoking_status", "environmental_exposure")])
+metadata_clean$date_of_extraction_num <- as.numeric(metadata$date_of_extraction)
+
+
+# run PCA
+uq_values <- apply(vst_counts,1,function(x) length(unique(x)))==1
+p <- pca(vst_counts[!uq_values,], metadata=metadata_clean, scale = FALSE, transposed = FALSE)
+pca_df <- p$rotated
+```
+
+
+
+## screeplot
+```{r}
+elbow <- findElbowPoint(p$variance)
+pdf(paste0(out_folder,"pca_screeplot.pdf"))
+screeplot(p, axisLabSize = 18, titleLabSize = 22, components=getComponents(p)[1:15], vline = elbow)+
+  geom_label(aes(x = elbow - 1, y = 50,
+                 label = 'Elbow point', vjust = -1, size = 8))
+dev.off()
+```
+
+
+
+## pairsplot
+```{r, message=FALSE}
+pdf(paste0(out_folder,"pca_pairsplot.pdf"), width=6, height=6)
+lapply(clin_var, function(trait) {
+  pp <- pairsplot(p,
+                  components = getComponents(p, c(1:10)),
+                  triangle = TRUE, trianglelabSize = 12,
+                  hline = 0, vline = 0,
+                  pointSize = 0.4,
+                  gridlines.major = FALSE, gridlines.minor = FALSE,
+                  colby = trait,
+                  title = trait,
+                  plotaxes = FALSE,
+                  margingaps = unit(c(-0.01, -0.01, -0.01, -0.01), 'cm'))
+  pp
+})
+dev.off()
+pdf(paste0(out_folder,"pca_pairsplot_PC1toPC4.pdf"), width=8, height=8)
+lapply(colnames(metadata_clean)[-(1:3)], function(trait) {
+  pp <- pairsplot(p,
+                  components = getComponents(p, c(1:4)),
+                  triangle = TRUE, trianglelabSize = 12,
+                  hline = 0, vline = 0,
+                  pointSize = 1,
+                  gridlines.major = FALSE, gridlines.minor = FALSE,
+                  colby = trait,
+                  title = trait,
+                  plotaxes = FALSE,legendPosition = "none",
+                  margingaps = unit(c(-0.01, -0.01, -0.01, -0.01), 'cm'))
+  pp
+})
+dev.off()
+```
+
+
+
+
+## biplots 
+
+### PC1 vs PC2
+```{r}
+pdf(paste0(out_folder,"pca_PC1vsPC2_labeled.pdf"), width=6, height=4)
+lapply(colnames(metadata_clean)[-(1:3)], function(trait) {
+  bp <- biplot(p,
+               x="PC1",y="PC2",
+               lab = p$metadata$short_id,
+               colby = trait,
+               hline = 0, vline = 0,
+               pointSize=2,
+               legendPosition = 'right',
+               legendTitleSize = 8,
+               legendLabSize = 6,
+               legendIconSize = 2) + ggtitle(trait)
+  bp
+})
+dev.off()
+```
+
+
+
+### PC3 vs PC4
+```{r}
+pdf(paste0(out_folder,"pca_PC3vsPC4_labeled.pdf"), width=6, height=4)
+lapply(colnames(metadata_clean)[-(1:3)], function(trait) {
+  bp <- biplot(p,
+               x="PC3",y="PC4",
+               lab = p$metadata$short_id,
+               colby = trait,
+               hline = 0, vline = 0,
+               pointSize=2,
+               legendPosition = 'right',
+               legendTitleSize = 8,
+               legendLabSize = 6,
+               legendIconSize = 2) + ggtitle(trait)
+  bp
+})
+dev.off()
+```
+
+
+
+
+
+## biplots unlabeled
+
+### PC1 vs PC2
+```{r}
+
+pdf(paste0(out_folder,"pca_PC1vsPC2.pdf"), width=6, height=4)
+lapply(colnames(metadata_clean)[-(1:3)], function(trait) {
+  bp <- biplot(p,
+               x="PC1",y="PC2",
+               lab = NULL,
+               colby = trait,
+               hline = 0, vline = 0,
+               pointSize=2,
+               legendPosition = 'right',
+               legendTitleSize = 8,
+               legendLabSize = 6,
+               legendIconSize = 2) + ggtitle(trait)
+  bp
+})
+dev.off()
+```
+
+
+### PC3 vs PC4
+```{r}
+pdf(paste0(out_folder,"pca_PC3vsPC4.pdf"), width=6, height=4)
+lapply(colnames(metadata_clean)[-(1:3)], function(trait) {
+  bp <- biplot(p,
+               x="PC3",y="PC4",
+               lab = NULL,
+               colby = trait,
+               hline = 0, vline = 0,
+               pointSize=2,
+               legendPosition = 'right',
+               legendTitleSize = 8,
+               legendLabSize = 6,
+               legendIconSize = 2) +
+    ggtitle(trait)
+  bp
+})
+dev.off()
+```
+
+
+
+
+
+## pca hclust
+```{r}
+# Retrieve PCA scores
+scores <- p$rotated
+rownames(scores) <- p$metadata$short_id
+# Prepare colors for side bar annotation
+ggplot_colors2 <- hue_pal()(2)
+ggplot_colors <- hue_pal()(10)
+rb_colors <- rainbow(4)
+col.anno <- HeatmapAnnotation(stage = p$metadata$simple_stage,
+                              adjuvant_treatment=p$metadata$adjuvant_treatment,
+                              histology = p$metadata$simple_histology,
+                              gender = p$metadata$gender,
+                              smoking_status = p$metadata$smoking_status,
+                              lib.kit = p$metadata$lib.kit,
+                              col = list(stage=c("I"="yellow",
+                                                 "II"="orange",
+                                                 "III"="red",
+                                                 "IV"="brown"),
+                                         adjuvant_treatment=c("No"=ggplot_colors2[1], "Yes"=ggplot_colors2[2]),
+                                         histology=c("Adenocarcinoma"=ggplot_colors[2],
+                                                     "Squamous cell carcinoma"=ggplot_colors[8],
+                                                     "Adenosquamous carcinoma"=ggplot_colors[3],
+                                                     "LCNEC" = ggplot_colors[5],
+                                                     "Other"=ggplot_colors[4],
+                                                     "unknown" = "gray"),
+                                         gender = c("Female" = "pink", "Male"="cyan"),
+                                         smoking_status = c("Non-smoker"="yellow", "Ex-smoker"="orange", "Current smoker"="red"),
+                                         lib.kit = c("kapa"=ggplot_colors2[1], "takara"=ggplot_colors2[2])))
+```
+
+
+## pca hclust using top 10 PCs
+```{r}
+pdf(paste0(out_folder,"pca_hclust_top10PCs_avgClust.pdf"), width=15, height=7)
+sel_scores <- as.matrix(scores[,1:10])
+Heatmap(t((sel_scores)),
+        name = "PCA score",
+        row_title = "PCs", row_title_side = "left",
+        column_title = "Hierarchical clustering of samples based on top 10 PCs",
+        column_title_gp = gpar(fontsize = 11),
+        top_annotation = col.anno,
+        cluster_rows = FALSE,
+        clustering_method_columns = "average",
+        show_row_names = T,
+        row_names_gp = gpar(fontsize = 8),
+        column_names_gp = gpar(fontsize = 5))
+dev.off()
+
+pdf(paste0(out_folder,"pca_hclust_top8PCs_complClust.pdf"), width=15, height=7)
+sel_scores <- as.matrix(scores[,1:10])
+Heatmap(t((sel_scores)),
+        name = "PCA score",
+        row_title = "PCs", row_title_side = "left",
+        column_title = "Hierarchical clustering of samples based on top 10 PCs",
+        column_title_gp = gpar(fontsize = 11),
+        top_annotation = col.anno,
+        cluster_rows = FALSE,
+        clustering_method_columns = "complete",
+        show_row_names = T,
+        row_names_gp = gpar(fontsize = 8),
+        column_names_gp = gpar(fontsize = 5))
+dev.off()
+
+```
+
+
+## pca hclust using PCs that explains 90% variance (sum(p$variance[1:74]))
+```{r}
+pdf(paste0(out_folder,"pca_hclust_PCs90percVar_avglClust.pdf"), width=15, height=9)
+sel_scores <- as.matrix(scores[,1:74])
+Heatmap(t((sel_scores)),
+        name = "PCA score",
+        row_title = "PCs", row_title_side = "left",
+        column_title = "Hierarchical clustering of samples based on PCs that explain 90% variance",
+        column_title_gp = gpar(fontsize = 11),
+        top_annotation = col.anno,
+        cluster_rows = FALSE,
+        clustering_method_columns = "average",
+        show_row_names = T,
+        row_names_gp = gpar(fontsize = 7),
+        column_names_gp = gpar(fontsize = 5))
+dev.off()
+
+pdf(paste0(out_folder,"pca_hclust_PCs90percVar_complClust.pdf"), width=15, height=9)
+sel_scores <- as.matrix(scores[,1:74])
+Heatmap(t((sel_scores)),
+        name = "PCA score",
+        row_title = "PCs", row_title_side = "left",
+        column_title = "Hierarchical clustering of samples based on PCs that explain 90% variance",
+        column_title_gp = gpar(fontsize = 11),
+        top_annotation = col.anno,
+        cluster_rows = FALSE,
+        clustering_method_columns = "complete",
+        show_row_names = T,
+        row_names_gp = gpar(fontsize = 7),
+        column_names_gp = gpar(fontsize = 5))
+dev.off()
+```
+
+
+## Run F.test
+table of stat (ANOVA/t.test)
+```{r}
+sel_traits <- c("simple_stage", "side_localization", "primary_localization",
+                "age_at_diagnosis", "gender", "smoking_status",
+                "neo_adjuvant_treatment",  "adjuvant_treatment", "metastatic_treatment", "simple_histology",
+                "lib.kit")
+allTraits_allPCs <- lapply(sel_traits, function(trait) {
+  allPCs <- lapply(colnames(p$rotated)[1:6], function(pc) {
+    res.aov <- summary(aov(p$rotated[,pc] ~ p$metadata[,trait]))[[1]][["Pr(>F)"]][1]
+    return(res.aov)
+  })
+  names(allPCs) <- colnames(p$rotated)[1:6]
+  return(allPCs)
+})
+names(allTraits_allPCs) <- sel_traits
+aov_traits_PCs <- do.call(rbind.data.frame, allTraits_allPCs)
+
+pdf(paste0(out_folder,"Ftest_PC_traits.pdf"), width=7, height=5)
+cellnotes <- ifelse(aov_traits_PCs<0.001, "***",
+                    ifelse(aov_traits_PCs<0.01, "**",
+                           ifelse(aov_traits_PCs<0.05, "*", "")))
+myCol <- brewer.pal(n=9, name = "Reds")
+heatmap.2(as.matrix(-log10(aov_traits_PCs)),
+          cellnote = cellnotes,
+          notecol="gray1",
+          notecex=1.5,
+          margin=c(5,15), 
+          density.info="none", trace="none",
+          Colv = FALSE, Rowv = TRUE, dendrogram="row",
+          key=T, key.xlab="-log10 pvalue (F-test)",
+          col=myCol,
+          sepcolor="white", colsep=c(1:ncol(aov_traits_PCs)),
+          rowsep=c(1:nrow(aov_traits_PCs)), sepwidth=c(0.01,0.01))
+dev.off()    
+```
+

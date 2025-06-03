@@ -1,0 +1,79 @@
+---
+title: "Lung_NSCLC2_RNAseq"
+author: "Flavia Marzetta"
+date: "12/09/2023"
+output: html
+---
+
+Analysis description:
+Here we retrieve pathway annotations from the main repositories
+this script has to be run locally
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+# Libraries
+```{r}
+library(dplyr)
+library(msigdbr)
+library(clusterProfiler)
+```
+
+```{r}
+mnt_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/"
+```
+
+
+# Query latest GO annotations from MsigDB
+```{r}
+# The MSigDB version is used as the base of the package version.
+# You can check the installed version with packageVersion("msigdbr")
+packageVersion("msigdbr") #7.5.1 (jan 2022)
+msigdbr_species()
+```
+
+# retrieve the msigdbr data frame in tidy data format that can be used directly with clusterProfiler.
+```{r}
+# retrieve all human gene sets ( "C3" "C2" "C6" "C4" "C1" "C5" "C7" "H")
+# m_df <- msigdbr(species = "Homo sapiens")
+
+if(!file.exists(paste0(mnt_path,"RNAseq/annotations/msigdbr"))) dir.create(paste0(mnt_path,"RNAseq/annotations/msigdbr"), recursive = T)
+```
+
+# retrieve specific collections
+
+## Ontology genesets (C5)
+```{r}
+GO_BP_df <- msigdbr(species = "Homo sapiens",
+                    category="C5",
+                    subcategory = "BP") %>%
+  dplyr::select(gs_name, gene_symbol, gs_exact_source)
+
+termID=GO_BP_df$gs_exact_source
+geneSYMBOL=GO_BP_df$gene_symbol
+termNAME=GO_BP_df$gs_name
+write.table(data.frame(termID,geneSYMBOL), file=paste0(mnt_path,"RNAseq/annotations/msigdbr/msigdbr_GO_BP_TERM2GENE.txt"), sep="\t")
+write.table(data.frame(termID,termNAME), file=paste0(mnt_path,"RNAseq/annotations/msigdbr/msigdbr_GO_BP_TERM2NAME.txt"), sep="\t")
+```
+
+
+
+
+# Curated genesets (C5)
+Reactome
+```{r}
+# Reactome
+reactome_df <- msigdbr(species = "Homo sapiens",
+                       category="C2",
+                       subcategory = "CP:REACTOME") %>% dplyr::select(gs_name, gene_symbol, gs_exact_source)
+termID=reactome_df$gs_exact_source
+geneSYMBOL=reactome_df$gene_symbol
+termNAME=reactome_df$gs_name
+write.table(data.frame(termID,geneSYMBOL), file=paste0(mnt_path,"RNAseq/annotations/msigdbr/msigdbr_reactome_TERM2GENE.txt"), sep="\t")
+write.table(data.frame(termID,termNAME), file=paste0(mnt_path,"RNAseq/annotations/msigdbr/msigdbr_reactome_TERM2NAME.txt"), sep="\t")
+```
+
+
+

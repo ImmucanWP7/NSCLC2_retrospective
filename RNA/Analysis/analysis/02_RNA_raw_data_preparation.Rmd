@@ -1,0 +1,281 @@
+---
+title: "Lung_NSCLC2_RNAseq"
+author: "Flavia Marzetta"
+date: "12/09/2023"
+output: html
+---
+
+Analysis description:
+ Here we want to explore the lung NSCLC2 RNAseq dataset (data were found in the custom cohort "Lung_2022" directory)
+ Old Specta Lung (retrospective cohort, a.k.a. NSCLC2)
+ the most updated clinical table was prepared by Daniel on 25.08.2023
+
+1) Prepare gene counts (retrieve HTSeq count files of selected RNA-seq samples using the clinical data table provided by Daniel)
+2) Prepare metadata
+3) Filtering expressed genes
+4) Library normalisation
+5) (as alternative to 4) lib.kit batch correction and lib.size normalisation
+
+
+NOTE: this script was taken from Flavia Marzetta and modified to work with our directories
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Libraries
+```{r}
+library(edgeR)
+library(limma)
+library(sva)
+library(ggplot2)
+```
+
+```{r}
+mnt_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/"
+```
+
+# Directories
+```{r}
+if (!file.exists(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq"))) dir.create(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq"), recursive=T)
+```
+
+
+
+# 1. Prepare gene counts
+
+The HTSeq count files were selected using the clinical data table provided by Daniel
+
+## Select clinical data
+```{r}
+clinical_data <- read.delim("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv", sep=",") #192  31
+stopifnot(sum(duplicated(clinical_data$immucan_id))==0)
+```
+
+
+
+## Select NSCLC2 samples with available counts
+```{r}
+path_to_files_all <- dir(paste0(mnt_path,"RNAseq/STAR_counts/"), pattern = "counts.txt")
+path_to_files <- path_to_files_all[grepl("^LUNG-.*", path_to_files_all)] #125
+sampleID <- sapply(path_to_files, function(x) paste(strsplit(x, split = "-|_")[[1]][1:7], collapse="-"))
+patientID <- sapply(path_to_files, function(x) paste(strsplit(x, split = "-")[[1]][1:3], collapse="-"))
+sel.patient.idx <- patientID %in% clinical_data$immucan_id #125
+path_to_files_sel <- path_to_files[sel.patient.idx]
+```
+
+
+## Read count tables
+```{r}
+htseq_files <- lapply(path_to_files_sel, function(x) {
+  sample_counts <- read.table(paste0(mnt_path,"RNAseq/STAR_counts/", x), sep="\t")
+  sample_name <- paste(strsplit(x, split = "-|_")[[1]][1:7], collapse="-")
+  colnames(sample_counts) <- c("ensemblid", sample_name)
+  sample_counts })
+```
+
+
+
+## Verify the table size (it has to be the same for all samples)
+```{r}
+unique(unlist(lapply(htseq_files,dim)))
+```
+58681     2
+
+## Merge count tables and remove htseq summary rows
+```{r}
+rawData_wHeader <- Reduce(function(x,y) merge(x,y,by="ensemblid",all=TRUE, sort=F), htseq_files)
+rownames(rawData_wHeader) <- rawData_wHeader$ensemblid
+rawcounts_woHeader <- rawData_wHeader[-grep("__", rownames(rawData_wHeader)), -1]
+```
+
+58676   125
+
+# 2. Prepare metadata
+
+## Prepare clinical info
+```{r}
+sampleID.sel <- sampleID[sel.patient.idx]
+patientID.sel <- patientID[sel.patient.idx]
+ID.sel <- data.frame(immucan_id=patientID.sel, sample_id=sampleID.sel, fileID=names(sampleID.sel), row.names = NULL)
+clinical_data_sel <- merge(ID.sel, clinical_data, by="immucan_id", sort=F)
+clinical_data_sel <- clinical_data_sel[,c(1:2,4:ncol(clinical_data_sel), 3)]
+rownames(clinical_data_sel) <- clinical_data_sel$sample_id
+```
+
+
+## Remove any duplicated patient from rawcounts and clinical data table
+```{r}
+clinical_data_sel$immucan_patient_id[duplicated(clinical_data_sel$immucan_patient_id)] #none
+```
+
+## remove metastatic sample (we want to keep only primary tumors)
+
+```{r}
+sample_to_exclude = "LUNG-NSCLC2-0677"
+clinical_data_clean <- clinical_data_sel[!grepl(sample_to_exclude, clinical_data_sel$sample_id),]
+rawcounts_unfiltered <- rawcounts_woHeader[,!grepl(sample_to_exclude, colnames(rawcounts_woHeader))]
+stopifnot(all(rownames(clinical_data_clean) == colnames(rawcounts_unfiltered)))
+
+short_id <- sapply(clinical_data_clean$immucan_id, function(x) gsub("^.*-", "", x))
+metadata <- data.frame(short_id=short_id, clinical_data_clean[,1:ncol(clinical_data_clean)], row.names = rownames(clinical_data_clean))
+```
+
+
+
+## Retrieve other library and useful sequencing info
+```{r}
+# 1) qc_matrix.tsv
+qc_matrix <- read.delim(paste0(mnt_path,"RNAseq/STAR_counts/qc_matrix.tsv"), sep="\t", header=T)
+rownames(qc_matrix) <- qc_matrix$ID
+qc_matrix_sel <- qc_matrix[rownames(metadata),c("qc_status"), drop=F]
+
+# 1) sequencing_qc.csv
+seq_matrix <- read.delim(paste0(mnt_path,"RNAseq/STAR_counts/sequencing_qc.csv"), sep=",", header = T)
+rownames(seq_matrix) <- seq_matrix$sample_id
+seq_matrix$lib.kit <- factor(ifelse(grepl("Takara",seq_matrix$assay_library), "takara", "kapa"))
+seq_matrix_sel <- seq_matrix[rownames(metadata),c("sample_id","date_of_extraction", "number_of_reads", "percent_unique","lib.kit")]
+
+# merge
+qc_seq_matrix <- merge(seq_matrix_sel, qc_matrix_sel, by=0, sort=F)
+qc_seq_matrix <- qc_seq_matrix[,-which(colnames(qc_seq_matrix)=="Row.names")]
+
+# merge with clinical data
+metadata_qc <- merge(metadata, qc_seq_matrix , by="sample_id", sort=F)
+rownames(metadata_qc) <- metadata_qc$sample_id
+
+## Save
+write.table(rawcounts_unfiltered, file=paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/rawcounts_unfiltered.txt"), col.names = T, row.names = T, sep="\t", quote = F)
+write.table(path_to_files_sel, file=paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/files_list.txt"), quote=F, col.names = FALSE, row.names = F)
+write.table(metadata_qc, file=paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/metadata.txt"), sep="\t", col.names = T, row.names = T)
+
+```
+
+
+# 3. Filtering expressed genes
+
+## Read in data and metadata
+
+```{r}
+rawcounts_unfiltered <- read.delim(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/rawcounts_unfiltered.txt"), check.names = FALSE)
+metadata <- read.delim(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/metadata.txt"))
+stopifnot(all(colnames(rawcounts_unfiltered)==rownames(metadata)))
+```
+
+## Remove genes not expressed in one batch
+```{r}
+ind_Takara = grep("takara", metadata$lib.kit)
+ind_Kapa = grep("kapa", metadata$lib.kit)
+keep_Takara <- rowSums(rawcounts_unfiltered[,ind_Takara]) > 0 # at least 1 count in at least 1 takara sample
+rawcounts_filt1 <- rawcounts_unfiltered[keep_Takara,]
+keep_Kapa <- rowSums(rawcounts_filt1[,ind_Kapa]) > 0 # at least 1 count in at least 1 kapa sample
+rawcounts_filt2 <- rawcounts_filt1[keep_Kapa,]
+```
+
+
+
+## Keep genes with at least 1 cpm in at least 10% samples
+here we apply a filtering that is more stringent than the minimal pre-filtering proposed by the DESeq2 workflow,
+i.e. keep only rows that have at least 10 reads total (http://bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#pre-filtering)
+```{r}
+cpm_counts <- edgeR::cpm(rawcounts_filt2, normalized.lib.sizes=TRUE)
+cpm.val <- 1 # Define the cutoff value
+min.samplenum <- round(ncol(cpm_counts)/100*10, 0)
+isexpr <- rowSums(cpm_counts>=cpm.val) >= min.samplenum
+rawcounts_filt=rawcounts_filt2[isexpr,] #24376 (46% of the features)
+write.table(rawcounts_filt, file=paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/rawcounts_filtered.txt"), col.names = T, row.names = T, sep="\t", quote = F)
+```
+
+
+# 4. Libraries normalization
+```{r}
+# i. Read in raw filtered counts
+rawcounts_filt <- read.delim(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/rawcounts_filtered.txt"), check.names = FALSE)
+
+# ii. TMM normalization and voom transformation
+dge <- edgeR::DGEList(counts=rawcounts_filt)
+dge <- edgeR::calcNormFactors(dge, method="TMM")
+log2.norm.counts <- cpm(dge, log=TRUE) #TMM normalized expression values on the log2 scale
+write.table(log2.norm.counts, file=paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/log2normcounts.txt"), col.names = T, row.names = T, sep="\t", quote = F)
+
+# iii. Vst transformation (~roughly log2(normalized counts) but with variance stabilization)
+library(DESeq2)
+vst_counts <- data.frame(vst(as.matrix(rawcounts_filt)))
+colnames(vst_counts) <- gsub("\\.", "-", colnames(vst_counts))
+write.table(vst_counts, file=paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/vstcounts.txt"), col.names = T, row.names = T, sep="\t", quote = F)
+```
+
+
+# 5. Lib.kit batch correction and normalisation
+```{r}
+# i. Read in raw filtered counts and metadata
+rawcounts_filt <- read.delim(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/rawcounts_filtered.txt"), check.names = FALSE)
+metadata <- read.delim(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/metadata.txt"), stringsAsFactors = T)
+stopifnot(all(colnames(rawcounts_filt)==rownames(metadata)))
+
+# ii. Correct for lib.size using ComBat_seq
+# run combatseq on raw, filtered counts (since we didn't provide any 'group', full_mode T or F doesn't not matter)
+adjusted_data <- sva::ComBat_seq(counts=as.matrix(rawcounts_filt), batch = metadata$lib.kit)
+write.table(adjusted_data, file=paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/rawcounts_filtered_adj.txt"), col.names = T, row.names = T, sep="\t", quote = F)
+
+# iii. TMM normalization and voom transformation
+dge.adj <- edgeR::DGEList(counts=adjusted_data)
+dge.adj <- edgeR::calcNormFactors(dge.adj, method="TMM")
+log2.norm.counts.adj <- cpm(dge.adj, log=TRUE) #TMM normalized expression values on the log2 scale
+write.table(log2.norm.counts.adj, file=paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/log2normcounts_adj.txt"), col.names = T, row.names = T, sep="\t", quote = F)
+
+# # this correspond to Jane's table  "NSCLC2_combatseq_24220_genes_normalized_counts_N=124_2023-10-07.csv"
+# norm.counts.adj <- cpm(dge.adj, log=FALSE)
+
+# iv. Vst transformation (~roughly log2(normalized counts) but with variance stabilization)
+vst_counts_adj <- data.frame(vst(as.matrix(adjusted_data)))
+colnames(vst_counts_adj) <- gsub("\\.", "-", colnames(vst_counts_adj))
+write.table(vst_counts_adj, file=paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/vstcounts_adj.txt"), col.names = T, row.names = T, sep="\t", quote = F)
+
+```
+
+
+
+# 6. Filtering protein-coding genes
+```{r}
+# genecode annotations
+annot <- read.csv(paste0(mnt_path,"RNAseq/annotations/gencode.v29.annotation.genes.txt"), sep = "\t")
+#colnames(annot) <- c("gene_type","gene_id")
+annot_type <- annot[,c("gene_id", "gene_type")]
+
+# 6.1 filter unadjusted counts
+#################################
+vst_counts <- read.delim(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/vstcounts.txt"), check.names = F)
+vst_counts_annot <- merge(vst_counts, annot_type, by.x=0, by.y="gene_id", all.x=T, all.y=F, sort=F)
+vst_counts_prot <- vst_counts_annot[vst_counts_annot$gene_type=="protein_coding",]
+rownames(vst_counts_prot) <- vst_counts_prot$Row.names
+vst_counts_prot <- vst_counts_prot[,-which(colnames(vst_counts_prot) %in% c("Row.names", "gene_type"))]
+write.table(vst_counts_prot, file=paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/vstcounts_proteins.txt"), sep="\t")
+
+# raw counts
+rawcounts_filt <- read.delim(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/rawcounts_filtered.txt"), check.names = FALSE)
+counts_annot <- merge(rawcounts_filt, annot_type, by.x=0, by.y="gene_id", all.x=T, all.y=F, sort=F)
+counts_prot <- counts_annot[counts_annot$gene_type=="protein_coding",]
+rownames(counts_prot) <- counts_prot$Row.names
+counts_prot <- counts_prot[,-which(colnames(counts_prot) %in% c("Row.names", "gene_type"))]
+write.table(counts_prot, file=paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/rawcounts_proteins.txt"), sep="\t")
+
+# log2 normalised counts
+log2normcounts <- read.delim(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/log2normcounts.txt"), check.names = F)
+log2normcounts_annot <- merge(log2normcounts, annot_type, by.x=0, by.y="gene_id", all.x=T, all.y=F, sort=F)
+log2normcounts_prot <- log2normcounts_annot[log2normcounts_annot$gene_type=="protein_coding",]
+rownames(log2normcounts_prot) <- log2normcounts_prot$Row.names
+log2normcounts_prot <- log2normcounts_prot[,-which(colnames(log2normcounts_prot) %in% c("Row.names", "gene_type"))]
+write.table(log2normcounts_prot, file=paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/log2normcounts_proteins.txt"), sep="\t")
+
+# 6.2 filter batch-adjusted counts
+#################################
+vst_counts_adj <- read.delim(paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/vstcounts_adj.txt"), check.names = F)
+vst_counts_adj_annot <- merge(vst_counts_adj, annot_type, by.x=0, by.y="gene_id", all.x=T, all.y=F, sort=F)
+vst_counts_adj_prot <- vst_counts_adj_annot[vst_counts_adj_annot$gene_type=="protein_coding",]
+rownames(vst_counts_adj_prot) <- vst_counts_adj_prot$Row.names
+vst_counts_adj_prot <- vst_counts_adj_prot[,-which(colnames(vst_counts_adj_prot) %in% c("Row.names", "gene_type"))]
+write.table(vst_counts_adj_prot, file=paste0(mnt_path,"RNAseq/Rout/tables/RNAseq/vstcounts_adj_proteins.txt"), sep="\t")
+```
+
+
