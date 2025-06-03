@@ -1,0 +1,453 @@
+---
+title: "Data processing"
+output:
+  workflowr::wflow_html:
+    toc: true
+editor_options:
+  chunk_output_type: inline
+---
+
+
+NOTE: The IF data is large and is stored in a different location than the IMC, RNAseq and WES data for NSCLC2 to avoid duplication of data.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+```{r}
+library(tidyverse)
+library(stringr)
+library(R.utils)
+library(SingleCellExperiment)
+library(readr)
+library(BiocParallel)
+```
+
+```{r}
+mount_path <- "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IF/"
+```
+
+
+# sample removal
+We will generally remove the following samples due to low cell count, low quality or disrupted tissues. this list has been manually curated after a first round of data processing and visualization of the `plotSpatial` images and looking at overall cell numbers. many samples from NSCLC cohort had below 10000 cells per panel and often very disrupted non-connected tissues.
+
+
+```{r}
+sample_removal <- c()
+```
+
+LUNG-NSCLC2-0669-FIXT-01-IF2-01 has mechanical damage on the tissue
+
+In this script, we will read in the mIF data, do some initial QC and save
+data as `SingleCellExperiment` objects.
+
+# IF Panel 1
+
+## check if and what files are there
+```{r}
+data_path <- paste0(mount_path, "IF1/tsv")
+cur_files <- list.files(data_path, pattern = ".*properties_#_.*.gz$")
+cur_files_2 <- list.files(data_path, pattern = ".*properties2_#_.*.gz$")
+IF1 <- str_split(cur_files,pattern = "_#_",simplify = TRUE)[,1]
+IF1_2 <- str_split(cur_files_2,pattern = "_#_",simplify = TRUE)[,1]
+
+IF1_pat <- str_split(IF1,"-FIXT",simplify = T)[,1]
+
+# check for unique samples per patient (not sample id)
+paste0("no duplicated patient samples: ", length(IF1_pat) == length(unique(IF1_pat)))
+
+#a check if all properties files are available
+paste0("files for which no properties2 file ist available: ",length(IF1[!IF1 %in% IF1_2]))
+# there was a properties2 file missing for one sample.
+
+paste0("Number of sample IDs: ",length(IF1))
+paste0("Unique number of sample IDs: ",length(unique(IF1)))
+paste0("Number of NSCLC2 samples: ",sum(grepl("NSCLC2-",IF1)))
+paste0("Number of NSCLC samples: ",sum(grepl("NSCLC-",IF1)))
+
+IF1_x <- str_split(cur_files,pattern = "-FIXT",simplify = TRUE)[,1]
+paste0("patients with more than one sample: ",paste0(IF1_x[duplicated(IF1_x)], collapse = "; "))
+```
+
+
+## generate single cell files for each patient
+
+we have gone through the data and identified all the possible columns that the individual tsv files have. to generate `SingleCellExperiment`objects we will load each file and generate the set of `colData` entries in  the right order to merge them later on.
+the metadata files ("properties2") contains the same column entries across all files. we will also read this file and add the information to the single cell object
+
+```{r, message=FALSE}
+# read phenotype key
+key <- read_csv("data/phenotype_key_IF1.csv")
+qc_chuv <- read.csv(paste0(mount_path,"IF_QC_CHUV/qc_matrix_IF1.txt"), sep = "\t")
+
+data_path <- paste0(mount_path, "IF1/tsv")
+cur_files <- list.files(data_path, full.names = TRUE, pattern = ".*properties_#_.*.gz$")
+
+bplapply(cur_files,function(x){
+  cur_name <- str_split(basename(x), "_", simplify = TRUE)[,1]
+  cur_rds <- sub(".tsv.gz$", ".rds", x)
+  
+  cur_data <- read_tsv(x)
+  cur_meta <- cur_data[,!grepl("score", colnames(cur_data))]
+
+  cur_meta$sample_id <- cur_name
+  cur_exprs <- cur_data[,grepl("score.normalized", colnames(cur_data))]
+
+   if(!"in.ROI.necrosis" %in% colnames(cur_meta)){
+    cur_meta$in.ROI.necrosis <- NA
+  }
+  if(!"in.ROI.next_to_tumor_tissue" %in% colnames(cur_meta)){
+    cur_meta$in.ROI.next_to_tumor_tissue <- NA
+  }
+  if(!"in.ROI.tumor_tissue" %in% colnames(cur_meta)){
+    cur_meta$in.ROI.tumor_tissue <- NA
+  }
+  if(!"sample_id" %in% colnames(cur_meta)){
+    cur_meta$sample_id <- NA
+  }
+  if(!"in.ROI.adipose_tissue" %in% colnames(cur_meta)){
+    cur_meta$in.ROI.adipose_tissue <- NA
+  }
+  if(!"in.ROI.tls" %in% colnames(cur_meta)){
+    cur_meta$in.ROI.tls <- NA
+  }
+#  if(!"in.ROI.1" %in% colnames(cur_meta)){
+#    cur_meta$in.ROI.1 <- NA
+#  }
+#  if(!"in.ROI.2" %in% colnames(cur_meta)){
+#    cur_meta$in.ROI.2 <- NA
+#  }
+#  if(!"in.ROI.3" %in% colnames(cur_meta)){
+#    cur_meta$in.ROI.3 <- NA
+#  }
+
+  # now we will read the metadata file
+  j <- list.files(data_path, full.names = TRUE)[grepl(paste0(cur_name,".*properties2.*.gz$"),list.files(data_path))]
+  cur_meta_name <- str_split(basename(j), "_", simplify = TRUE)[1,1]
+
+  cur_metadata <- read_tsv(j)
+  if(dim(cur_metadata)[1] == dim(cur_meta)[1]){
+      cur_meta <- left_join(cur_meta,cur_metadata[,c("cell.ID","cell.area","TLS.ID")],"cell.ID")
+
+      cur_meta <- cur_meta[,c("sample_id","cell.ID","nucleus.x","nucleus.y","cell.area","tissue.type","phenotype",
+                              "in.ROI.necrosis","in.ROI.next_to_tumor_tissue","in.ROI.tumor_tissue",
+                              "in.ROI.adipose_tissue","in.ROI.tls","TLS.ID")]
+  } else if (dim(cur_metadata)[1] != dim(cur_meta)[1]) {
+    cur_meta$cell.area <- NA
+    cur_meta$TLS.ID <- NA
+
+    cur_meta <- cur_meta[,c("sample_id","cell.ID","nucleus.x","nucleus.y","cell.area","tissue.type","phenotype",
+                            "in.ROI.necrosis","in.ROI.next_to_tumor_tissue","in.ROI.tumor_tissue",
+                            "in.ROI.adipose_tissue","in.ROI.tls","TLS.ID")]
+  }
+
+  # check that the phenotype column is ordered the same
+  cur_pheno <- str_extract_all(cur_meta$phenotype, "[A-Za-z]{1,3}[0-9]{0,3}\\W|[A-Za-z]{1,3}[0-9]{0,3}c{1}\\W", simplify = TRUE)
+
+  colnames(cur_pheno) <- as.character(sapply(cur_pheno[1,],function(x) gsub("\\+|-","",x)))
+
+  cur_pheno <- cur_pheno[,c("CD15", "CK", "CD3", "CD11c", "CD20", "CD163")]
+
+  cur_pheno <- apply(cur_pheno, 1, function(x) paste0(x, collapse = ""))
+  cur_meta$phenotype <- cur_pheno
+
+  # Collect positivity
+  cur_meta$CD3 <- str_detect(cur_meta$phenotype, "CD3\\+")
+  cur_meta$CD15 <- str_detect(cur_meta$phenotype, "CD15\\+")
+  cur_meta$CK <- str_detect(cur_meta$phenotype, "CK\\+")
+  cur_meta$CD163 <- str_detect(cur_meta$phenotype, "CD163\\+")
+  cur_meta$CD11c <- str_detect(cur_meta$phenotype, "CD11c\\+")
+  cur_meta$CD20 <- str_detect(cur_meta$phenotype, "CD20\\+")
+
+  cur_sce <- SingleCellExperiment(assays = list("normalized" = t(cur_exprs)))
+  colData(cur_sce) <- as(cur_meta, "DataFrame")
+  rownames(cur_sce) <- str_split(rownames(cur_sce), "\\.", simplify = TRUE)[,1]
+
+  # add phenotype information
+  colData(cur_sce) <- DataFrame(left_join(as.data.frame(colData(cur_sce)), key, by = "phenotype"))
+  colnames(cur_sce) <- paste0(cur_sce$sample_id,"_",cur_sce$cell.ID)
+
+  
+  # add qc_chuv to metadata
+  id <- str_extract_all(cur_name, "\\b\\d{4}\\b")[[1]]
+  markers_qc <- paste0("qc_",c("CD3", "CD15", "CK", "CD163", "CD11c", "CD20"))
+  qc <- qc_chuv %>%
+    filter(grepl(id, sample_id)) %>%
+    dplyr::select(all_of(c("sample_id","qc_reception_status", "qc_staining_status", "qc_scanning_status", "qc_scanning_comment", "qc_analysis_comment", "qc_analysis_status", markers_qc))) %>%
+    distinct()
+  
+  metadata(cur_sce)$qc_chuv <- qc
+  
+  # other qc
+  cur_sce$flag_no_cells <- rep(ifelse(ncol(cur_sce) < 20000,TRUE,FALSE),ncol(cur_sce))
+  
+  saveRDS(cur_sce, cur_rds)
+  
+},BPPARAM = MulticoreParam(workers = 10))
+
+```
+
+
+# IF Panel 2
+
+
+## check if and what files are there
+```{r}
+data_path <- paste0(mount_path, "IF2/tsv")
+cur_files <- list.files(data_path, pattern = ".*properties_#_.*.gz$")
+cur_files_2 <- list.files(data_path, pattern = ".*properties2_#_.*.gz$")
+IF2 <- str_split(cur_files,pattern = "_#_",simplify = TRUE)[,1]
+IF2_2 <- str_split(cur_files_2,pattern = "_#_",simplify = TRUE)[,1]
+
+IF2_pat <- str_split(IF2,"-FIXT",simplify = T)[,1]
+
+# check for unique samples per patient (not sample id)
+paste0("no duplicated patient samples: ", length(IF2_pat) == length(unique(IF2_pat)))
+IF2_pat[duplicated(IF2_pat)]
+
+#a check if all properties files are available
+paste0("files for which no properties2 file ist available: ",length(IF2[!IF2 %in% IF2_2]))
+
+
+paste0("Number of sample IDs: ",length(IF2))
+paste0("Unique number of sample IDs: ",length(unique(IF2)))
+paste0("Number of NSCLC2 samples: ",sum(grepl("NSCLC2-",IF2)))
+paste0("Number of NSCLC samples: ",sum(grepl("NSCLC-",IF2)))
+
+IF2_x <- str_split(cur_files,pattern = "-FIXT",simplify = TRUE)[,1]
+paste0("patients with more than one sample: ",paste0(IF2_x[duplicated(IF2_x)], collapse = "; "))
+```
+
+
+## generate single cell files for each patient
+
+```{r, message=FALSE}
+# read phenotype key
+key <- read_csv("data/phenotype_key_IF2.csv")
+qc_chuv <- read.csv(paste0(mount_path,"IF_QC_CHUV/qc_matrix_IF2.txt"), sep = "\t")
+
+data_path <- paste0(mount_path, "IF2/tsv")
+cur_files <- list.files(data_path, full.names = TRUE, pattern = ".*properties_#_.*.gz$")
+
+
+bplapply(cur_files,function(x){
+  cur_name <- str_split(basename(x), "_", simplify = TRUE)[,1]
+  cur_rds <- sub(".tsv.gz$", ".rds", x)
+
+  cur_data <- read_tsv(x)
+  cur_meta <- cur_data[,!grepl("score", colnames(cur_data))]
+
+  cur_meta$sample_id <- cur_name
+  cur_exprs <- cur_data[,grepl("score.normalized", colnames(cur_data))]
+
+   if(!"in.ROI.necrosis" %in% colnames(cur_meta)){
+    cur_meta$in.ROI.necrosis <- NA
+  }
+  if(!"in.ROI.next_to_tumor_tissue" %in% colnames(cur_meta)){
+    cur_meta$in.ROI.next_to_tumor_tissue <- NA
+  }
+  if(!"in.ROI.tumor_tissue" %in% colnames(cur_meta)){
+    cur_meta$in.ROI.tumor_tissue <- NA
+  }
+  if(!"in.ROI.adipose_tissue" %in% colnames(cur_meta)){
+    cur_meta$in.ROI.adipose_tissue <- NA
+  }
+
+    # now we will read the metadata file
+  j <- list.files(data_path, full.names = TRUE)[grepl(paste0(cur_name,".*properties2.*.gz$"),list.files(data_path))]
+  cur_meta_name <- str_split(basename(j), "_", simplify = TRUE)[,1]
+
+  cur_metadata <- read_tsv(j)
+
+  if(dim(cur_metadata)[1] == dim(cur_meta)[1]){
+    cur_meta <- left_join(cur_meta,cur_metadata[,c("cell.ID","cell.area")],"cell.ID")
+
+    cur_meta <- cur_meta[,c("sample_id","cell.ID","nucleus.x","nucleus.y","cell.area","tissue.type","phenotype",
+                            "in.ROI.necrosis","in.ROI.next_to_tumor_tissue","in.ROI.tumor_tissue",
+                            "in.ROI.adipose_tissue")]
+  } else if (dim(cur_metadata)[1] != dim(cur_meta)[1]) {
+    cur_meta$cell.area <- NA
+
+    cur_meta <- cur_meta[,c("sample_id","cell.ID","nucleus.x","nucleus.y","cell.area","tissue.type","phenotype",
+                            "in.ROI.necrosis","in.ROI.next_to_tumor_tissue","in.ROI.tumor_tissue",
+                            "in.ROI.adipose_tissue")]
+  }
+
+  # check that the phenotype column is ordered the same
+  cur_pheno <- str_extract_all(cur_meta$phenotype, "[A-Za-z]{1,3}[0-9]{0,3}\\W", simplify = TRUE)
+  colnames(cur_pheno) <- as.character(sapply(cur_pheno[1,],function(x) gsub("\\+|-","",x)))
+
+  cur_pheno <- cur_pheno[,c("PD1", "CK","Ki67", "GB", "CD8", "PDL1")]
+
+  cur_pheno <- apply(cur_pheno, 1, function(x) paste0(x, collapse = ""))
+  cur_meta$phenotype <- cur_pheno
+
+  # Collect positivity
+  cur_meta$PD1 <- str_detect(cur_meta$phenotype, "PD1\\+")
+  cur_meta$CK <- str_detect(cur_meta$phenotype, "CK\\+")
+  cur_meta$Ki67 <- str_detect(cur_meta$phenotype, "Ki67\\+")
+  cur_meta$GB <- str_detect(cur_meta$phenotype, "GB\\+")
+  cur_meta$CD8 <- str_detect(cur_meta$phenotype, "CD8\\+")
+  cur_meta$PDL1 <- str_detect(cur_meta$phenotype, "PDL1\\+")
+
+  cur_sce <- SingleCellExperiment(assays = list("normalized" = t(cur_exprs)))
+  colData(cur_sce) <- as(cur_meta, "DataFrame")
+  rownames(cur_sce) <- str_split(rownames(cur_sce), "\\.", simplify = TRUE)[,1]
+
+  # add phenotype information
+  colData(cur_sce) <- DataFrame(left_join(as.data.frame(colData(cur_sce)), key, by = "phenotype"))
+  colnames(cur_sce) <- paste0(cur_sce$sample_id,"_",cur_sce$cell.ID)
+    
+  # add qc_chuv to metadata
+  id <- str_extract_all(cur_name, "\\b\\d{4}\\b")[[1]]
+  markers_qc <- paste0("qc_",c("PD1", "CK", "Ki67", "GB", "CD8", "PDL1"))
+  qc <- qc_chuv %>%
+    filter(grepl(id, sample_id)) %>%
+    dplyr::select(all_of(c("sample_id","qc_reception_status", "qc_staining_status", "qc_scanning_status", "qc_scanning_comment", "qc_analysis_comment", "qc_analysis_status", markers_qc))) %>%
+    distinct()
+  
+  metadata(cur_sce)$qc_chuv <- qc
+  
+  # other qc
+  cur_sce$flag_no_cells <- rep(ifelse(ncol(cur_sce) < 20000,TRUE,FALSE),ncol(cur_sce))
+  
+  saveRDS(cur_sce, cur_rds)
+  
+},BPPARAM = MulticoreParam(workers = 10))
+
+gc()
+```
+
+#  IF panel 3
+
+## check if and what files are there
+```{r}
+data_path <- paste0(mount_path, "IF3/tsv")
+cur_files <- list.files(data_path, pattern = ".*properties_#_.*.gz$")
+cur_files_2 <- list.files(data_path, pattern = ".*properties2_#_.*.gz$")
+IF3 <- str_split(cur_files,pattern = "_#_",simplify = TRUE)[,1]
+IF3_2 <- str_split(cur_files_2,pattern = "_#_",simplify = TRUE)[,1]
+
+IF3_pat <- str_split(IF3,"-FIXT",simplify = T)[,1]
+
+# check for unique samples per patient (not sample id)
+paste0("no duplicated patient samples: ", length(IF3_pat) == length(unique(IF3_pat)))
+IF3_pat[duplicated(IF3_pat)]
+
+#a check if all properties files are available
+paste0("files for which no properties2 file ist available: ",length(IF3[!IF3 %in% IF3_2]))
+IF3[!IF3 %in% IF3_2]
+
+paste0("Number of sample IDs: ",length(IF3))
+paste0("Unique number of sample IDs: ",length(unique(IF3)))
+paste0("Number of NSCLC2 samples: ",sum(grepl("NSCLC2-",IF3)))
+paste0("Number of NSCLC samples: ",sum(grepl("NSCLC-",IF3)))
+
+IF3_x <- str_split(cur_files,pattern = "-FIXT",simplify = TRUE)[,1]
+paste0("patients with more than one sample: ",paste0(IF3_x[duplicated(IF3_x)], collapse = "; "))
+```
+
+
+## generate single cell files for each patient
+
+```{r, message=FALSE}
+key <- read_csv("data/phenotype_key_IF3.csv")
+qc_chuv <- read.csv(paste0(mount_path,"IF_QC_CHUV/qc_matrix_IF3.txt"), sep = "\t")
+
+data_path <- paste0(mount_path, "IF3/tsv")
+cur_files <- list.files(data_path, full.names = TRUE, pattern = ".*properties_#_.*.gz$")
+
+
+bplapply(cur_files,function(x){
+  cur_name <- str_split(basename(x), "_", simplify = TRUE)[,1]
+  cur_rds <- sub(".tsv.gz$", ".rds", x)
+
+  cur_data <- read_tsv(x)
+  cur_meta <- cur_data[,!grepl("score", colnames(cur_data))]
+
+  cur_meta$sample_id <- cur_name
+  cur_exprs <- cur_data[,grepl("score.normalized", colnames(cur_data))]
+
+   if(!"in.ROI.necrosis" %in% colnames(cur_meta)){
+    cur_meta$in.ROI.necrosis <- NA
+  }
+  if(!"in.ROI.next_to_tumor_tissue" %in% colnames(cur_meta)){
+    cur_meta$in.ROI.next_to_tumor_tissue <- NA
+  }
+  if(!"in.ROI.tumor_tissue" %in% colnames(cur_meta)){
+    cur_meta$in.ROI.tumor_tissue <- NA
+  }
+  if(!"in.ROI.adipose_tissue" %in% colnames(cur_meta)){
+    cur_meta$in.ROI.adipose_tissue <- NA
+  }
+
+  # now we will read the metadata file
+  if (identical(list.files(data_path, full.names = TRUE)[grepl(paste0(cur_name,".*properties2.*.gz$"),list.files(data_path))], character(0))) {
+    cur_meta$cell.area <- NA
+    cur_meta <- cur_meta[,c("sample_id","cell.ID","nucleus.x","nucleus.y","cell.area","tissue.type","phenotype",
+                            "in.ROI.necrosis","in.ROI.next_to_tumor_tissue","in.ROI.tumor_tissue",
+                            "in.ROI.adipose_tissue")]
+  } else {
+    j <- list.files(data_path, full.names = TRUE)[grepl(paste0(cur_name,".*properties2.*.gz$"),list.files(data_path))]
+    cur_meta_name <- str_split(basename(j), "_", simplify = TRUE)[,1]
+
+    cur_metadata <- read_tsv(j)
+
+    if(dim(cur_metadata)[1] == dim(cur_meta)[1]){
+      cur_meta <- left_join(cur_meta,cur_metadata[,c("cell.ID","cell.area")],"cell.ID")
+
+      cur_meta <- cur_meta[,c("sample_id","cell.ID","nucleus.x","nucleus.y","cell.area","tissue.type","phenotype",
+                              "in.ROI.necrosis","in.ROI.next_to_tumor_tissue","in.ROI.tumor_tissue",
+                              "in.ROI.adipose_tissue")]
+    } else if (dim(cur_metadata)[1] != dim(cur_meta)[1]) {
+      cur_meta$cell.area <- NA
+
+      cur_meta <- cur_meta[,c("sample_id","cell.ID","nucleus.x","nucleus.y","cell.area","tissue.type","phenotype",
+                              "in.ROI.necrosis","in.ROI.next_to_tumor_tissue","in.ROI.tumor_tissue",
+                              "in.ROI.adipose_tissue")]
+    }
+  }
+
+
+  # check that the phenotype column is ordered the same
+  cur_pheno <- str_extract_all(cur_meta$phenotype, "[A-Za-z]{1,4}[0-9]{0,3}\\W", simplify = TRUE)
+  colnames(cur_pheno) <- as.character(sapply(cur_pheno[1,],function(x) gsub("\\+|-","",x)))
+
+  cur_pheno <- cur_pheno[,c("CD4", "CK","CD3", "CD56", "CD8", "FOXP3")]
+
+  cur_pheno <- apply(cur_pheno, 1, function(x) paste0(x, collapse = ""))
+  cur_meta$phenotype <- cur_pheno
+
+  # Collect positivity
+  cur_meta$CD4 <- str_detect(cur_meta$phenotype, "CD4\\+")
+  cur_meta$CK <- str_detect(cur_meta$phenotype, "CK\\+")
+  cur_meta$CD3 <- str_detect(cur_meta$phenotype, "CD3\\+")
+  cur_meta$CD56 <- str_detect(cur_meta$phenotype, "CD56\\+")
+  cur_meta$CD8 <- str_detect(cur_meta$phenotype, "CD8\\+")
+  cur_meta$FOXP3 <- str_detect(cur_meta$phenotype, "FOXP3\\+")
+
+  cur_sce <- SingleCellExperiment(assays = list("normalized" = t(cur_exprs)))
+  colData(cur_sce) <- as(cur_meta, "DataFrame")
+  rownames(cur_sce) <- str_split(rownames(cur_sce), "\\.", simplify = TRUE)[,1]
+
+  # add phenotype information
+  colData(cur_sce) <- DataFrame(left_join(as.data.frame(colData(cur_sce)), key, by = "phenotype"))
+  colnames(cur_sce) <- paste0(cur_sce$sample_id,"_",cur_sce$cell.ID)
+
+  # add qc_chuv to metadata
+  id <- str_extract_all(cur_name, "\\b\\d{4}\\b")[[1]]
+  markers_qc <- paste0("qc_",c("CD4", "CK", "CD3", "CD56", "CD8", "FOXP3"))
+  qc <- qc_chuv %>%
+    filter(grepl(id, sample_id)) %>%
+    dplyr::select(all_of(c("sample_id","qc_reception_status", "qc_staining_status", "qc_scanning_status", "qc_scanning_comment", "qc_analysis_comment", "qc_analysis_status", markers_qc))) %>%
+    distinct()
+  
+  metadata(cur_sce)$qc_chuv <- qc
+  # other qc
+  cur_sce$flag_no_cells <- rep(ifelse(ncol(cur_sce) < 20000,TRUE,FALSE),ncol(cur_sce))
+  
+  saveRDS(cur_sce, cur_rds)
+  
+},BPPARAM = MulticoreParam(workers = 10))
+```

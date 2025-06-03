@@ -1,0 +1,458 @@
+---
+title: "Feature extraction of the tumor tissue for IF1"
+output:
+  workflowr::wflow_html:
+    toc: true
+editor_options:
+  chunk_output_type: inline
+---
+
+Here, we compute the features of the IF1 samples.
+
+1. generate color vectors for cell types
+2. Use DBscan to calculate the tumor patches with patch ID
+3. add colData to sce object
+ - distance to tumor (negative inside tumor)
+ - define cells of interest (inside tumor and up 500 µm outside)
+4. feature extraction
+ - plot images of cell types
+ - extract basic image stats
+ - tumor area (tumor patches) cell type fractions
+ - tumor border cell type fractions
+ - normal tissue cell type fractions
+ - cell type densities in tumor area (tumor patches)
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+# Set path
+mount_path <- "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IF/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/IF/Rout/"
+```
+
+```{r chunk-1}
+library(tidyverse)
+library(SingleCellExperiment)
+library(imcRtools)
+library(concaveman)
+library(sf)
+library(pals)
+library(BiocParallel)
+library(dbscan)
+library(dplyr)
+```
+
+
+
+# IF panel 1
+
+We will first generate a list of all `SingleCellExperiment` objects. This will be the basis for all operations below.
+
+```{r chunk-2}
+cur_files <- list.files(paste0(mount_path, "IF1/tsv"), 
+                        pattern = ".rds$", full.names = TRUE)
+```
+
+# color vectors
+
+```{r chunk-3}
+key <- read.csv("data/phenotype_key_IF1.csv")
+sort(unique(key$celltype))
+col_vec <- unique(key$celltype)
+
+names(col_vec) <- col_vec
+col_vec["B"] <- "red1"
+col_vec["BnT"] <- "tomato2"
+col_vec["DC"] <- "darkolivegreen4"
+col_vec["MacCD163"] <- "darkolivegreen1"
+col_vec["Neutrophil"] <- "aquamarine2"
+col_vec["other"] <- "gray"
+col_vec["T"] <- "deeppink"
+col_vec["Tumor"] <- "saddlebrown"
+col_vec["Tumor_CD15"] <- "sienna3"
+pals::pal.bands(col_vec)
+
+saveRDS(col_vec,"data/col_vec_IF1.rds")
+```
+
+# distance to tumor border
+
+try DBscan package
+
+- density based clustering of all cells within the tumor compartment using dbscan
+- assign patches in tumor tissue
+- polygon around patches
+- distances to polygon
+- calculate size of each polygon
+- store information in sce object and save object
+
+
+```{r chunk-4, fig.height = 20, fig.width = 20}
+bplapply(cur_files,function(x){
+  cur_sce <- readRDS(x)
+  if (!anyNA(cur_sce$in.ROI.tumor_tissue)) {
+      tumor_sce <- cur_sce[,cur_sce$in.ROI.tumor_tissue]
+  } else if (anyNA(cur_sce$in.ROI.tumor_tissue)&!anyNA(cur_sce$in.ROI.next_to_tumor_tissue)){
+    tumor_sce <- cur_sce[,!cur_sce$in.ROI.next_to_tumor_tissue]
+  } else if (anyNA(cur_sce$in.ROI.tumor_tissue)) {
+    tumor_sce <- cur_sce
+  }
+  cur_dat <- as.data.frame(colData(tumor_sce))
+  # use dbscan on x and y coordinates to find patches of cells within the tumor tissue
+  res <- dbscan::dbscan(cur_dat[,c("nucleus.x","nucleus.y")], eps = 200,minPts = 50, borderPoints = FALSE)
+  
+  tumor_sce$patch_id <- as.factor(res$cluster)
+
+  # now we will loop over all of the large patches and build a polygon then we
+  # will write the distance of all cells to the polygon as an entry to the
+  # colData. the distance to tumor will then be the minimum distance from each
+  # of the polygon-distance entries.  dbscan outputs cluster 0 as noise cells.
+  # we will not consider those cells for patch size calculation.
+  for (j in unique(tumor_sce$patch_id)[!unique(tumor_sce$patch_id) == 0]) {
+    
+    # generate concave hull around the cells within the tumor ROI
+    tumor_hull <- data.frame(concaveman(as.matrix(colData(tumor_sce[,tumor_sce$patch_id %in% j])[,c("nucleus.x","nucleus.y")]),concavity = 2))
+    
+    # transform into spatial polygon object
+    tumor_polygon <- st_polygon(list(as.matrix(tumor_hull)))
+    
+    # we will also record the area of the tumor tissue
+    cur_sce[[paste0("patch_",j,"_size")]] <- (st_area(tumor_polygon))/(10^6)
+    
+    # cast polygon to linestring to also receive distances of cells within the polygon
+    tumor_polygon <- st_cast(tumor_polygon,to = "LINESTRING")
+    
+    # generate sf object from the whole tissue
+    sf_all <- as.data.frame(colData(cur_sce)[,c("nucleus.x","nucleus.y")]) %>%
+      st_as_sf(coords = c("nucleus.x","nucleus.y"))
+    
+    dist_to_boundary <- st_distance(sf_all,tumor_polygon)
+    
+    cur_sce[[paste0("dist_to_patch_",j)]] <- dist_to_boundary
+  
+  }
+  cur_sce$patch_id <- "none"
+  cur_sce[,colnames(tumor_sce)]$patch_id <- tumor_sce$patch_id
+  saveRDS(cur_sce,x)
+}, BPPARAM = MulticoreParam(workers = 6))
+```
+
+# add distance to tumor to sce objects
+```{r chunk-5}
+bplapply(cur_files,function(x){
+  cur_sce <- readRDS(x)
+  # select only cells within tumor tissue and 150 µm outside of the tumor tissue
+  cur_dat <- as.data.frame(colData(cur_sce)[,colnames(colData(cur_sce))[grep("dist_to_patch_\\d",colnames(colData(cur_sce)))]])
+  cur_dat$dist_to_tumor <- apply(cur_dat, 1, FUN = min)
+  cur_sce$dist_to_tumor <- cur_dat$dist_to_tumor
+  
+  if (!anyNA(cur_sce$in.ROI.tumor_tissue)) {
+    cur_sce[,cur_sce$in.ROI.tumor_tissue == TRUE]$dist_to_tumor <- -cur_sce[,cur_sce$in.ROI.tumor_tissue == TRUE]$dist_to_tumor
+  } else if (anyNA(cur_sce$in.ROI.tumor_tissue)&!anyNA(cur_sce$in.ROI.next_to_tumor_tissue)) {
+    cur_sce$dist_to_tumor <- -cur_sce$dist_to_tumor
+  } else if(anyNA(cur_sce$in.ROI.tumor_tissue)){
+    cur_sce$dist_to_tumor <- -cur_sce$dist_to_tumor
+  }
+  
+  saveRDS(cur_sce,x)
+}, BPPARAM = MulticoreParam(workers = 12))
+
+print("finished")
+```
+
+# feature extraction
+We will write the QC images to the old location to save storage
+```{r chunk-6, fig.height=15, fig.width=15}
+bplapply(cur_files,function(x){
+  sce <- readRDS(x)
+  cur_name <- unique(sce$sample_id)
+  # plot spatial
+  p <- plotSpatial(sce,img_id = "sample_id",coords = c("nucleus.x","nucleus.y"),node_color_by = "celltype", node_size_fix = 0.1)+scale_colour_manual(values = col_vec)
+  ggsave(plot = p,filename = paste0(mount_path,"Rout/Images_celltypes/",cur_name,".png"),device = "png",width =
+           8000,height = 7000,units = "px")
+  rm(p)
+}, BPPARAM = MulticoreParam(workers = 6))
+gc()
+print("finished")
+```
+
+## Basic image stats
+here we are using the long file names
+```{r chunk-7}
+cur_list <- bplapply(cur_files,function(x){
+  cur_sce <- readRDS(x)
+  #cur_name <- str_split(basename(i),pattern = "_#_",simplify = TRUE)[,1]
+  cur_out <- data.frame(sample_id = unique(cur_sce$sample_id),
+                        total_cell_count = ncol(cur_sce),
+                        total_in_tumor_count = ifelse(anyNA(cur_sce$in.ROI.tumor_tissue),ncol(cur_sce),ncol(cur_sce[,cur_sce$in.ROI.tumor_tissue == TRUE])),
+                        total_outside_tumor_count = ifelse(anyNA(cur_sce$in.ROI.tumor_tissue),ncol(cur_sce),ncol(cur_sce[,cur_sce$in.ROI.tumor_tissue == FALSE])))
+}, BPPARAM = MulticoreParam(workers = 12))
+
+cur_out <- as.data.frame(do.call(rbind, cur_list))
+
+write_csv(as.data.frame(cur_out), paste0(out_folder, "IF1_features/basic_image_stats.csv"))
+gc()
+print("finished")
+```
+
+
+## Cell type fraction
+
+```{r chunk-8, message=FALSE}
+cur_list <- bplapply(cur_files,function(x){
+  cur_sce <- readRDS(x)
+  #cur_name <- str_split(basename(i), "_", simplify = TRUE)[1,1]
+  cur_name <- unique(cur_sce$sample_id)
+  
+  if (anyNA(cur_sce$in.ROI.tumor_tissue)) {
+    tumor_sce <- cur_sce
+  } else {
+    tumor_sce <- cur_sce[,cur_sce$in.ROI.tumor_tissue]
+  }
+
+  cur_out <- data.frame(sample_id = cur_name,
+                        Tumor_count = ncol(tumor_sce),
+                        BnT_fraction = sum(tumor_sce$celltype == "BnT")/ncol(tumor_sce),
+                        B_fraction = sum(tumor_sce$celltype == "B")/ncol(tumor_sce),
+                        T_fraction = sum(tumor_sce$celltype == "T")/ncol(tumor_sce),
+                        MacCD163_fraction = sum(tumor_sce$celltype == "MacCD163")/ncol(tumor_sce),
+                        DC_fraction = sum(tumor_sce$celltype == "DC")/ncol(tumor_sce),
+                        Tumor_CD15_fraction = sum(tumor_sce$celltype == "Tumor_CD15")/ncol(tumor_sce),
+                        Tumor_fraction = sum(tumor_sce$celltype == "Tumor")/ncol(tumor_sce),
+                        Neutrophil_fraction = sum(tumor_sce$celltype == "Neutrophil")/ncol(tumor_sce),
+                        other_fraction = sum(tumor_sce$celltype == "other")/ncol(tumor_sce),
+                        CD3_all_fraction = sum(tumor_sce$CD3/ncol(tumor_sce)),
+                        CD20_all_fraction = sum(tumor_sce$CD20/ncol(tumor_sce)),
+                        CK_all_fraction = sum(tumor_sce$CK/ncol(tumor_sce)),
+                        CD163_all_fraction = sum(tumor_sce$CD163/ncol(tumor_sce)),
+                        CD11c_all_fraction = sum(tumor_sce$CD11c/ncol(tumor_sce)),
+                        CD15_all_fraction = sum(tumor_sce$CD15/ncol(tumor_sce)))
+
+}, BPPARAM = MulticoreParam(workers = 12))
+
+cur_out <- as.data.frame(do.call(rbind, cur_list))
+
+write_csv(cur_out, paste0(out_folder, "IF1_features/IF1_cell_type_fraction.csv"))
+gc()
+
+print("finished")
+```
+
+## tumor border fractions - 
+here we will use the distances calculated to all tumor patches above to identify
+those cells within XX µm of the tumor border. we will then collect the fractions
+of cell types in this border region per patient.
+
+NOTE: we will here only extract those cells within 1000 µm outside of the tumor and not those just inside of the tumor as this is computationally challenging and unclear if relevant. we will extract more fine grained information with the grids approach below.
+```{r chunk-9, eval=FALSE, fig.height=35, fig.width=35}
+cur_list <- bplapply(cur_files,function(x){
+  cur_sce <- readRDS(x)
+  if (!anyNA(cur_sce$in.ROI.tumor_tissue)) {
+    #cur_dat <- as.data.frame(colData(cur_sce)[,colnames(colData(cur_sce))[grep("dist_to_patch_\\d",colnames(colData(cur_sce)))]])
+    #cur_dat$dist_to_tumor <- apply(cur_dat, 1, FUN = min)
+    #cur_sce$dist_to_tumor <- cur_dat$dist_to_tumor
+    border_sce <- cur_sce[,cur_sce$dist_to_tumor < 1000 & cur_sce$dist_to_tumor > 0]
+
+      
+    total_count <- ncol(border_sce)
+    
+    cur_out <- data.frame(sample_id = unique(border_sce$sample_id),
+                          total_cell_count = total_count,
+                          Tumor_border_frac = sum(border_sce$celltype == "Tumor")/total_count,
+                          other_border_frac = sum(border_sce$celltype == "other")/total_count,
+                          T_border_frac = sum(border_sce$celltype == "T")/total_count,
+                          B_border_frac = sum(border_sce$celltype == "B")/total_count,
+                          BnT_border_frac = sum(border_sce$celltype == "BnT")/total_count,
+                          MacCD163_border_frac = sum(border_sce$celltype == "MacCD163")/total_count,
+                          DC_border_frac = sum(border_sce$celltype == "DC")/total_count,
+                          Neutrophil_border_frac = sum(border_sce$celltype == "Neutrophil")/total_count,
+                          Tumor_CD15_border_frac = sum(border_sce$celltype == "Tumor_CD15")/total_count,
+                          CD3_all_border_frac = sum(border_sce$CD3)/total_count,
+                          CD11c_all_border_frac = sum(border_sce$CD11c)/total_count,
+                          CD15_all_border_frac = sum(border_sce$CD15)/total_count,
+                          CD20_all_border_frac = sum(border_sce$CD20)/total_count,
+                          CD163_all_border_frac = sum(border_sce$CD163)/total_count,
+                          CK_all_border_frac = sum(border_sce$CK)/total_count)
+                          
+  }
+},BPPARAM = MulticoreParam(workers = 12))
+
+cur_out <- as.data.frame(do.call(rbind,cur_list))
+
+write_csv(as.data.frame(cur_out), paste0(out_folder, "IF1_features/IF1_cell_type_tumor_border_fractions.csv"))
+
+print("finished")
+```
+
+
+## normal tissue fractions
+for completeness we will here also collect all the cell type fractions in the
+normal tissu surrounding the tumor per patient.
+```{r chunk-10}
+cur_list <- bplapply(cur_files,function(x){
+  cur_sce <- readRDS(x)
+  if (!anyNA(cur_sce$in.ROI.tumor_tissue)) {
+    normal_sce <- cur_sce[,cur_sce$in.ROI.tumor_tissue == FALSE]
+    
+    total_count <- ncol(normal_sce)
+    
+    cur_out <- data.frame(sample_id = unique(normal_sce$sample_id),
+                          total_cell_count = total_count,
+                          Tumor_border_frac = sum(normal_sce$celltype == "Tumor")/total_count,
+                          other_border_frac = sum(normal_sce$celltype == "other")/total_count,
+                          T_border_frac = sum(normal_sce$celltype == "T")/total_count,
+                          B_border_frac = sum(normal_sce$celltype == "B")/total_count,
+                          BnT_border_frac = sum(normal_sce$celltype == "BnT")/total_count,
+                          MacCD163_border_frac = sum(normal_sce$celltype == "MacCD163")/total_count,
+                          DC_border_frac = sum(normal_sce$celltype == "DC")/total_count,
+                          Neutrophil_border_frac = sum(normal_sce$celltype == "Neutrophil")/total_count,
+                          Tumor_CD15_border_frac = sum(normal_sce$celltype == "Tumor_CD15")/total_count,
+                          CD3_all_border_frac = sum(normal_sce$CD3)/total_count,
+                          CD11c_all_border_frac = sum(normal_sce$CD11c)/total_count,
+                          CD15_all_border_frac = sum(normal_sce$CD15)/total_count,
+                          CD20_all_border_frac = sum(normal_sce$CD20)/total_count,
+                          CD163_all_border_frac = sum(normal_sce$CD163)/total_count,
+                          CK_all_border_frac = sum(normal_sce$CK)/total_count)
+                          
+  }
+},BPPARAM = MulticoreParam(workers = 12))
+
+cur_out <- as.data.frame(do.call(rbind,cur_list))
+
+write_csv(as.data.frame(cur_out), paste0(out_folder, "IF1_features/IF1_cell_type_normal_tissue_fraction.csv"))
+
+print("finished")
+```
+
+## tumor compartment fractions
+
+```{r}
+cur_list <- bplapply(cur_files,function(x){
+ cur_sce <- readRDS(x)
+  #cur_name <- str_split(basename(i), "_", simplify = TRUE)[1,1]
+  cur_name <- unique(cur_sce$sample_id)
+  
+  if (anyNA(cur_sce$in.ROI.tumor_tissue)) {
+    tumor_sce <- cur_sce
+  } else {
+    tumor_sce <- cur_sce[,cur_sce$in.ROI.tumor_tissue]
+  }
+
+  tumor_sce <- tumor_sce[,tumor_sce$tissue.type == "tumor"]
+  
+  cur_out <- data.frame(sample_id = cur_name,
+                        Tumor_count = ncol(tumor_sce),
+                        BnT_fraction = sum(tumor_sce$celltype == "BnT")/ncol(tumor_sce),
+                        B_fraction = sum(tumor_sce$celltype == "B")/ncol(tumor_sce),
+                        T_fraction = sum(tumor_sce$celltype == "T")/ncol(tumor_sce),
+                        MacCD163_fraction = sum(tumor_sce$celltype == "MacCD163")/ncol(tumor_sce),
+                        DC_fraction = sum(tumor_sce$celltype == "DC")/ncol(tumor_sce),
+                        Tumor_CD15_fraction = sum(tumor_sce$celltype == "Tumor_CD15")/ncol(tumor_sce),
+                        Tumor_fraction = sum(tumor_sce$celltype == "Tumor")/ncol(tumor_sce),
+                        Neutrophil_fraction = sum(tumor_sce$celltype == "Neutrophil")/ncol(tumor_sce),
+                        other_fraction = sum(tumor_sce$celltype == "other")/ncol(tumor_sce),
+                        CD3_all_fraction = sum(tumor_sce$CD3/ncol(tumor_sce)),
+                        CD20_all_fraction = sum(tumor_sce$CD20/ncol(tumor_sce)),
+                        CK_all_fraction = sum(tumor_sce$CK/ncol(tumor_sce)),
+                        CD163_all_fraction = sum(tumor_sce$CD163/ncol(tumor_sce)),
+                        CD11c_all_fraction = sum(tumor_sce$CD11c/ncol(tumor_sce)),
+                        CD15_all_fraction = sum(tumor_sce$CD15/ncol(tumor_sce)))
+
+}, BPPARAM = MulticoreParam(workers = 12))
+
+cur_out <- as.data.frame(do.call(rbind, cur_list))
+
+write_csv(cur_out, paste0(out_folder, "IF1_features/IF1_cell_type_fraction_tumor_compartment.csv"))
+gc()
+
+print("finished")
+```
+
+## stroma compartment fractions
+
+```{r}
+cur_list <- bplapply(cur_files,function(x){
+ cur_sce <- readRDS(x)
+  #cur_name <- str_split(basename(i), "_", simplify = TRUE)[1,1]
+  cur_name <- unique(cur_sce$sample_id)
+  
+  if (anyNA(cur_sce$in.ROI.tumor_tissue)) {
+    tumor_sce <- cur_sce
+  } else {
+    tumor_sce <- cur_sce[,cur_sce$in.ROI.tumor_tissue]
+  }
+
+  tumor_sce <- tumor_sce[,tumor_sce$tissue.type == "stroma"]
+  
+  cur_out <- data.frame(sample_id = cur_name,
+                        Tumor_count = ncol(tumor_sce),
+                        BnT_fraction = sum(tumor_sce$celltype == "BnT")/ncol(tumor_sce),
+                        B_fraction = sum(tumor_sce$celltype == "B")/ncol(tumor_sce),
+                        T_fraction = sum(tumor_sce$celltype == "T")/ncol(tumor_sce),
+                        MacCD163_fraction = sum(tumor_sce$celltype == "MacCD163")/ncol(tumor_sce),
+                        DC_fraction = sum(tumor_sce$celltype == "DC")/ncol(tumor_sce),
+                        Tumor_CD15_fraction = sum(tumor_sce$celltype == "Tumor_CD15")/ncol(tumor_sce),
+                        Tumor_fraction = sum(tumor_sce$celltype == "Tumor")/ncol(tumor_sce),
+                        Neutrophil_fraction = sum(tumor_sce$celltype == "Neutrophil")/ncol(tumor_sce),
+                        other_fraction = sum(tumor_sce$celltype == "other")/ncol(tumor_sce),
+                        CD3_all_fraction = sum(tumor_sce$CD3/ncol(tumor_sce)),
+                        CD20_all_fraction = sum(tumor_sce$CD20/ncol(tumor_sce)),
+                        CK_all_fraction = sum(tumor_sce$CK/ncol(tumor_sce)),
+                        CD163_all_fraction = sum(tumor_sce$CD163/ncol(tumor_sce)),
+                        CD11c_all_fraction = sum(tumor_sce$CD11c/ncol(tumor_sce)),
+                        CD15_all_fraction = sum(tumor_sce$CD15/ncol(tumor_sce)))
+
+}, BPPARAM = MulticoreParam(workers = 12))
+
+cur_out <- as.data.frame(do.call(rbind, cur_list))
+
+write_csv(cur_out, paste0(out_folder, "IF1_features/IF1_cell_type_fraction_stroma_compartment.csv"))
+gc()
+
+print("finished")
+```
+
+
+
+## cell type densities
+here we will load the sce files and calculate the the densities of all cell
+types inside the tumor patches. therefore we first sum all the areas of
+individual tumor patches and then subset the sce object to only contain cells within tumor area
+```{r chunk-12}
+cur_list <- bplapply(cur_files,function(x){
+  cur_sce <- readRDS(x)
+  # get the size of all tumor patches
+  tumor_size = sum(unlist(lapply(colnames(colData(cur_sce))[grep("patch_\\d_size",colnames(colData(cur_sce)))],function(x){unique(colData(cur_sce)[[x]])})))
+  
+  if (!anyNA(cur_sce$in.ROI.tumor_tissue)) {
+    cur_sce <- cur_sce[,cur_sce$in.ROI.tumor_tissue == TRUE]
+  }
+  
+  cur_out <- data.frame(sample_id = unique(cur_sce$sample_id),
+                        tumor_size = tumor_size,
+                        other_density = round(sum(cur_sce$celltype == "other")/tumor_size),
+                        Tumor_density = round(sum(cur_sce$celltype == "Tumor")/tumor_size),
+                        T_density = round(sum(cur_sce$celltype == "T")/tumor_size),
+                        B_density = round(sum(cur_sce$celltype == "B")/tumor_size),
+                        BnT_density = round(sum(cur_sce$celltype == "BnT")/tumor_size),
+                        MacCD163_density = round(sum(cur_sce$celltype == "MacCD163")/tumor_size),
+                        DC_density = round(sum(cur_sce$celltype == "DC")/tumor_size),
+                        Neutrophil_density = round(sum(cur_sce$celltype == "Neutrophil")/tumor_size),
+                        Tumor_CD15_density = round(sum(cur_sce$celltype == "Tumor_CD15")/tumor_size),
+                        CD3_all_density = round(sum(cur_sce$CD3)/tumor_size),
+                        CD11c_all_density = round(sum(cur_sce$CD11c)/tumor_size),
+                        CD15_all_density = round(sum(cur_sce$CD15)/tumor_size),
+                        CD20_all_density = round(sum(cur_sce$CD20)/tumor_size),
+                        CD163_all_density = round(sum(cur_sce$CD163)/tumor_size),
+                        CK_all_density = round(sum(cur_sce$CK)/tumor_size))
+}, BPPARAM = MulticoreParam(workers = 12))
+
+cur_out <- as.data.frame(do.call(rbind, cur_list))
+
+write_csv(as.data.frame(cur_out), paste0(out_folder, "IF1_features/IF1_cell_type_densities.csv"))
+
+print("finished")
+```
