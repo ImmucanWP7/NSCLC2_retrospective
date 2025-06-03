@@ -396,7 +396,7 @@ tumor_sce$tumor_clust_70 <- NULL
 tumor_sce$tumor_clust_80 <- NULL
 
 tumor_clust_names <- as.character(c(1:11))
-names(tumor_clust_names) <- c("Tumor_apoptotic","Tumor_CD15_Ki67","Tumor_CD15","Tumor_B2M_HLADR_IDO1","Tumor_HLADR","Tumor_Ki67_CD15_HLADR","Tumor_all_low", "Tumor_CD15_HLADR_B2M_CAIX", "Tumor_PDL1","Tumor_CAIX_Ki67","Tumor_B2Mlow_HLADRlow_Ki67")
+names(tumor_clust_names) <- c("Tumor_apoptotic","Tumor_CD15_Ki67","Tumor_CD15","Tumor_IDO1","Tumor_HLADR","Tumor_Ki67","Tumor_all_low", "Tumor_CD15_CAIX", "Tumor_PDL1","Tumor_CAIX_Ki67","Tumor_B2Mlow_HLADRlow")
 
 tumor_sce$tumor_meta_clusters <- names(tumor_clust_names[tumor_sce$tumor_meta_clusters])
 
@@ -440,7 +440,7 @@ metadata(sce)$colour_vectors$celltypes_minor <- cell_types
 ```
 
 # Heatmap all cell types minor 
-```{r, fig.height=10, fig.width=15}
+```{r, fig.height=15, fig.width=15}
 cur_dat <- colData(sce)
 ids <- as_tibble(cur_dat) %>%
   group_by(celltypes_minor) %>%
@@ -463,33 +463,3 @@ dittoHeatmap(cur_sce,
 ```{r}
 saveRDS(sce,paste0(mount_path,"Rout/sce.rds"))
 ```
-
-```{r, fig.height=10, fig.width=10}
-sce <- readRDS(paste0(mount_path,"Rout/sce.rds"))
-old_sce <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IMC/Rout/data/sce.rds")
-
-table(sce$celltypes_minor)
-table(old_sce$celltypes_minor)
-table(sce$celltypes)
-table(old_sce$celltypes)
-
-cur_dat <- data.frame(ID = sce$cell_id,
-                      new_minor = sce$celltypes_minor)
-cur_dat_old <- data.frame(ID = old_sce$cell_id,
-                      old_minor = old_sce$celltypes_minor)
-
-cur_dat <- left_join(cur_dat,cur_dat_old,"ID")
-cur_dat <- cur_dat %>%
-  mutate(new_minor = paste0(new_minor,"_new"))
-caret::confusionMatrix(data= as.factor(cur_dat$new_minor),reference = as.factor(cur_dat$old_minor))
-plot_dat <- as.data.frame(unclass(table(cur_dat$new_minor,cur_dat$old_minor)))
-pheatmap::pheatmap(as.matrix(plot_dat/rowSums(plot_dat)))
-unique(cur_dat$old_minor)
-```
-
-
-
-
-
-
-
