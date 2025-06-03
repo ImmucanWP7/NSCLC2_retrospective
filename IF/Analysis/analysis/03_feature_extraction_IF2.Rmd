@@ -29,6 +29,8 @@ knitr::opts_chunk$set(echo = TRUE, message = FALSE)
 knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
 
 # Set path
+# note, here we are using a different mount path since the IF data is large and
+# we want to keep it in the original structure and not duplicate it
 mount_path <- "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IF/"
 out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/IF/Rout/"
 ```
@@ -469,4 +471,13 @@ cur_list <- bplapply(cur_files,function(x){
 cur_out <- as.data.frame(do.call(rbind, cur_list))
 
 write_csv(as.data.frame(cur_out), paste0(out_folder, "IF2_features/IF2_cell_type_densities.csv"))
+```
+
+
+# interaction counts
+here we will use a helper function to calculate interactions.
+
+```{r}
+source("code/IFInteractionCounts.R")
+IFInteractionCounts(data_path = paste0(mount_path,"IF2/tsv"),out_folder = paste0(mount_path,"Rout/IF2_features/interaction_counts_20241113"),n_workers = 4)
 ```
