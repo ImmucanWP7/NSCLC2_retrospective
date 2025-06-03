@@ -1,0 +1,1023 @@
+---
+title: "combined scores"
+author: "Daniel Schulz"
+date: "2025-06-03"
+output: html_document
+---
+In this script we will collect features and scores across technologies. This will then serve as input to generate figures for the paper.
+
+
+Features we will export for panel 1 (excluding ROI 4 in p1 which is TLS) and panel 2 IMC:
+* cell type densities
+* cell type minor densities
+* cell-pair interactions
+* cellohood spatial cluster abundances
+
+
+from each IF panel:
+* cell type densities
+* directional cell-pair interactions
+
+WES
+* Driver mutations (P53,KRAS, EGFR, ...)
+* mutational signatures (?)
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(SingleCellExperiment)
+```
+
+
+```{r}
+mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
+old_mount <- "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/"
+
+if (!dir.exists(out_folder)) {
+  dir.create(out_folder)
+}
+```
+
+# clinical, Driver mutations and scores
+
+## clinical
+note: the clinical data is owned by EORTC and needs to be obtained from them. The following code will not work if the data has not been obtained
+```{r}
+clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+```
+
+## tmb
+```{r}
+tmb <- read_csv(paste0(mount_path,"data/WES/data/Rout/NSCLC2_TMB.csv"))
+
+tmb <- tmb %>%
+  mutate(immucan_id = str_split_i(PAIR_ID,"-FIXT",1)) %>%
+  select(immucan_id,TMB) %>%
+  arrange(immucan_id) %>%
+  mutate(TMB_score = ifelse(TMB > 10, "high","low"))
+
+write.csv(tmb,file = paste0(out_folder,"TMB",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+## PDL1 scores
+```{r}
+IF2 <- read_csv(paste0(mount_path,"data/IF/Rout/IF2_features/IF2_cell_type_densities.csv"))
+IF2 <- IF2 %>%
+  mutate(immucan_id = str_split(sample_id,"-FIXT",simplify = TRUE)[,1]) %>%
+  select(immucan_id, c(PDL1_all_density, CK_all_density,Tumor_PDL1_density, Tumor_Ki67_PDL1_density, tumor_size),-sample_id) %>%
+  pivot_longer(-c(immucan_id,tumor_size)) %>%
+  mutate(cellcount = round(value*tumor_size)) %>%
+  select(-tumor_size,-value) %>%
+  pivot_wider(id_cols = immucan_id,names_from = name,values_from = cellcount) %>%
+  filter(CK_all_density > 1000) %>%
+  mutate(TPS = round(100*(Tumor_PDL1_density+Tumor_Ki67_PDL1_density)/CK_all_density,digits = 1),
+         CPS =  round(100*(PDL1_all_density)/CK_all_density,digits = 1),
+         CPS = ifelse(is.infinite(CPS),NA,CPS),
+         TPS_score = ifelse(TPS > 1,"positive","negative"),
+         CPS_score = ifelse(CPS > 1 ,"positive","negative"))
+
+PDL1_score <- IF2 %>%
+  select(immucan_id,TPS_score, TPS, CPS_score,CPS)
+
+#saveRDS(PDL1_score,"/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IMC/Rout/data/scores_for_sharing/PDL1_score_from_IF.rds")
+write.csv(PDL1_score,file = paste0(out_folder,"PDL1_score",".csv"), row.names = FALSE, quote = FALSE)
+
+```
+
+# Driver mutations
+
+```{r}
+mut_new <- read.csv(paste0(mount_path,"data/WES/data/Rout/NSCLC2_mutation_matrix.csv"))
+mut_new <- mut_new[,-1]
+mut_new <- mut_new %>%
+  mutate(Gene_Name = GENE) %>%
+  select(Gene_Name,everything(), -GENE)
+
+drivers <- c("TP53","KRAS","EGFR","PIK3CA","ALK","RET","MET","HER2","BRAF","ROS1","NTRK","NRG1","STK11", "KEAP1")
+
+# check if they exist in our data
+# no data for:
+drivers[!drivers %in% mut_new$Gene_Name]
+
+drivers <- drivers[drivers %in% mut_new$Gene_Name]
+
+mut_new <- mut_new %>%
+  mutate(max = rowSums(mut_new[,-1])) %>%
+  arrange(desc(max)) %>%
+  select(-max)
+
+mut_new <- as.data.frame(mut_new)
+
+# clean up
+rownames(mut_new) <- mut_new$Gene_Name
+mut_new$Gene_Name <- NULL
+mut_new <- as.data.frame(t(as.matrix(as.data.frame(mut_new))))
+mut_new$immucan_id <- rownames(mut_new)
+rownames(mut_new) <- NULL
+mut_new <- mut_new %>%
+  mutate(immucan_id = gsub("\\.","\\-",immucan_id))
+
+# select two additional drivers
+nonsynSNV <- mut_new %>%
+  select(immucan_id, drivers)
+
+# change patient 0712 EGFR driver status to non-mut_newated
+nonsynSNV <- nonsynSNV %>%
+  mutate(EGFR = ifelse(immucan_id == "LUNG-NSCLC2-0712", 0, EGFR))
+
+# sometimes the count formutation is >1. we will fix this
+ids <- nonsynSNV$immucan_id
+dat <- apply(nonsynSNV[,-1], 2, function(x) sapply(x, function(y)ifelse(y > 1,1,y)))
+nonsynSNV <- as.data.frame(dat)
+nonsynSNV$immucan_id <- ids
+
+nonsynSNV <- nonsynSNV %>%
+  mutate(across(.cols = -immucan_id,.fns = function(x) ifelse(x == 0,FALSE,TRUE))) %>%
+  select(immucan_id,everything())
+
+write.csv(nonsynSNV,file = paste0(out_folder,"driver_mutations",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+
+## merge data
+```{r}
+traits <- left_join(clin_dat,tmb, "immucan_id")
+traits <- left_join(traits,PDL1_score,"immucan_id")
+traits <- left_join(traits,nonsynSNV,"immucan_id")
+head(traits)
+```
+
+```{r}
+write_csv(traits,paste0(out_folder,"all_traits.csv"),col_names = TRUE)
+```
+
+
+# data Features IMC
+
+```{r}
+sce1 <- readRDS(paste0(mount_path,"data/IMC/Panel_1/Rout/sce.rds"))
+sce2 <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/sce.rds"))
+```
+
+
+## P1 and P2 coldata
+note: images were taken from within tumor tissues so we will use the image size
+as a proxy to derive tissue area to calculate densities
+```{r}
+p1 <- as.data.frame(colData(sce1))
+rownames(p1) <- NULL
+p1 <- p1 %>%
+  filter(ROI != 4)
+# get image size
+im_size_p1 <- p1 %>%
+  select(sample_id,width_px, height_px, immucan_id) %>%
+  mutate(image_size = (width_px*height_px)/10^6) %>%
+  distinct() %>%
+  group_by(immucan_id) %>%
+  mutate(patient_im_size = sum(image_size)) %>%
+  select(immucan_id,patient_im_size) %>%
+  distinct()
+
+p2 <- as.data.frame(colData(sce2))
+rownames(p2) <- NULL
+# get image size
+im_size_p2 <- p2 %>%
+  select(sample_id,width_px, height_px, immucan_id) %>%
+  mutate(image_size = (width_px*height_px)/10^6) %>%
+  distinct() %>%
+  group_by(immucan_id) %>%
+  mutate(patient_im_size = sum(image_size)) %>%
+  select(immucan_id,patient_im_size) %>%
+  distinct()
+```
+
+
+## cell type densities p1 - no TLS ROIs
+```{r}
+#count cell types
+cur_dat <- p1 %>%
+  mutate(image_size = (width_px*height_px)/10^6) %>%
+  group_by(immucan_id,.drop = FALSE) %>%
+  dplyr::count(celltypes)
+
+cur_dat <- left_join(cur_dat,im_size_p1,"immucan_id")
+
+# calculate densities
+celltypes_density_dat_p1 <- cur_dat %>%
+  mutate(celltypes_density = round(n/patient_im_size)) %>%
+  pivot_wider(id_cols = immucan_id,names_from = celltypes,values_from = celltypes_density, values_fill = 0)
+
+write.csv(celltypes_density_dat_p1,file = paste0(out_folder,"celltypes_density_dat_p1",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+## cell type minor densities p1 - no TLS ROIs
+```{r}
+#count cell types
+cur_dat <- p1 %>%
+  mutate(image_size = (width_px*height_px)/10^6) %>%
+  group_by(immucan_id,.drop = FALSE) %>%
+  dplyr::count(celltypes_minor)
+
+cur_dat <- left_join(cur_dat,im_size_p1,"immucan_id")
+
+# calculate densities
+celltypes_minor_density_dat_p1 <- cur_dat %>%
+  mutate(celltypes_minor_density = round(n/patient_im_size)) %>%
+  pivot_wider(id_cols = immucan_id,names_from = celltypes_minor,values_from = celltypes_minor_density, values_fill = 0)
+
+write.csv(celltypes_minor_density_dat_p1,file = paste0(out_folder,"celltypes_minor_density_dat_p1",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+## cell type abundaces P1
+here we collect the total amount of each cell type per patient for differential abundance testing. We will exclude ROI #4 which are TLS.
+```{r}
+# cell types
+cur_sce1 <- sce1[,sce1$ROI != 4]
+abundances <- as.data.frame(t(unclass(table(cur_sce1$celltypes,cur_sce1$immucan_id))))
+abundances <- abundances %>%
+  mutate(immucan_id = rownames(abundances)) %>%
+  select(immucan_id,everything())
+rownames(abundances) <- NULL
+
+# cell types minor
+abundances_minor <- as.data.frame(t(unclass(table(cur_sce1$celltypes_minor,cur_sce1$immucan_id))))
+abundances_minor <- abundances_minor %>%
+  mutate(immucan_id = rownames(abundances_minor)) %>%
+  select(immucan_id,everything())
+rownames(abundances_minor) <- NULL
+
+write.csv(abundances,file = paste0(out_folder,"celltypes_abundances_p1",".csv"), row.names = FALSE, quote = FALSE)
+write.csv(abundances_minor,file = paste0(out_folder,"celltypes_minor_abundances_p1",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+## cell type densities p2
+```{r}
+#count cell types
+cur_dat <- p2 %>%
+  mutate(image_size = (width_px*height_px)/10^6) %>%
+  group_by(immucan_id,.drop = FALSE) %>%
+  dplyr::count(celltypes)
+
+cur_dat <- left_join(cur_dat,im_size_p2,"immucan_id")
+
+# calculate densities
+celltypes_density_dat_p2 <- cur_dat %>%
+  mutate(celltypes_density = round(n/patient_im_size)) %>%
+  pivot_wider(id_cols = immucan_id,names_from = celltypes,values_from = celltypes_density, values_fill = 0)
+
+write.csv(celltypes_density_dat_p2,file = paste0(out_folder,"celltypes_density_dat_p2",".csv"), row.names = FALSE, quote = FALSE)
+
+```
+
+## cell type minor densities p2
+```{r, fig.height=10, fig.width=20}
+#count cell types
+cur_dat <- p2 %>%
+  mutate(image_size = (width_px*height_px)/10^6) %>%
+  group_by(immucan_id,.drop = FALSE) %>%
+  dplyr::count(celltypes_minor)
+
+cur_dat <- left_join(cur_dat,im_size_p2,"immucan_id")
+
+# calculate densities
+celltypes_minor_density_dat_p2 <- cur_dat %>%
+  mutate(celltypes_minor_density = round(n/patient_im_size)) %>%
+  pivot_wider(id_cols = immucan_id,names_from = celltypes_minor,values_from = celltypes_minor_density, values_fill = 0)
+
+write.csv(celltypes_minor_density_dat_p2,file = paste0(out_folder,"celltypes_minor_density_dat_p2",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+## cell type counts  P2
+counts per patient for EdgeR
+```{r}
+# cell types
+abundances <- as.data.frame(t(unclass(table(sce2[["celltypes"]],sce2$immucan_id))))
+abundances <- abundances %>%
+  mutate(immucan_id = rownames(abundances)) %>%
+  select(immucan_id,everything())
+rownames(abundances) <- NULL
+
+# cell types minor
+abundances_minor <- as.data.frame(t(unclass(table(sce2[["celltypes_minor"]],sce2$immucan_id))))
+abundances_minor <- abundances_minor %>%
+  mutate(immucan_id = rownames(abundances_minor)) %>%
+  select(immucan_id,everything())
+rownames(abundances_minor) <- NULL
+
+write.csv(abundances,file = paste0(out_folder,"celltypes_abundances_p2",".csv"), row.names = FALSE, quote = FALSE)
+write.csv(abundances_minor,file = paste0(out_folder,"celltypes_minor_abundances_p2",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+## cell-pair interactions p1 directional
+```{r}
+# cell types minor
+count_interactions_classic_celltype_minor_patient <- imcRtools::countInteractions(object = sce1,group_by = "immucan_id" ,label = "celltypes_minor",colPairName = "neighborhood",method = "classic")
+dat <- as.data.frame(count_interactions_classic_celltype_minor_patient)
+
+dat <- dat %>% 
+  mutate(immucan_id = group_by) %>% 
+  pivot_wider(id_cols = immucan_id,values_from = ct, names_from = c(from_label, to_label),names_sep = "-")
+
+write.csv(dat,file = paste0(out_folder,"cell-pair_interactions_directional_P1",".csv"), row.names = FALSE, quote = FALSE)
+
+# cell types
+count_interactions_classic_celltypes_patient <- imcRtools::countInteractions(object = sce1,group_by = "immucan_id" ,label = "celltypes",colPairName = "neighborhood",method = "classic")
+dat <- as.data.frame(count_interactions_classic_celltypes_patient)
+
+dat <- dat %>% 
+  mutate(immucan_id = group_by) %>% 
+  pivot_wider(id_cols = immucan_id,values_from = ct, names_from = c(from_label, to_label),names_sep = "-")
+
+write.csv(dat,file = paste0(out_folder,"cell-pair_interactions_celltypes_directional_P1",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+# cell-pair interactions p2 directional
+```{r}
+# cell types minor
+count_interactions_classic_celltype_minor_patient <- imcRtools::countInteractions(object = sce2,group_by = "immucan_id" ,label = "celltypes_minor",colPairName = "neighborhood",method = "classic")
+dat <- as.data.frame(count_interactions_classic_celltype_minor_patient)
+
+dat <- dat %>% 
+  mutate(immucan_id = group_by) %>% 
+  pivot_wider(id_cols = immucan_id,values_from = ct, names_from = c(from_label, to_label),names_sep = "-")
+
+write.csv(dat,file = paste0(out_folder,"cell-pair_interactions_celltypes_minor_directional_P2",".csv"), row.names = FALSE, quote = FALSE)
+
+# cell types
+count_interactions_classic_celltypes_patient <- imcRtools::countInteractions(object = sce2,group_by = "immucan_id" ,label = "celltypes",colPairName = "neighborhood",method = "classic")
+dat <- as.data.frame(count_interactions_classic_celltypes_patient)
+
+dat <- dat %>% 
+  mutate(immucan_id = group_by) %>% 
+  pivot_wider(id_cols = immucan_id,values_from = ct, names_from = c(from_label, to_label),names_sep = "-")
+
+write.csv(dat,file = paste0(out_folder,"cell-pair_interactions_celltypes_directional_P2",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+
+# data Features IF1
+
+## IF1 cell type densisities
+```{r}
+x <- read.csv(paste0(mount_path,"data/IF/Rout/IF1_features/IF1_cell_type_densities.csv"))
+x <- x %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,contains("density"))
+
+write.csv(x,file = paste0(out_folder,"celltypes_density_IF1",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+## IF1 abundances
+```{r}
+IF1 <- read_csv(paste0(mount_path,"data/IF/Rout/IF1_features/IF1_cell_type_densities.csv"))
+    
+dat <- IF1 %>%
+  select(!contains("all"),contains("tumor_size"), contains("sample")) %>%
+  pivot_longer(cols = -c(tumor_size, sample_id)) %>%
+  mutate(abundance = round(tumor_size*value)) %>%
+  pivot_wider(id_cols = c(sample_id),names_from = name, values_from = abundance,values_fill = 0) %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,everything(),-sample_id)
+    
+colnames(dat) <- gsub("_density","_abundance",colnames(dat))
+
+write.csv(dat,file = paste0(out_folder,"celltypes_abundances_IF1.csv"), row.names = FALSE, quote = FALSE)
+```
+
+## IF1 tumor compartment fractions
+```{r}
+IF1 <- read_csv(paste0(mount_path,"data/IF/Rout/IF1_features/IF1_cell_type_fraction_tumor_compartment.csv"))
+    
+dat <- IF1 %>%
+  select(!contains("all"), -Tumor_count) %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,contains("fraction"))
+
+write.csv(dat,file = paste0(out_folder,"celltype_fractions_tumor_compartment_IF1.csv"), row.names = FALSE, quote = FALSE)
+```
+
+## IF1 stroma compartment fractions
+```{r}
+IF1 <- read_csv(paste0(mount_path,"data/IF/Rout/IF1_features/IF1_cell_type_fraction_stroma_compartment.csv"))
+    
+dat <- IF1 %>%
+  select(!contains("all"), -Tumor_count) %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,contains("fraction"))
+
+write.csv(dat,file = paste0(out_folder,"celltype_fractions_stroma_compartment_IF1.csv"), row.names = FALSE, quote = FALSE)
+```
+
+
+## IF1 interactions
+IF1 interactions were calculated as done by the imcRtools::countInteractions function. Interactions between e.g. A and B are counted and normalized by either the count of A (interactions per A) or the count of B (interactions per B)
+
+Note: here we will read in the data from a different repo
+```{r}
+int_files <- list.files(paste0(old_mount,"IF/Rout/IF1_features/interaction_counts_20241113/"), full.names = TRUE)
+
+int_list <- lapply(int_files, read.csv)
+int_list[[1]]
+dat <- do.call(rbind,int_list)
+
+# get direactional output - standard output from CountInteractions function
+directional_dat <- dat %>%
+  mutate(immucan_id = str_split_i(group_by,"-FIXT",1)) %>%
+  select(-group_by) %>%
+  pivot_wider(id_cols = immucan_id,values_from = ct, names_from = c(from_label,to_label),names_sep = "-")
+
+write.csv(directional_dat,file = paste0(out_folder,"cell-cell-pair_interactions_directional_IF1",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+# data Features IF2
+
+## IF2 cell type densisities
+```{r}
+x <- read.csv(paste0(mount_path,"data/IF/Rout/IF2_features/IF2_cell_type_densities.csv"))
+x <- x %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,contains("density"))
+
+x <- x %>%
+  mutate(CD8_GB_density = CD8_GB_density+CD8_GB_PDL1_density,
+         CD8_Ki67_GB_density = CD8_Ki67_GB_density+ CD8_Ki67_GB_PDL1_density,
+         CD8_Ki67_density = CD8_Ki67_density + CD8_Ki67_PDL1_density,
+         CD8_PD1_GB_density = CD8_PD1_GB_density + CD8_PD1_GB_PDL1_density,
+         CD8_PD1_Ki67_density = CD8_PD1_Ki67_density + CD8_PD1_Ki67_PDL1_density,
+         CD8_PD1_density = CD8_PD1_density + CD8_PD1_PDL1_density) %>%
+  select(-CD8_GB_PDL1_density,-CD8_Ki67_GB_PDL1_density,-CD8_Ki67_PDL1_density,-CD8_PD1_GB_PDL1_density,-CD8_PD1_Ki67_PDL1_density,-CD8_PD1_PDL1_density)
+
+write.csv(x,file = paste0(out_folder,"celltypes_density_IF2",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+## IF2 abundances
+```{r}
+IF2 <- read_csv(paste0(mount_path,"data/IF/Rout/IF2_features/IF2_cell_type_densities.csv"))
+    
+dat <- IF2 %>%
+  select(!contains("all"),contains("tumor_size"), contains("sample")) %>%
+  pivot_longer(cols = -c(tumor_size, sample_id)) %>%
+  mutate(abundance = round(tumor_size*value)) %>%
+  pivot_wider(id_cols = c(sample_id),names_from = name, values_from = abundance,values_fill = 0) %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,everything(),-sample_id)
+
+# we will group some rare cell types for panel 2 and panel 3
+
+dat <- dat %>%
+  mutate(CD8_GB_density = CD8_GB_density+CD8_GB_PDL1_density,
+         CD8_Ki67_GB_density = CD8_Ki67_GB_density+ CD8_Ki67_GB_PDL1_density,
+         CD8_Ki67_density = CD8_Ki67_density + CD8_Ki67_PDL1_density,
+         CD8_PD1_GB_density = CD8_PD1_GB_density + CD8_PD1_GB_PDL1_density,
+         CD8_PD1_Ki67_density = CD8_PD1_Ki67_density + CD8_PD1_Ki67_PDL1_density,
+         CD8_PD1_density = CD8_PD1_density + CD8_PD1_PDL1_density) %>%
+  select(-CD8_GB_PDL1_density,-CD8_Ki67_GB_PDL1_density,-CD8_Ki67_PDL1_density,-CD8_PD1_GB_PDL1_density,-CD8_PD1_Ki67_PDL1_density,-CD8_PD1_PDL1_density)
+
+colnames(dat) <- gsub("_density","_abundance",colnames(dat))
+  
+write.csv(dat,file = paste0(out_folder,"celltypes_abundances_IF2.csv"), row.names = FALSE, quote = FALSE)
+```
+
+
+## IF2 tumor compartment fractions
+```{r}
+IF2 <- read_csv(paste0(mount_path,"data/IF/Rout/IF2_features/IF2_cell_type_fraction_tumor_compartment.csv"))
+    
+dat <- IF2 %>%
+  select(!contains("all"), -Tumor_count) %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,contains("fraction"))
+
+write.csv(dat,file = paste0(out_folder,"celltype_fractions_tumor_compartment_IF2.csv"), row.names = FALSE, quote = FALSE)
+```
+
+## IF2 stroma compartment fractions
+```{r}
+IF2 <- read_csv(paste0(mount_path,"data/IF/Rout/IF2_features/IF2_cell_type_fraction_stroma_compartment.csv"))
+    
+dat <- IF2 %>%
+  select(!contains("all"), -Tumor_count)%>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,contains("fraction"))
+
+write.csv(dat,file = paste0(out_folder,"celltype_fractions_stroma_compartment_IF2.csv"), row.names = FALSE, quote = FALSE)
+```
+
+
+## IF2 interactions
+```{r}
+int_files <- list.files(paste0(old_mount,"IF/Rout/IF2_features/interaction_counts_20241113"), full.names = TRUE)
+
+int_list <- lapply(int_files, read.csv)
+int_list[[1]]
+dat <- do.call(rbind,int_list)
+
+# get direactional output - standard output from CountInteractions function
+directional_dat <- dat %>%
+  mutate(immucan_id = str_split_i(group_by,"-FIXT",1)) %>%
+  select(-group_by) %>%
+  pivot_wider(id_cols = immucan_id,values_from = ct, names_from = c(from_label,to_label),names_sep = "-")
+
+write.csv(directional_dat,file = paste0(out_folder,"cell-cell-pair_interactions_directional_IF2",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+## IF3 cell type densisities
+```{r}
+x <- read.csv(paste0(mount_path,"data/IF/Rout/IF3_features/IF3_cell_type_densities.csv"))
+x <- x %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,contains("density"))
+
+write.csv(x,file = paste0(out_folder,"celltypes_density_IF3",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+## IF3 abundances
+```{r}
+IF3 <- read_csv(paste0(mount_path,"data/IF/Rout/IF3_features/IF3_cell_type_densities.csv"))
+    
+dat <- IF3 %>%
+  select(!contains("all"),contains("tumor_size"), contains("sample")) %>%
+  pivot_longer(cols = -c(tumor_size, sample_id)) %>%
+  mutate(abundance = round(tumor_size*value)) %>%
+  pivot_wider(id_cols = c(sample_id),names_from = name, values_from = abundance,values_fill = 0) %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,everything(),-sample_id)
+
+dat <- dat %>%
+  select(-CD4_CD56_density,-CD8_CD56_FOXP3_density,-Treg_CD56_density)
+
+colnames(dat) <- gsub("_density","_abundance",colnames(dat))
+
+write.csv(dat,file = paste0(out_folder,"celltypes_abundances_IF3.csv"), row.names = FALSE, quote = FALSE)
+```
+
+
+# data Features IF3
+
+## IF3 tumor compartment fractions
+```{r}
+IF3 <- read_csv(paste0(mount_path,"data/IF/Rout/IF3_features/IF3_cell_type_fraction_tumor_compartment.csv"))
+    
+dat <- IF3 %>%
+  select(!contains("all"), -Tumor_count) %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,contains("fraction"))
+
+write.csv(dat,file = paste0(out_folder,"celltype_fractions_tumor_compartment_IF3.csv"), row.names = FALSE, quote = FALSE)
+```
+
+## IF3 stroma compartment fractions
+```{r}
+IF3 <- read_csv(paste0(mount_path,"data/IF/Rout/IF3_features/IF3_cell_type_fraction_stroma_compartment.csv"))
+    
+dat <- IF3 %>%
+  select(!contains("all"), -Tumor_count)%>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,contains("fraction"))
+
+write.csv(dat,file = paste0(out_folder,"celltype_fractions_stroma_compartment_IF3.csv"), row.names = FALSE, quote = FALSE)
+```
+
+## IF3 interactions
+```{r}
+int_files <- list.files(paste0(old_mount,"IF//Rout/IF3_features/interaction_counts_20241113"), full.names = TRUE)
+
+int_list <- lapply(int_files, read.csv)
+int_list[[1]]
+dat <- do.call(rbind,int_list)
+
+# get direactional output - standard output from CountInteractions function
+directional_dat <- dat %>%
+  mutate(immucan_id = str_split_i(group_by,"-FIXT",1)) %>%
+  select(-group_by) %>%
+  pivot_wider(id_cols = immucan_id,values_from = ct, names_from = c(from_label,to_label),names_sep = "-")
+
+write.csv(directional_dat,file = paste0(out_folder,"cell-cell-pair_interactions_directional_IF3",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+
+
+# cello hood Panel 1
+we will also read this in from the old location
+```{r}
+df <- read.csv(paste0(old_mount,"Figures/scores_for_sharing/Panel1_NSCLC_cc.csv"))
+
+df <- df %>%
+  mutate(cell_id = paste0(SampleId,"_",ROI,"_",ObjectNumber))
+cluster <- df$cc
+names(cluster) <- df$cell_id
+
+sum(names(cluster) %in% sce1$cell_id)
+
+sce1$cellohood <- cluster[sce1$cell_id]
+sce1$cellohood <- paste0("CN_",sce1$cellohood)
+# remove some unwanted columns in sce
+sce1$Study <- NULL
+sce1$Indication <- NULL
+sce1$ROIonSlide <- NULL
+sce1$Pooled <- NULL
+sce1$Sample.Type <- NULL
+sce1$Position <- NULL
+sce1$ROI_position <- NULL
+
+saveRDS(sce1,paste0(mount_path,"data/IMC/Panel_1/Rout/sce.rds"))
+
+# update coldata object
+p1 <- as.data.frame(colData(sce1))
+rownames(p1) <- NULL
+p1 <- p1 %>%
+  filter(ROI != 4)
+```
+
+# cellohood cell based densities P1
+```{r}
+#count cell types
+cur_dat <- p1 %>%
+  mutate(image_size = (width_px*height_px)/10^6) %>%
+  group_by(immucan_id,.drop = FALSE) %>%
+  dplyr::count(cellohood)
+
+cur_dat <- left_join(cur_dat,im_size_p1,"immucan_id")
+
+# calculate densities
+cellohood_densities_p1 <- cur_dat %>%
+  mutate(cellohood_density = round(n/patient_im_size)) %>%
+  pivot_wider(id_cols = immucan_id,names_from = cellohood,values_from = cellohood_density, values_fill = 0)
+
+write.csv(cellohood_densities_p1,file = paste0(out_folder,"cellohood_density_cellbased_p1",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+# cellohood cell based abundances P1
+```{r}
+#count cell types
+cur_dat <- p1 %>%
+  mutate(image_size = (width_px*height_px)/10^6) %>%
+  group_by(immucan_id,.drop = FALSE) %>%
+  dplyr::count(cellohood)
+
+# calculate densities
+cellohood_abundances_p1 <- cur_dat %>%
+  pivot_wider(id_cols = immucan_id,names_from = cellohood,values_from = n, values_fill = 0)
+
+write.csv(cellohood_abundances_p1,file = paste0(out_folder,"cellohood_abundaces_cellbased_p1",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+# cello hood Panel 2
+
+```{r}
+df <- read.csv(paste0(old_mount,"Figures/scores_for_sharing/Panel2_NSCLC_cc.csv"))
+
+df <- df %>%
+  mutate(cell_id = paste0(SampleId,"_",ROI,"_",ObjectNumber))
+cluster <- df$cc
+names(cluster) <- df$cell_id
+
+sum(names(cluster) %in% colnames(sce2)) == ncol(sce2)
+
+sce2$cellohood <- cluster[colnames(sce2)]
+sce2$cellohood <- paste0("CN_",sce2$cellohood)
+table(sce2$cellohood)
+
+# remove some unwanted columns in sce
+sce2$Study <- NULL
+sce2$Box.Description <- NULL
+sce2$Indication <- NULL
+sce2$ROIonSlide <- NULL
+sce2$Pooled <- NULL
+sce2$Sample.Type <- NULL
+sce2$Position <- NULL
+
+
+saveRDS(sce2,paste0(mount_path,"data/IMC/Panel_2/Rout/sce.rds"))
+
+# update coldata object
+p2 <- as.data.frame(colData(sce2))
+rownames(p2) <- NULL
+```
+
+# cellohood cell based densities P2
+```{r}
+#count cell types
+cur_dat <- p2 %>%
+  mutate(image_size = (width_px*height_px)/10^6) %>%
+  group_by(immucan_id,.drop = FALSE) %>%
+  dplyr::count(cellohood)
+
+cur_dat <- left_join(cur_dat,im_size_p2,"immucan_id")
+
+# calculate densities
+cellohood_densities_p2 <- cur_dat %>%
+  mutate(cellohood_density = round(n/patient_im_size)) %>%
+  pivot_wider(id_cols = immucan_id,names_from = cellohood,values_from = cellohood_density, values_fill = 0)
+
+write.csv(cellohood_densities_p2,file = paste0(out_folder,"cellohood_density_cellbased_p2",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+
+# cellohood cell based abundances P2
+```{r}
+#count cell types
+cur_dat <- p2 %>%
+  mutate(image_size = (width_px*height_px)/10^6) %>%
+  group_by(immucan_id,.drop = FALSE) %>%
+  dplyr::count(cellohood)
+
+# calculate densities
+cellohood_abundances_p2 <- cur_dat %>%
+  pivot_wider(id_cols = immucan_id,names_from = cellohood,values_from = n, values_fill = 0)
+
+write.csv(cellohood_abundances_p2,file = paste0(out_folder,"cellohood_abundances_cellbased_p2",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+# mean expression of markers
+
+## panel 1 markers of interest
+```{r}
+markers_1 <- list()
+# we will not subcluters "uncertain" cells as the merging will be very difficult. we may inspect this at a later time point again
+
+#functional markers_1 for T cells
+markers_1[["CD4"]] <- rownames(sce1)[grepl(pattern = "CD27|LAG3|PD1|CD7|GrzB|ICOS|Ki67|TCF7",rownames(sce1))]
+
+markers_1[["CD8"]] <- rownames(sce1)[grepl(pattern = "CD27|LAG3|PD1|CD7|GrzB|ICOS|Ki67|TCF7",rownames(sce1))]
+
+markers_1[["Treg"]] <- rownames(sce1)[grepl(pattern = "CD27|LAG3|ICOS|Ki67|TCF7",rownames(sce1))]
+
+# B and BnT cell markers_1
+markers_1[["BnT"]] <- rownames(sce1)[grepl(pattern = "CD27|CD45RA|CD45RO|LAG3|PD1|CD7|GrzB|FOXP3|ICOS|Ki67|TCF7|VISTA|CD40|HLADR|CD38",rownames(sce1))]
+
+markers_1[["B"]] <- rownames(sce1)[grepl(pattern = "CD27|CD40|Ki67",rownames(sce1))]
+
+# myeloid markers_1
+markers_1[["MacCD163"]] <- rownames(sce1)[grepl(pattern = "CD68|CD11c|PDL1|VISTA|CD40|CD14|CD206|IDO1|CD16",rownames(sce1))]
+
+# we will also use CD20 for DCs to detect those DCs that sit in TLS
+markers_1[["DC"]] <- rownames(sce1)[grepl(pattern = "PDL1|VISTA|CD40|IDO1|CD20",rownames(sce1))]
+
+# we will also use E-cad for HLADR cells as there may still be tumor cells in these cells
+markers_1[["HLADR"]] <- rownames(sce1)[grepl(pattern = "CD11b|CD163|CD68|CD11c|PDL1|ICOS|VISTA|TIM3|CD40|CD14|CD206|CD163|HLADR|Ecad",rownames(sce1))]
+
+# NK markers_1
+markers_1[["NK"]] <- rownames(sce1)[grepl(pattern = "CD7|GrzB|CD16|CD45RA|CD45RO",rownames(sce1))]
+
+# Neutrophil markers_1
+markers_1[["Neutrophil"]] <- rownames(sce1)[grepl(pattern = "MPO|PDL1|VISTA",rownames(sce1))]
+
+# pDC markers_1
+markers_1[["pDC"]] <- rownames(sce1)[grepl(pattern = "CD303|CD4|GrzB|CD45RA|CD45RO|CD27",rownames(sce1))]
+
+# Plasma cell markers_1
+markers_1[["plasma"]] <- rownames(sce1)[grepl(pattern = "CD38|TCF7|CD27|CD45RA|CD45RO",rownames(sce1))]
+
+# stroma markers_1
+markers_1[["Mural"]] <- rownames(sce1)[grepl(pattern = "PDGFR|SMA",rownames(sce1))]
+
+# tumor markers_1
+markers_1[["Tumor"]] <- rownames(sce1)[grepl(pattern = "HLADR|CarbonicAnhydrase|cleavedPARP|PDL1|IDO1|CD15|Ki67|Ido|B2M|TCF7",rownames(sce1))]
+
+```
+
+## panel 2 markers of interest
+
+```{r}
+markers_2 <- list()
+# we will not subcluters "uncertain" cells as the merging will be very difficult. we may inspect this at a later time point again
+
+markers_2[["CD8"]] <- rownames(sce2)[grepl(pattern = "CD7$|PD1|Bcl2|GATA3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",rownames(sce2))]
+markers_2[["CD4"]] <- rownames(sce2)[grepl(pattern = "CD7$|PD1|Bcl2|GATA3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",rownames(sce2))]
+markers_2[["Treg"]] <- rownames(sce2)[grepl(pattern = "CD7$|Bcl2|GATA3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",rownames(sce2))]
+
+
+# NK markers_2
+markers_2[["NK"]] <- rownames(sce2)[grepl(pattern = "Tbet|Bcl2|GATA3|NKG2A|EOMES|GITR",rownames(sce2))]
+
+
+# B and BnT cell markers_2
+markers_2[["B"]] <- rownames(sce2)[grepl(pattern = "Bcl2|Ki67",rownames(sce2))]
+markers_2[["BnT"]] <- rownames(sce2)[grepl(pattern = "CD7$|PD1|FOXP3|Bcl2|GATA3|CD8a|LAG3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",rownames(sce2))]
+
+
+
+# myeloid markers_2
+markers_2[["MacCD204"]] <- rownames(sce2)[grepl(pattern = "CD11c|Arg1|MMP9|CD73|CD10|Tim3",rownames(sce2))]
+markers_2[["MacCD209"]] <- rownames(sce2)[grepl(pattern = "CD11c|Arg1|MMP9|CD73|CD10|Tim3",rownames(sce2))]
+markers_2[["MacCD204_CD209"]] <- rownames(sce2)[grepl(pattern = "CD11c|Arg1|MMP9|CD73|CD10|Tim3",rownames(sce2))]
+# DCs
+markers_2[["DC"]] <- rownames(sce2)[grepl(pattern = "CD137|Tim3|CD20$",rownames(sce2))]
+markers_2[["mregDC"]] <- rownames(sce2)[grepl(pattern = "CD11c|CD137|Tim3",rownames(sce2))]
+
+
+# MDSCs
+markers_2[["MDSC"]] <- rownames(sce2)[grepl(pattern = "CD11b|CD10|CXCL8|Arg1|MMP9",rownames(sce2))]
+markers_2[["PMN_MDSC"]] <- rownames(sce2)[grepl(pattern = "CD11b|CD15$|CD66b|CD10|CXCL8|Arg1|MMP9",rownames(sce2))]
+markers_2[["Neutrophil"]] <- rownames(sce2)[grepl(pattern = "CD11b|CD15$|CD66b|CD10|CXCL8|Arg1|MMP9",rownames(sce2))]
+
+
+# stroma markers_2
+markers_2[["Vasculature"]] <- rownames(sce2)[grepl(pattern = "CD31|CD146",rownames(sce2))]
+markers_2[["vCAF"]] <- rownames(sce2)[grepl(pattern = "SMA|CD146",rownames(sce2))]
+markers_2[["Fibro"]] <- rownames(sce2)[grepl(pattern = "Podoplanin|CD10|MMP9|SMA",rownames(sce2))]
+
+
+# tumor markers_2
+markers_2[["Tumor"]] <- rownames(sce2)[grepl(pattern = "panCK|Ecad|Arg1|EGFR|MMP9|p53|Lamp3|CD73|Bcl2|GATA3|CD155|CD10|CD56|CXCL8|Ki67|Podoplanin|IgG",rownames(sce2))]
+```
+
+## p1
+```{r}
+mean_sce1 <- as.data.frame(t(assay(sce1,"exprs")))
+mean_sce1$celltypes <- sce1$celltypes
+mean_sce1$immucan_id <- sce1$immucan_id
+mean_sce1$ROI <- sce1$ROI
+
+dat1 <- mean_sce1 %>%
+  filter(ROI != 4) %>%
+  select(-ROI) %>%
+  pivot_longer(-c("immucan_id", "celltypes")) %>%
+  group_by(immucan_id,celltypes, name) %>%
+  summarise(mean_exp = mean(value))%>%
+  mutate(name = paste0(name, "_p1"))
+
+vec <- c()
+for (i in names(markers_1)) {
+  vec <- c(vec,paste0(i,"-",markers_1[[i]],"_p1"))
+}
+
+dat1 <- dat1 %>%
+  ungroup() %>%
+  pivot_wider(id_cols = immucan_id,names_from = c(celltypes,name),values_from = mean_exp,names_sep = "-") %>%
+  select(immucan_id,all_of(vec))
+
+write.csv(dat1,file = paste0(out_folder,"mean_marker_expr_per_celltype_p1",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+## p2
+```{r}
+mean_sce2 <- as.data.frame(t(assay(sce2,"exprs")))
+mean_sce2$celltypes <- sce2$celltypes
+mean_sce2$immucan_id <- sce2$immucan_id
+
+dat2 <- mean_sce2 %>%
+  pivot_longer(-c("immucan_id", "celltypes")) %>%
+  group_by(immucan_id,celltypes, name) %>%
+  summarise(mean_exp = mean(value))%>%
+  mutate(name = paste0(name, "_p2"))
+
+
+vec <- c()
+for (i in names(markers_2)) {
+  vec <- c(vec,paste0(i,"-",markers_2[[i]],"_p2"))
+}
+
+dat2 <- dat2 %>%
+  ungroup() %>%
+  pivot_wider(id_cols = immucan_id,names_from = c(celltypes,name),values_from = mean_exp,names_sep = "-") %>%
+  select(immucan_id,all_of(vec))
+
+write.csv(dat2,file = paste0(out_folder,"mean_marker_expr_per_celltype_p2",".csv"), row.names = FALSE, quote = FALSE)
+```
+
+# merge abundances
+
+```{r}
+IMC1 <- read.csv(paste0(out_folder,"celltypes_minor_abundances_p1.csv"))
+IMC2 <- read.csv(paste0(out_folder,"celltypes_minor_abundances_p2.csv"))
+IF1 <- read.csv(paste0(out_folder,"celltypes_abundances_IF1.csv"))
+IF2 <- read.csv(paste0(out_folder,"celltypes_abundances_IF2.csv"))
+IF3 <- read.csv(paste0(out_folder,"celltypes_abundances_IF3.csv"))
+
+colnames(IMC1) <- c("immucan_id",paste0(colnames(IMC1)[-1],"_abundance__IMC1"))
+colnames(IMC2) <- c("immucan_id",paste0(colnames(IMC2)[-1],"_abundance__IMC2"))
+colnames(IF1) <- c("immucan_id",paste0(colnames(IF1)[-1],"__IF1"))
+colnames(IF2) <- c("immucan_id",paste0(colnames(IF2)[-1],"__IF2"))
+colnames(IF3) <- c("immucan_id",paste0(colnames(IF3)[-1],"__IF3"))
+
+# merge files
+dat <- plyr::join_all(list(IMC1, IMC2, IF1, IF2, IF3), by='immucan_id', type='left')
+
+dim(dat)
+# filtering: we will only keep data where we have at least 50 patients with non-zero counts
+columns_to_keep <- dat %>%
+  summarise(across(-immucan_id, ~ sum(. != 0,na.rm = TRUE))) %>%
+  pivot_longer(everything(),names_to = "column", values_to = "zero_count") %>%
+  filter(zero_count > 50) %>%
+  pull(column)
+dat <- dat %>%
+  select(immucan_id, all_of(columns_to_keep))
+
+colnames(dat) <- gsub("GB_","GRZB_",colnames(dat))
+
+saveRDS(dat,paste0(out_folder,"abundances_dat.rds"))
+```
+
+# merge densities
+
+```{r}
+IMC1 <- read.csv(paste0(out_folder,"celltypes_minor_density_dat_P1.csv"))
+IMC2 <- read.csv(paste0(out_folder,"celltypes_minor_density_dat_P2.csv"))
+IF1 <- read.csv(paste0(out_folder,"celltypes_density_IF1.csv"))
+IF2 <- read.csv(paste0(out_folder,"celltypes_density_IF2.csv"))
+IF3 <- read.csv(paste0(out_folder,"celltypes_density_IF3.csv"))
+
+colnames(IMC1) <- c("immucan_id",paste0(colnames(IMC1)[-1],"_density__IMC1"))
+colnames(IMC2) <- c("immucan_id",paste0(colnames(IMC2)[-1],"_density__IMC2"))
+colnames(IF1) <- c("immucan_id",paste0(colnames(IF1)[-1],"__IF1"))
+colnames(IF2) <- c("immucan_id",paste0(colnames(IF2)[-1],"__IF2"))
+colnames(IF3) <- c("immucan_id",paste0(colnames(IF3)[-1],"__IF3"))
+
+dens_dat <- plyr::join_all(list(IMC1, IMC2, IF1, IF2, IF3), by='immucan_id', type='left')
+
+dim(dens_dat)
+# filtering: we will only keep data where we have at least 50 patients with non-zero counts
+columns_to_keep <- dens_dat %>%
+  summarise(across(-immucan_id, ~ sum(. != 0, na.rm = TRUE))) %>%
+  pivot_longer(everything(),names_to = "column", values_to = "zero_count") %>%
+  filter(zero_count > 50) %>%
+  pull(column)
+
+# columns excluded from filtering:
+colnames(dens_dat[,-1])[!colnames(dens_dat[,-1]) %in% columns_to_keep]
+
+# remove columns
+dens_dat <- dens_dat %>%
+  select(immucan_id, all_of(columns_to_keep))
+
+# fix typos
+colnames(dens_dat) <- gsub("GB_","GRZB_",colnames(dens_dat))
+
+saveRDS(dens_dat,paste0(out_folder,"densities_dat.rds"))
+```
+
+# merge spatial data
+
+
+```{r, fig.height=15, fig.width=15}
+IMC1_int <- read.csv(paste0(out_folder,"cell-pair_interactions_celltypes_directional_P1.csv"))
+IMC2_int <- read.csv(paste0(out_folder,"cell-pair_interactions_celltypes_directional_P2.csv"))
+
+IF1_int <- read.csv(paste0(out_folder,"cell-cell-pair_interactions_directional_IF1.csv"))
+IF2_int <- read.csv(paste0(out_folder,"cell-cell-pair_interactions_directional_IF2.csv"))
+IF3_int <- read.csv(paste0(out_folder,"cell-cell-pair_interactions_directional_IF3.csv"))
+
+colnames(IMC1_int) <- c("immucan_id",paste0(colnames(IMC1_int)[-1],"__IMC1_int"))
+colnames(IMC2_int) <- c("immucan_id",paste0(colnames(IMC2_int)[-1],"__IMC2_int"))
+colnames(IF1_int) <- c("immucan_id",paste0(colnames(IF1_int)[-1],"__IF1_int"))
+colnames(IF2_int) <- c("immucan_id",paste0(colnames(IF2_int)[-1],"__IF2_int"))
+colnames(IF3_int) <- c("immucan_id",paste0(colnames(IF3_int)[-1],"__IF3_int"))
+
+# merge
+int_dat <- plyr::join_all(list(IMC1_int, IMC2_int, IF1_int, IF2_int, IF3_int), by='immucan_id', type='left')
+
+# find overlapping patients
+pats <- Reduce(intersect, list(IMC1_int$immucan_id, IMC2_int$immucan_id, IF1_int$immucan_id,IF2_int$immucan_id,IF3_int$immucan_id))
+int_dat <- int_dat %>% 
+  filter(immucan_id %in% pats)
+
+
+# calculate the number of non-missing values per column (feature)
+filt_dat_NA <- apply(int_dat[,-1],2,function(x) sum(!is.na(x)))
+hist(filt_dat_NA, breaks = 100)
+abline(v = 100)
+# keep only features with more than 50 observations
+rm_cols_NA <- names(filt_dat_NA[filt_dat_NA < 50])
+
+# calculate the number of non-zero values per column (feature)
+filt_dat_zero <- apply(int_dat[,-1],2,function(x) sum(x != 0, na.rm = TRUE))
+# remove all features with  more than 50 non-zero observations
+rm_cols_zero <- names(filt_dat_zero[filt_dat_zero < 50])
+
+# filter
+int_dat <- int_dat %>%
+  select(!all_of(c(rm_cols_NA,rm_cols_zero)))
+
+# save fil
+saveRDS(int_dat,paste0(out_folder,"interaction_dat.rds"))
+
+
+# cellohood data
+cello1 <- read.csv(paste0(out_folder,"cellohood_abundaces_cellbased_p1.csv"))
+cello2 <- read.csv(paste0(out_folder,"cellohood_abundances_cellbased_p2.csv"))
+colnames(cello1) <- c("immucan_id",paste0(colnames(cello1)[-1],"__cello1"))
+colnames(cello2) <- c("immucan_id",paste0(colnames(cello2)[-1],"__cello2"))
+
+cello_dat <- plyr::join_all(list(cello1, cello2), by='immucan_id', type='left')
+# find overlapping patients
+pats <- Reduce(intersect, list(cello1$immucan_id,cello2$immucan_id))
+cello_dat <- cello_dat %>% 
+  filter(immucan_id %in% pats)
+
+# filter cellohood clusters if not present in at least 10 patients
+filt_dat <- apply(cello_dat[,-1],2,function(x) sum(x != 0))
+rm_cols <- names(filt_dat[filt_dat < 10])
+
+cello_dat <- cello_dat %>%
+  select(!all_of(c(rm_cols)))
+
+saveRDS(cello_dat,paste0(out_folder,"cello_dat.rds"))
+```
+
