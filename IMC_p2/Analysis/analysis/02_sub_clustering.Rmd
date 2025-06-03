@@ -835,6 +835,36 @@ dittoHeatmap(mean_sce,
 table(sce$celltypes_minor)/ncol(sce)
 ```
 
+# define colors
+
+```{r, fig.height=10, fig.width=10}
+cell_types <- sort(unique(sce2$celltypes_minor))
+
+names(cell_types) <- cell_types
+cell_types[grepl("CD8",cell_types)] <- c("mediumorchid2","darkorchid1","darkorchid2","darkorchid3","darkorchid4","mediumorchid", "mediumorchid3","mediumorchid4","orchid4")
+cell_types[grepl("CD4",cell_types)] <- c("deeppink","deeppink1","deeppink2","deeppink3","magenta","magenta1","magenta2","magenta3")
+cell_types[grepl("Mac",cell_types)] <- c("green","yellowgreen","greenyellow")
+cell_types[grepl("DC",cell_types)] <- c("forestgreen","darkgreen")
+cell_types[grepl("Tumor",cell_types)] <- c("sienna4")
+cell_types["B"] <- "red3"
+cell_types[grepl("BnT",cell_types)] <- c("indianred","maroon2")
+cell_types["Igg"] <- "goldenrod2"
+cell_types[grepl("Treg",cell_types)] <- c("hotpink","hotpink2")
+cell_types[grepl("MDSC|Neutrophil",cell_types)] <- c("aquamarine4","blue1","deepskyblue")
+cell_types["NK"] <- "yellow"
+cell_types["vCAF"] <- "tomato"
+cell_types["Fibro"] <- "chocolate1"
+cell_types["SMA"] <- "goldenrod2"
+cell_types["Vasculature"] <- "brown2"
+cell_types["undefined"] <- "gray"
+
+cell_types
+pie(rep(1,length(cell_types)),col=cell_types, labels = names(cell_types))
+
+metadata(sce2)$colour_vectors$celltypes_minor <- cell_types
+```
+
+
 # save results
 ```{r}
 saveRDS(sce,paste0(mount_path,"Rout/sce.rds"))
