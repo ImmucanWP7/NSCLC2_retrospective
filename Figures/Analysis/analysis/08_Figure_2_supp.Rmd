@@ -28,103 +28,40 @@ library(ggnewscale)
 ```
 
 ```{r}
-out_folder <- "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_2_supp/"
+mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_2_supp/"
+
+if (!dir.exists(out_folder)) {
+  dir.create(out_folder)
+}
 ```
 
 # load data
 we will load the data we generated at the beginning of figure 2
 ```{r}
-dat <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/abundances_dat.rds")
-dens_dat <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/densities_dat.rds")
-cello_dat <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/cello_dat.rds")
-int_dat <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/interaction_dat.rds")
+dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/abundances_dat.rds"))
+dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
+cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
 clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
-traits <- read_csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IMC/Rout/data/scores_for_sharing/all_traits.csv")
+traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
+
 
 # variables
 data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2))
 ```
 
-
-# S2A correlation IMC and mIF
-need to collect the code from here [03_IMC_mIF_cell_fraction_correlation.Rmd](03_IMC_mIF_cell_fraction_correlations.Rmd)
-
-```{r, fig.height=20, fig.width=20}
-cor <- psych::corr.test(dens_dat[,grepl("_IMC",colnames(dens_dat))],dens_dat[,grepl("__IF",colnames(dens_dat))],  method = "pearson",adjust = "BH")
-
-# format correlation matrix
-cur_dat <- as.data.frame(cor$r)
-cur_dat$variable <- rownames(cur_dat)
-dat_long <- reshape2::melt(cur_dat,id.vars="variable")
-colnames(dat_long) <- c("cell_types_IMC","cell_types_mIF","correlation")
-
-#get p-value matrix
-p_dat <- as_tibble(cor$p)
-p_dat$variable <- rownames(cur_dat)
-pdat_long <- reshape2::melt(p_dat,id.vars="variable")
-colnames(pdat_long) <- c("cell_types_IMC","cell_types_mIF","p_adj")
-
-dat_long$p_adj <- pdat_long$p_adj
-
-dat_long <- dat_long %>%
-  mutate(sig = ifelse(p_adj <= 0.001 & p_adj > 0.0001,0.001,p_adj))
-
-dat_long <- dat_long %>%
-  mutate(sig = case_when(p_adj <= 0.0001 ~ "< 0.0001",
-                         p_adj <= 0.001 & p_adj > 0.0001 ~ "< 0.001",
-                         p_adj <= 0.01 & p_adj > 0.001 ~ "< 0.01",
-                         p_adj <= 0.1 & p_adj > 0.01 ~ "< 0.1",
-                         p_adj >0.1 ~ "ns"))
-
-
-# plot
-cor_filter <- 0.4
-dat_long <-dat_long %>%
-   mutate(cell_types_IMC = gsub("_density", "",cell_types_IMC),
-          cell_types_mIF = gsub("_density", "",cell_types_mIF))
- 
-p <- dat_long %>% 
-  filter(abs(correlation) > cor_filter) %>%
-  ggplot(aes(x=factor(cell_types_IMC, levels=sort(unique(dat_long$cell_types_IMC))),y = factor(cell_types_mIF, levels=sort(unique(dat_long$cell_types_mIF))),col = correlation, size= -log10(p_adj)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
-  geom_point()+
-  theme_bw()+
-  scale_color_gradient2(low =  "blue",mid = "white",high = "red", name = expression("Pearson's" ~ rho))+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  #scale_color_gradient(low = "white",   high = "red")+
-  scale_size(range = c(1,8))+
-  new_scale_colour() +
-  geom_point(data = dat_long %>% filter(sig <0.01, abs(correlation) > cor_filter),shape = 1,aes(size = -log10(p_adj), col = sig), stroke =2.5)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 20),
-        axis.text.y = element_text(size = 20),
-        legend.text = element_text(size = 20),
-        legend.title = element_text(size = 20),
-        axis.title = element_blank(),
-        legend.position = "bottom")
-p
-ggsave(filename = paste0(out_folder,"S2A_IF_IMC_density_correlation.pdf"),
-       plot = p,
-       device = "pdf",
-       width = 20,
-       height = 22)
-```
-
-# S2B Kaplan Meier stage
+# S2A Kaplan Meier stage
 
 ```{r, fig.height=6}
 surv_fit <- survfit(Surv(time_to_event, censoring) ~ simple_stage, data = clin_dat)
 
-ggsurv <- ggsurvplot(surv_fit, data = clin_dat, risk.table = TRUE, pval = TRUE)
-p <- ggsurv$plot
-p
-ggsave(p,filename = paste0(out_folder,"S2B_Kaplan_Meier_CPS_score.pdf"),device = "pdf",width = 5, height = 5)
+p <- ggsurvplot(surv_fit, data = clin_dat, risk.table = TRUE, pval = TRUE)
+
+p <- plot_grid(p$plot,p$table,ncol = 1, rel_heights = c(1,0.5))
+ggsave(p,filename = paste0(out_folder,"S2A_Kaplan_Meier_CPS_score.pdf"),device = "pdf",width = 6, height = 5)
 ```
 
-# S2C diff abundance stages bubble plot
+# S2B diff abundance stages bubble plot
 here we will estimate the dispersion across the whole data set and then do the linear model of count comparison only for the groups of interest.
 ```{r, fig.height=8, fig.width=10}
 condition <- c("I","I","II")
@@ -230,23 +167,25 @@ p <- cur_dat %>%
   new_scale_colour() +
   geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =1)+
   scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 8),
-        axis.text.y = element_text(size = 8),
-        legend.text = element_text(size = 8),
-        legend.title = element_text(size = 8),
-        plot.margin = unit(c(.1, .5, .5, .5), "cm"))+
-    coord_flip()
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
+        axis.text.y = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        axis.title.y = element_blank(),
+        plot.margin = unit(c(.1, .5, .5, .5), "cm"),
+        legend.position = "bottom")+
+  labs(x = "Feature")
 p
 
-ggsave(filename = paste0(out_folder,"S2C_diff_abundance_stage.pdf"),
+ggsave(filename = paste0(out_folder,"S2B_diff_abundance_stage.pdf"),
        plot = p,
        device = "pdf",
-       width = 4,
-       height = 6)
+       width = 7,
+       height =4)
 ```
 
 
-# S2D stage linear regression CD8 and CD4
+# S2C stage linear regression CD8 and CD4
 
 ```{r, fig.height=10, fig.width=30}
 library(purrr)
@@ -303,7 +242,8 @@ p1 <- dens_dat %>%
         axis.title = element_blank())+
   geom_text(data = summary_dat, aes(x = name,y=y_position,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE)+
   coord_cartesian(ylim = c(0,1000))+
-  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "darkorange2"))
+  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "darkorange2"))+
+  ggtitle(label = "LUSC")
   
 sigs <- dens_dat %>%
   pivot_longer(-immucan_id) %>%
@@ -357,10 +297,11 @@ p2 <- dens_dat %>%
         axis.title = element_blank())+
   geom_text(data = summary_dat, aes(x = name,y=y_position,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE)+
   coord_cartesian(ylim = c(0,1000))+
-  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "darkorange2"))
+  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "darkorange2"))+
+  ggtitle(label = "LUAD")
 
 plot_grid(p1,p2,nrow = 1)
-ggsave(filename = paste0(out_folder,"S2D_linear_model_CD8_CD4_across_stages_split_by_histology.pdf"),
+ggsave(filename = paste0(out_folder,"S2C_linear_model_CD8_CD4_across_stages_split_by_histology.pdf"),
        plot = last_plot(),
        device = "pdf",
        width = 20,
@@ -370,9 +311,9 @@ ggsave(filename = paste0(out_folder,"S2D_linear_model_CD8_CD4_across_stages_spli
 
 # S2E TCGA across stages adenocarcinoma
 ```{r}
-tcga <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/RNAseq/luad_tcga_pan_can_atlas_2018/luad_tcga_pan_can_atlas_2018/xcell_between_samples_scores.csv", sep = "\t")
-tcga_patient <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/RNAseq/luad_tcga_pan_can_atlas_2018/luad_tcga_pan_can_atlas_2018/data_clinical_patient.txt", sep = "\t")
-tcga_clin <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/RNAseq/luad_tcga_pan_can_atlas_2018/luad_tcga_pan_can_atlas_2018/data_clinical_sample.txt", sep = "\t")
+tcga <- read.csv(paste0(mount_path,"data/RNAseq/luad_tcga_pan_can_atlas_2018/luad_tcga_pan_can_atlas_2018/xcell_between_samples_scores.csv"), sep = "\t")
+tcga_patient <- read.csv(paste0(mount_path,"data/RNAseq/luad_tcga_pan_can_atlas_2018/luad_tcga_pan_can_atlas_2018/data_clinical_patient.txt"), sep = "\t")
+tcga_clin <- read.csv(paste0(mount_path,"data/RNAseq/luad_tcga_pan_can_atlas_2018/luad_tcga_pan_can_atlas_2018/data_clinical_sample.txt"), sep = "\t")
 
 tcga <- as.data.frame(t(tcga))
 tcga <- tcga %>%
@@ -414,20 +355,21 @@ p <- tcga %>%
   geom_boxplot()+
   theme_bw()+
   theme(axis.text.x = element_text(angle = 90, vjust =0.5,hjust = 1, size = 10))+
-  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "darkorange2"))
+  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "darkorange2"))+
+  ggtitle(label = "Deconvoluted cell types across stages in TCGA LUAD")
 
 p
 
-ggsave(filename = paste0(out_folder,"S2E_Xcell_across_TCGA_stages_within_LUAD.pdf"),
+ggsave(filename = paste0(out_folder,"S2D_Xcell_across_TCGA_stages_within_LUAD.pdf"),
        plot = p,
        device = "pdf",
        width = 8,
-       height = 5)
+       height = 6)
 ```
 
 # TCGA across stages squamous cell carcinoma - to do or remove
 TO DO - where to get the LUSC data from TCGA?
-```{r}
+```{r, eval=FALSE, include=FALSE}
 tcga <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/RNAseq/lusc_tcga_pan_can_atlas_2018/lusc_tcga_pan_can_atlas_2018/xcell_between_samples_scores.csv", sep = "\t")
 tcga_patient <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/RNAseq/luad_tcga_pan_can_atlas_2018/luad_tcga_pan_can_atlas_2018/data_clinical_patient.txt", sep = "\t")
 tcga_clin <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/RNAseq/luad_tcga_pan_can_atlas_2018/luad_tcga_pan_can_atlas_2018/data_clinical_sample.txt", sep = "\t")
@@ -476,7 +418,7 @@ tcga %>%
 
 ```
 
-# 2F diff abundance smoking cellohood
+# S2E diff abundance smoking cellohood
 here we will estimate the dispersion across the whole data set and then do the linear model of count comparison only for the groups of interest.
 ```{r, fig.height=15, fig.width=25}
 condition <- c("Non-smoker","Non-smoker","Ex-smoker")
@@ -577,316 +519,18 @@ p <- cur_dat %>%
   xlab("cellohood clusters")
 p
 
-ggsave(filename = paste0(out_folder,"S2F_diff_abundance_smoking_cellohood.pdf"),
+ggsave(filename = paste0(out_folder,"S2E_diff_abundance_smoking_cellohood.pdf"),
        plot = p,
        device = "pdf",
        width = 10,
        height = 3.25)
 ```
 
-# S2G cellohood diff celllo stages bubble plot - to be removed
-
-```{r, fig.height=12, fig.width=12}
-condition <- c("I","I","II")
-names(condition) <- c("stage_1_2","stage_1_3","stage_2_3")
-p.list <- list()
-for (i in c("cello1","cello2")) {
-  
-  # get cell abundances and remove NAs
-  abundances <- cello_dat %>%
-    select(contains(i))
-  abundances <- t(abundances)
-  colnames(abundances) <- cello_dat$immucan_id
-  
-  # merge with clinical data
-  anno <- clin_dat %>%
-    filter(!is.na(.data[["simple_stage"]]))
-  
-  
-  abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
-  
-  meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-  Size <- factor(meta[,"simple_stage"])
-  meta$Size <- Size
-  
-  # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
-  y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-  design <- model.matrix(~0+group,data = y.ab$samples)
-  colnames(design) <- levels(y.ab$samples$group)
-  # we do not fit a trend 
-  y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-  y.ab$common.dispersion
-  #plotBCV(y.ab,pch = 5)
-  
-  # we only compare the diff abundance for Adeno vs Sqam.
-  fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-  
-  
-  fit_1_2 <- glmLRT(glmfit = fit.ab,contrast = c(-1,1,0,0))
-  fit_1_3 <- glmLRT(glmfit = fit.ab,contrast = c(-1,0,1,0))
-  fit_2_3 <- glmLRT(glmfit = fit.ab,contrast = c(0,-1,1,0))
-  res_list <- list(fit_1_2,fit_1_3,fit_2_3)
-  
-  cur_list <- lapply(res_list,function(x){
-    sig_dat <- x$table
-    sig_dat$celltypes <- rownames(sig_dat)
-    sig_dat$comparison <- gsub("Size","",x$comparison)
-    return(sig_dat)
-  })
-  
-  p.list[[i]] <- do.call(rbind,cur_list)
-}   
-
-cur_dat <- do.call(rbind,p.list)
-cur_dat <- cur_dat %>%
-  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = ifelse(comparison == "-1*I 1*II","stage_2_vs_1","stage_3_vs_1"),
-         cond = ifelse(comparison == "-1*II 1*III","stage_3_vs_2",cond)) %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         sig = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         direction = ifelse(logFC > 0 ,"up", "down"),
-         ct_name = gsub("_abundance","",str_split_i(celltypes,"__",1)))
-
-to_show <- cur_dat %>%
-  filter(sig_overall == TRUE) %>%
-  pull(ct_name)
-# add the one from the linear model of densities to the plot
-#to_show <- c(to_show,"CD4","CD8","CD8_GATA3_BCL2","CD8_Ki67","tumor_B2M_HLADR","Tumor_IDO1")
-
-cur_dat <- cur_dat %>%
-  filter(ct_name %in% to_show) %>%
-  mutate(celltypes = gsub("_abundance","",celltypes))
-
-# get max and min fold change values
-max_up <- max(cur_dat$logFC)+1
-min_down <- min(cur_dat$logFC)-1
-
-# plot the data
-p <- cur_dat %>%
-  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
-  geom_point()+
-  theme_bw()+
-  scale_colour_gradientn(colours = c("blue","white","red"), 
-                         values = rescale(c(round(min_down),0,round(max_up))),
-                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  #scale_color_gradient(low = "white",   high = "red")+
-  scale_size(range = c(1,8))+
-  new_scale_colour() +
-  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 8),
-        axis.text.y = element_text(size = 8),
-        legend.text = element_text(size = 8),
-        legend.title = element_text(size = 8),
-        plot.margin = unit(c(2.5, 2.5, 2.5, 2.5), "cm"))+
-    coord_flip()
-p
-
-
-
-
-
-condition <- c("I","I","II")
-names(condition) <- c("stage_1_2","stage_1_3","stage_2_3")
-
-# loop over conditions and do two way abundance difference tests
-l.list <- list()
-for (i in c("cello1","cello2")) {
-  p.list <- list()
-  for (j in names(condition)) {
-
-    abundances <- cello_dat %>%
-      select(contains(i))
-    abundances <- t(abundances)
-    colnames(abundances) <- cello_dat$immucan_id
-      anno <- clin_dat %>%
-        filter(!is.na(.data[[j]]))
-      
-    abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
-    
-    meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-    Size <- factor(meta[,j])
-    meta$Size <- relevel(Size,ref =condition[j])
-    
-    y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-    design <- model.matrix(~Size,data = y.ab$samples)
-    
-    # we do not fit a trend 
-    y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-    y.ab$common.dispersion
-    
-    #plotBCV(y.ab,pch = 5)
-    
-    
-    fit.ab <- glmQLFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-    #plotQLDisp(fit.ab, pch = 5)
-    
-    res <- glmQLFTest(fit.ab)
-    
-    sig_dat <- res$table
-    sig_dat$celltypes <- rownames(sig_dat)
-    sig_dat$cond <- j
-    sig_dat$comparison <- gsub("Size","",res$comparison)
-    p.list[[j]] <- sig_dat
-    
-    
-  }
-  l.list[[i]] <- do.call(rbind,p.list)
-}
-
-cur_dat <- do.call(rbind,l.list)
-
-cur_dat <- cur_dat %>%
-  mutate(tech = str_split_i(celltypes,"__",2)) %>%
-  group_by(tech, cond) %>%
-  mutate(cond = paste0(cond,"_comparison: ",comparison),
-         FDR = p.adjust(PValue,method = "BH"),
-         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         sig = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         direction = ifelse(logFC > 0 ,"up", "down"),
-         ct_name = str_split_i(celltypes,"__",1))
-
-to_show <- cur_dat %>%
-  filter(sig_overall == TRUE) %>%
-  pull(ct_name)
-
-cur_dat <- cur_dat %>%
-  filter(ct_name %in% to_show) %>%
-  mutate(celltypes = gsub("_abundance","",celltypes))
-
-# get max and min fold change values
-max_up <- max(cur_dat$logFC)+1
-min_down <- min(cur_dat$logFC)-1
-
-# plot the data
-p <- cur_dat %>%
-  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
-  geom_point()+
-  theme_bw()+
-  scale_colour_gradientn(colours = c("blue","white","red"), 
-                         values = rescale(c(round(min_down),0,round(max_up))),
-                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  #scale_color_gradient(low = "white",   high = "red")+
-  scale_size(range = c(1,8))+
-  new_scale_colour() +
-  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10))+
-  theme(axis.text.y = element_text(size = 10))+
-  theme(legend.text = element_text(size = 10))+
-  theme(legend.title = element_text(size = 10))+
-  theme(plot.margin = unit(c(2.5, 2.5, 2.5, 2.5), "cm"))
-p
-ggsave(filename = paste0(out_folder,"S2F_diff_abundance_celloClusters_stages.pdf"),
-       plot = p,
-       device = "pdf",
-       width = 8,
-       height = 6)
-```
-
-
-
-
-
-# deconvolution for stages - to be removed if not wanted
-
-```{r}
-decon <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/RNAseq/Rout/tables/RNAseq/Xcell_deconvoluted_TPM.rds")
-
-hist(decon$`T cell CD4+ naive_xcell`, breaks = 100)
-# the data is heavily skewed and we will therefore use a wilcoxon rank sum test for comparison
-
-# generate annotation
-anno <- clin_dat %>% select(immucan_id,simple_stage)
-decon <- left_join(decon, anno,"immucan_id")
-decon <- decon %>%
-  filter(!is.na(`immune score_xcell`),
-         simple_stage %in% c("I","II","III"))
-
-# encode stages as linear
-decon %>%
-  pivot_longer(-c(immucan_id,simple_stage)) %>%
-  mutate(stage = ifelse(simple_stage == "I",1,NA),
-         stage = ifelse(simple_stage == "II",2,stage),
-         stage = ifelse(simple_stage == "III",3,stage),
-         stage = as.numeric(as.factor(stage))) %>%
-  group_by(name) %>%
-  nest() %>%
-  mutate(model = map(data, ~ lm(value ~ stage, data = .x)),
-         summary = map(model, broom::tidy)) %>%
-  select(name, summary) %>%
-  unnest(c(summary)) %>%
-  filter(term == "stage") %>%
-  ungroup() %>%
-  mutate(FDR = p.adjust(p = p.value,method = "BH")) %>%
-  filter(FDR < 0.1)
-
-# compare the groups to each other
-comp_groups <- colnames(decon)
-p.list <- list()
-for (i in c("I","II","III")) {
-  dat <- decon %>%
-    filter(simple_stage != i) %>%
-    pivot_longer(-c(immucan_id,simple_stage))
-  for (j in unique(dat$name)) {
-    comp <- unique(dat$simple_stage)
-    comp1 <- comp[1]
-    comp2 <-  comp[2]
-    test1 <- dat %>%
-      filter(name == j,
-             simple_stage == comp1) %>%
-      pull(value)
-    test2 <- dat %>%
-      filter(name == j,
-             simple_stage == comp2) %>%
-      pull(value)
-    out <- tidy(wilcox.test(test1 ,test2))
-    out$comp <- paste(comp1,"__",comp2)
-    out$logFC <- log2(mean(test1)/mean(test2))
-    out$marker <- j
-    p.list[[paste0(j, "__", i)]] <- out
-  }
-}
-
-out <- bind_rows(p.list)
-markers <- out %>%
-  group_by(comp) %>%
-  mutate(FDR = p.adjust(p.value,"BH")) %>%
-  filter(FDR < .1) %>%
-  pull(marker)
-
-decon %>% 
-  pivot_longer(-c(immucan_id,simple_stage)) %>%
-  filter(simple_stage %in% c("I","II","III"),
-         name %in% markers) %>%
-  ggplot(aes(x = name,y = value,fill=as.factor(simple_stage)))+
-  geom_boxplot()+
-  theme_bw()+
-  theme(axis.text.x = element_text(angle = 90, vjust=.5, hjust=1))
-  
-  
-```
-
-
-
-
-# S2G mutation signatures
+# S2F mutation signatures
 
 ```{r}
 # Merge with mutational signatures
-Lung_NSCLC2_filtered <-read.delim("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/WES/mutation_signatures/Lung_NSCLC2_filtered.tsv", sep="\t")
+Lung_NSCLC2_filtered <-read.delim(paste0(mount_path,"data/WES/mutation_signatures/Lung_NSCLC2_filtered.tsv"), sep="\t")
 names(Lung_NSCLC2_filtered)[names(Lung_NSCLC2_filtered)=="patient"] <- "immucan_id"
 anno_WES <- merge(traits, Lung_NSCLC2_filtered, by="immucan_id", sort=F)
 
@@ -939,7 +583,7 @@ p <- ggplot(data_to_plot, aes(x = smoking_status, y = feature, fill=smoking_stat
                      method = "wilcox.test", label = "p.format",size = 5)
 
 p
-ggsave(filename = paste0(out_folder,"S2H_mutation_signatures_for_smoking.pdf"),
+ggsave(filename = paste0(out_folder,"S2F_mutation_signatures_for_smoking.pdf"),
        plot = p,
        device = "pdf",
        width = 6,
@@ -949,7 +593,7 @@ ggsave(filename = paste0(out_folder,"S2H_mutation_signatures_for_smoking.pdf"),
 # S2H inflammation signature for smoking
 
 ```{r}
-cur_dat <- read.table("../../RNA/CURIE/inflammation_quantification_NSCLC2/outputs/pathwayActivity/PathwayActivity_NSCLC2_mlm")
+cur_dat <- read.table(paste0(mount_path,"data/RNASeq/CURIE/inflammation_quantification_NSCLC2/outputs/pathwayActivity/PathwayActivity_NSCLC2_mlm"))
 my_comp <-  list( c("Current smoker", "Non-smoker"), c("Ex-smoker", "Non-smoker"), c("Current smoker", "Non-smoker") )
 
 cur_dat <- cur_dat %>%
@@ -982,19 +626,4 @@ ggsave(filename = paste0(out_folder,"S2G_inflammation_score_for_smoking_status.p
        device = "pdf",
        width = 7,
        height = 6)
-cur_dat %>%
-  filter(!is.na(smoking_status)) %>%
-  ggplot(aes(x = smoking_status,y = value, fill = smoking_status))+
-  geom_boxplot(outliers = FALSE)+
-  geom_violin(aes(color = smoking_status))+
-  facet_wrap(.~name)+
-  scale_fill_manual(values = alpha(c("blue", "lightblue", "cyan3"),alpha = 0.5))+
-  scale_color_manual(values = c("blue", "lightblue", "cyan3"))+
-  stat_compare_means(size = 5,label = "p.signif", comparisons = my_comp)+
-  theme_bw()+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 1, size = 16),
-        axis.title.x = element_blank(),
-        axis.title.y = element_text(size = 14),
-        legend.text = element_text(size = 14),
-        strip.text.x = element_text(size = 14))
 ```

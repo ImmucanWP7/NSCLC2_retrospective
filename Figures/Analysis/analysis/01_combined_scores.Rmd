@@ -323,7 +323,7 @@ dat <- dat %>%
   mutate(immucan_id = group_by) %>% 
   pivot_wider(id_cols = immucan_id,values_from = ct, names_from = c(from_label, to_label),names_sep = "-")
 
-write.csv(dat,file = paste0(out_folder,"cell-pair_interactions_directional_P1",".csv"), row.names = FALSE, quote = FALSE)
+write.csv(dat,file = paste0(out_folder,"cell-pair_interactions_celltypes_minor_directional_P1",".csv"), row.names = FALSE, quote = FALSE)
 
 # cell types
 count_interactions_classic_celltypes_patient <- imcRtools::countInteractions(object = sce1,group_by = "immucan_id" ,label = "celltypes",colPairName = "neighborhood",method = "classic")

@@ -25,6 +25,7 @@ library(ggraph)
 library(ggrepel)
 library(scales)
 library(ggnewscale)
+library(imcRtools)
 ```
 
 ```{r}
@@ -219,32 +220,29 @@ ggsave(filename = paste0(out_folder,"2B_diff_abundance_celloClusters_histology.p
 
 # 2C images P1 CN_2
 ```{r, fig.height=12, fig.width=16}
-sce1 <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IMC/Rout/data/sce.rds")
+sce1 <- readRDS(paste0(mount_path,"data/IMC/Panel_1/Rout/sce.rds"))
 sce1 <- sce1[,sce1$ROI != 4]
 counts <- as.data.frame(t(assay(sce1,"exprs")))
 
-# identify images with high amuounts of differentiall abundant cello clusters
-CNs <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/cellohood_density_cellbased_p1.csv")
-CNs %>% 
-  left_join(clin_dat,"immucan_id") %>%
-  select(immucan_id,CN_13, simple_histology) %>%
-  arrange(desc(CN_13))
+# identify images with high amuounts of differentially abundant cello clusters
+#cello_dat %>% 
+#  left_join(clin_dat,"immucan_id") %>%
+#  select(immucan_id,CN_13__cello1, CN_2__cello1, CN_10__cello1, simple_histology)
 
-LUNG-NSCLC2-0640|0688 # LUSC high for CN_13 -> rare cluster 
-LUNG-NSCLC2-0567|0617 # high for CN_2
-LUNG-NSCLC2-0689|0582 # high for CN_10
-LUNG-NSCLC2-0699|0588 # high for CN_28
+#LUNG-NSCLC2-0640|0688 # LUSC high for CN_13 -> rare cluster 
+#LUNG-NSCLC2-0567|0617 # high for CN_2
+#LUNG-NSCLC2-0689|0582 # high for CN_10
+#LUNG-NSCLC2-0699|0588 # high for CN_28
 
 cur_sce <- sce1[,grepl("0640|0688|0567|0617|0689|0582|0699|0588",sce1$immucan_id)]
-cur_sce$cellohood <- paste0("CN_",cur_sce$cellohood)
 
 
 plotSpatial(cur_sce[,grepl("0567|0617", cur_sce$immucan_id)],img_id = "sample_id",node_color_by = "celltypes_minor")
 plotSpatial(cur_sce[,grepl("0567|0617", cur_sce$immucan_id)],img_id = "sample_id",node_color_by = "cellohood")
 
 library(cytomapper)
-masks <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IMC/Rout/data/masks.rds")
-images <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IMC/Rout/data/images.rds")
+masks <- readRDS(paste0(mount_path,"data/IMC/Panel_1/Rout/masks.rds"))
+images <- readRDS(paste0(mount_path,"data/IMC/Panel_1/Rout/images.rds"))
 
 cur_df <- as.data.frame(colData(sce1))
 rownames(cur_df) <- NULL
@@ -292,7 +290,7 @@ plotCells(mask = cur_masks,
                             label = expression("100 " ~ mu * "m"),
                             cex = 1.2,
                             lwidth = 5),
-           save_plot = list(filename = "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_2/LUNG-NSCLC2-0617_ROI_01_celltypes.png"))
+           save_plot = list(filename = paste0(out_folder,"LUNG-NSCLC2-0617_ROI_01_celltypes.png")))
 plotCells(mask = cur_masks,
           object = plot_sce,
           cell_id = "ObjectNumber",
@@ -306,7 +304,7 @@ plotCells(mask = cur_masks,
                             label = expression("100 " ~ mu * "m"),
                             cex = 1.2,
                             lwidth = 5),
-           save_plot = list(filename = "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_2/LUNG-NSCLC2-0617_ROI_01_CN_2.png"))
+           save_plot = list(filename = paste0(out_folder,"LUNG-NSCLC2-0617_ROI_01_CN_2.png")))
 
 plotPixels(image = cur_images,
            
@@ -323,32 +321,29 @@ plotPixels(image = cur_images,
                             label = expression("100 " ~ mu * "m"),
                             cex = 1.2,
                             lwidth = 5),
-           save_plot = list(filename = "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_2/LUNG-NSCLC2-0617_ROI_01_PDL1_expr.png"))
+           save_plot = list(filename = paste0(out_folder,"LUNG-NSCLC2-0617_ROI_01_PDL1_expr.png")))
 ```
 
 
 # 2D images P1 CN_2
 ```{r, fig.height=12, fig.width=16}
-sce2 <- readRDS("/mnt/immucan_volume/processed_data/Panel_2/IMMUcan_NSCLC2/IMC/Rout/data/sce.rds")
+sce2 <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/sce.rds"))
 
 # identify images with high amuounts of differentiall abundant cello clusters
-CNs <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/cellohood_density_cellbased_p2.csv")
-CNs %>% 
-  left_join(clin_dat,"immucan_id") %>%
-  select(immucan_id,CN_9, simple_histology) %>%
-  arrange(desc(CN_9))
+#cello_dat %>% 
+#  left_join(clin_dat,"immucan_id") %>%
+#  select(immucan_id,CN_9__cello2, simple_histology) %>%
+#  arrange(desc(CN_9__cello2))
 
-LUNG-NSCLC2-0720|0729 # LUSC high for CN_9 -> rare cluster 
-
+#LUNG-NSCLC2-0720|0729 # LUSC high for CN_9 -> rare cluster 
 
 cur_sce <- sce2[,grepl("0729",sce2$immucan_id)]
 
 plotSpatial(cur_sce,img_id = "sample_id",node_color_by = "celltypes_minor")
 plotSpatial(cur_sce,img_id = "sample_id",node_color_by = "cellohood")
 
-library(cytomapper)
-masks <- readRDS("/mnt/immucan_volume/processed_data/Panel_2/IMMUcan_NSCLC2/IMC/Rout/data/masks.rds")
-images <- readRDS("/mnt/immucan_volume/processed_data/Panel_2/IMMUcan_NSCLC2/IMC/Rout/data/images.rds")
+masks <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/masks.rds"))
+images <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/images.rds"))
 
 cur_df <- as.data.frame(colData(sce2))
 rownames(cur_df) <- NULL
@@ -374,6 +369,7 @@ channelNames(cur_ims) <- rownames(plot_sce)
 cur_images <- CytoImageList(cur_ims, on_disk = FALSE)
 cur_masks <- CytoImageList(cur_masks, on_disk = FALSE)
 cur_images <- scaleImages(cur_images,value = 2^16-1)
+cur_masks <- scaleImages(cur_masks,value = 2^16-1)
 
 cur_images <- normalize(cur_images, separateImages = TRUE)
 cur_images <- normalize(cur_images, separateImages = TRUE, 
@@ -383,7 +379,6 @@ cur_images <- normalize(cur_images, separateImages = TRUE,
 plot_sce$CN_9 <- "other"
 plot_sce[,plot_sce$cellohood == "CN_9"]$CN_9 <- "CN_9"
 
-mcols(cur_masks)
 plotCells(mask = cur_masks,
           object = plot_sce,
           cell_id = "ObjectNumber",
@@ -396,7 +391,7 @@ plotCells(mask = cur_masks,
                            label = expression("100 " ~ mu * "m"),
                            cex = 1.2,
                            lwidth = 5),
-          save_plot = list(filename = "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_2/LUNG-NSCLC2-0729_ROI_01_celltypes.png"))
+          save_plot = list(filename = paste0(out_folder,"LUNG-NSCLC2-0729_ROI_01_celltypes.png")))
 plotCells(mask = cur_masks,
           object = plot_sce,
           cell_id = "ObjectNumber",
@@ -410,7 +405,7 @@ plotCells(mask = cur_masks,
                             label = expression("100 " ~ mu * "m"),
                             cex = 1.2,
                             lwidth = 5),
-           save_plot = list(filename = "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_2/LUNG-NSCLC2-0729_ROI_01_CN_9.png"))
+           save_plot = list(filename =  paste0(out_folder,"LUNG-NSCLC2-0729_ROI_01_CN_9.png")))
 
 plotPixels(image = cur_images,
            object = plot_sce,
@@ -426,7 +421,7 @@ plotPixels(image = cur_images,
                             label = expression("100 " ~ mu * "m"),
                             cex = 1.2,
                             lwidth = 5),
-           save_plot = list(filename = "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_2/LUNG-NSCLC2-0729_ROI_01_CD73_expr.png"))
+           save_plot = list(filename = paste0(out_folder,"LUNG-NSCLC2-0729_ROI_01_CD73_expr.png")))
 ```
 
 
@@ -504,12 +499,12 @@ ggsave(filename = paste0(out_folder,"2E_linear_model_densities_for_stages.pdf"),
 ## fractions in tumor and stroma across stages
 this code is here for sanity checks. We could not identify any of the either tumor or stroma based cell type fractions associated with stage in a linear model
 ```{r}
-stroma_IF1 <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/celltype_fractions_stroma_compartment_IF1.csv")
-stroma_IF2 <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/celltype_fractions_stroma_compartment_IF2.csv")
-stroma_IF3 <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/celltype_fractions_stroma_compartment_IF3.csv")
-tumor_IF1 <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/celltype_fractions_tumor_compartment_IF1.csv")
-tumor_IF2 <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/celltype_fractions_tumor_compartment_IF2.csv")
-tumor_IF3 <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/celltype_fractions_tumor_compartment_IF3.csv")
+stroma_IF1 <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/celltype_fractions_stroma_compartment_IF1.csv"))
+stroma_IF2 <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/celltype_fractions_stroma_compartment_IF2.csv"))
+stroma_IF3 <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/celltype_fractions_stroma_compartment_IF3.csv"))
+tumor_IF1 <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/celltype_fractions_tumor_compartment_IF1.csv"))
+tumor_IF2 <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/celltype_fractions_tumor_compartment_IF2.csv"))
+tumor_IF3 <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/celltype_fractions_tumor_compartment_IF3.csv"))
 
 
 colnames(stroma_IF1) <- c("immucan_id",paste0(colnames(stroma_IF1)[-1],"__stroma_IF1"))
@@ -567,7 +562,7 @@ sigs <- cur_dat %>%
          sig = ifelse(FDR < 0.1,TRUE, FALSE))
 
 sigs %>%
-  filter(sig > 0.1)s
+  filter(sig > 0.1)
 # no significant hits!
 ```
 
@@ -638,7 +633,7 @@ cur_dat.groups <- do.call(rbind,p.list)
 ## smoking signature based
 ```{r}
 # Merge with mutational signatures
-Lung_NSCLC2_filtered <-read.delim("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/WES/mutation_signatures/Lung_NSCLC2_filtered.tsv", sep="\t")
+Lung_NSCLC2_filtered <-read.delim(paste0(mount_path,"data/WES/mutation_signatures/Lung_NSCLC2_filtered.tsv"), sep="\t")
 names(Lung_NSCLC2_filtered)[names(Lung_NSCLC2_filtered)=="patient"] <- "immucan_id"
 anno_WES <- merge(clin_dat, Lung_NSCLC2_filtered, by="immucan_id", sort=F)
 
@@ -770,20 +765,16 @@ ggsave(filename = paste0(out_folder,"2F_diff_abundance_smoking.pdf"),
 # 2G images for smoking
 
 ```{r, fig.height=12, fig.width=16}
-sce1 <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IMC/Rout/data/sce.rds")
+# identify images with high amuounts of differentiall abundant cello clusters 18 from panel 1
+#cello_dat %>% 
+#  left_join(clin_dat,"immucan_id") %>%
+#  select(immucan_id,CN_18__cello1, smoking_status) %>%
+#  arrange(desc(CN_18__cello1))
 
-# identify images with high amuounts of differentiall abundant cello clusters
-CNs <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/cellohood_density_cellbased_p1.csv")
-CNs %>% 
-  left_join(clin_dat,"immucan_id") %>%
-  select(immucan_id,CN_18, smoking_status) %>%
-  arrange(desc(CN_18))
+#LUNG-NSCLC2-0644|0558 # 0644 is current and 0558 ex-smoker 
 
-LUNG-NSCLC2-0644|0558 # 0644 is current and 0558 ex-smoker 
-
-library(cytomapper)
-masks <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IMC/Rout/data/masks.rds")
-images <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IMC/Rout/data/images.rds")
+masks <- readRDS(paste0(mount_path,"data/IMC/Panel_1/Rout/masks.rds"))
+images <- readRDS(paste0(mount_path,"data/IMC/Panel_1/Rout/images.rds"))
 
 cur_df <- as.data.frame(colData(sce1))
 rownames(cur_df) <- NULL
@@ -821,7 +812,7 @@ for(i in c("0644","0558")){
   
   
   plot_sce$CNs <- "other"
-  plot_sce[,plot_sce$cellohood %in% c("18","22")]$CNs <- "CN18_and_CN22"
+  plot_sce[,plot_sce$cellohood %in% c("CN_18","CN_22")]$CNs <- "CN18_and_CN22"
   
   plotCells(mask = cur_masks,
             object = plot_sce,
@@ -835,7 +826,7 @@ for(i in c("0644","0558")){
                              label = expression("100 " ~ mu * "m"),
                              cex = 1.2,
                              lwidth = 5),
-            save_plot = list(filename = paste0("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_2/LUNG-NSCLC2-",
+            save_plot = list(filename = paste0(out_folder,"LUNG-NSCLC2-",
                                                i,"_smokers_ROI_02_celltypes.png")))
   plotCells(mask = cur_masks,
             object = plot_sce,
@@ -850,7 +841,7 @@ for(i in c("0644","0558")){
                              label = expression("100 " ~ mu * "m"),
                              cex = 1.2,
                              lwidth = 5),
-            save_plot = list(filename = paste0("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_2/LUNG-NSCLC2-",
+            save_plot = list(filename = paste0(out_folder,"LUNG-NSCLC2-",
                                                i,"_smokers_ROI_02_CN_18_22.png")))
   
   if (i == "0644") {
@@ -873,7 +864,7 @@ for(i in c("0644","0558")){
                               cex = 1.2,
                               lwidth = 5),
              save_plot = list(filename =
-                                paste0("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_2/LUNG-NSCLC2-",
+                                paste0(out_folder,"LUNG-NSCLC2-",
                                        i,"_smokers_ROI_02_GrzB_expr.png")))
   } else {
     plotPixels(image = cur_images,
@@ -894,681 +885,10 @@ for(i in c("0644","0558")){
                               cex = 1.2,
                               lwidth = 5),
              save_plot = list(filename =
-                                paste0("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_2/LUNG-NSCLC2-",
+                                paste0(out_folder,"LUNG-NSCLC2-",
                                        i,"_smokers_ROI_02_GrzB_expr.png")))
   }
   
 }
 ```
 
-
-
-
-
-## check stuff
-# check inflammation
-```{r, fig.height=10, fig.width=10}
-traits <- traits %>%
-  mutate(smoking_TPS = paste0(smoking_status,"-",TPS_score))
-
-
-cur_dat <- read.table("../../RNA/CURIE/inflammation_quantification_NSCLC2/outputs/pathwayActivity/PathwayActivity_NSCLC2_mlm")
-my_comp <-  list( c("Current smoker", "Non-smoker"), c("Ex-smoker", "Non-smoker"), c("Current smoker", "Non-smoker") )
-
-cur_dat <- cur_dat %>%
-  as.data.frame() %>%
-  mutate(immucan_id = paste0("LUNG-",rownames(cur_dat))) %>%
-  left_join(traits,by = "immucan_id") %>%
-  filter(smoking_TPS %in% c("Current smoker-negative", "Current smoker-positive"))
-
-cur_dat <- cur_dat %>%
-  pivot_longer(cols = 1:14)
-p <- cur_dat %>%
-  filter(!is.na(test)) %>%
-  ggplot(aes(x = test,y = value, fill = test))+
-  geom_boxplot(outliers = FALSE)+
-  geom_jitter(aes(color = test),position = position_jitterdodge(jitter.width = 0.2), size= 1)+
-  facet_wrap(.~name)+
-  scale_fill_manual(values = alpha(c("blue", "lightblue", "cyan3"),alpha = 0.5))+
-  scale_color_manual(values = c("blue", "lightblue", "cyan3"))+
-  stat_compare_means(size = 5,label = "p.signif", comparisons = my_comp)+
-  theme_bw()+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 1, size = 16),
-        axis.title.x = element_blank(),
-        axis.title.y = element_text(size = 14),
-        legend.text = element_text(size = 14),
-        strip.text.x = element_text(size = 14))
-
-p
-table(traits$LUAD_vs_LUSC,traits$smoking_TPS)
-table(traits$censoring,traits$test)
-```
-
-
-```{r, fig.height=6, fig.width=20}
-p.list <- list()
-
-# merge with clinical data
-anno <- traits %>%
-  filter(smoking_TPS %in% c("Current smoker-negative", "Current smoker-positive", "Non-smoker-negative")) 
-  
-for (i in data_type) {
-  
-  # get cell abundances and remove NAs
-  abundances <- dat %>%
-    select(contains(i)) %>%
-    filter(complete.cases(.))
-  abundances <- t(abundances)
-  colnames(abundances) <-dat %>%
-    select(contains(i),immucan_id) %>%
-    filter(complete.cases(.)) %>%
-    pull(immucan_id)
-  
-  abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
-  
-  meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-  Size <- factor(meta[,"smoking_TPS"])
-  meta$Size <- Size
-  
-  # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
-  y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-  design <- model.matrix(~0+group,data = y.ab$samples)
-  colnames(design) <- levels(y.ab$samples$group)
-  # we do not fit a trend 
-  y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-  y.ab$common.dispersion
-  #plotBCV(y.ab,pch = 5)
-  
-  # we only compare the diff abundance for Adeno vs Sqam.
-  fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-  fit_1_1 <- glmLRT(glmfit = fit.ab,contrast = c(-1,1,0))
-  fit_1_2 <- glmLRT(glmfit = fit.ab,contrast = c(1,0,-1))
-  fit_1_3 <- glmLRT(glmfit = fit.ab,contrast = c(0,1,-1))
-  res_list <- list(fit_1_1, fit_1_2, fit_1_3)
-  
-  cur_list <- lapply(res_list,function(x){
-    sig_dat <- x$table
-    sig_dat$celltypes <- rownames(sig_dat)
-    sig_dat$comparison <- gsub("Size","",x$comparison)
-    return(sig_dat)
-  })
-  
-  p.list[[i]] <- do.call(rbind,cur_list)
-}   
-    
-cur_dat <- do.call(rbind,p.list)
-
-
-cur_dat <- cur_dat %>%
-  mutate(tech = gsub("_density","",str_split_i(celltypes,"__",2)),
-         cond = ifelse(comparison == "-1*Current smoker-negative 1*Current smoker-positive","SmokerTPShigh_vs_SmokerTPSlow", NA),
-         cond= ifelse(comparison == "1*Current smoker-negative -1*Non-smoker-negative","SmokerTPSlow_vs_Non-smoker", cond),
-         cond= ifelse(comparison == "1*Current smoker-positive -1*Non-smoker-negative","SmokerTPShigh_vs_Non-smoker", cond)) %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         sig = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         direction = ifelse(logFC > 0 ,"up", "down"),
-         ct_name = gsub("_density","",str_split_i(celltypes,"__",1)))
-  
-to_show <- cur_dat %>%
-  filter(sig_overall == TRUE) %>%
-  pull(ct_name)
-
-cur_dat <- cur_dat %>%
-  filter(ct_name %in% to_show) %>%
-  mutate(celltypes = gsub("_abundance","",celltypes))
-
-# get max and min fold change values
-max_up <- max(cur_dat$logFC)+1
-min_down <- min(cur_dat$logFC)-1
-
-# plot the data
-p <- cur_dat %>%
-  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
-  geom_point()+
-  theme_bw()+
-  scale_colour_gradientn(colours = c("blue","white","red"), 
-                         values = rescale(c(round(min_down),0,round(max_up))),
-                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  #scale_color_gradient(low = "white",   high = "red")+
-  scale_size(range = c(1,4))+
-  new_scale_colour() +
-  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =1.5)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
-        axis.text.y = element_text(size = 10),
-        legend.text = element_text(size = 10),
-        legend.title = element_text(size = 10),
-        axis.title.y = element_blank(),
-        legend.position =  "bottom",
-        plot.margin = unit(c(0.1, 1.2, 1.2, 1.2), "cm"))
-p
-```
-
-
-
-# check inflammation
-```{r, fig.height=10, fig.width=10}
-cur_dat <- read.table("../../RNA/CURIE/inflammation_quantification_NSCLC2/outputs/pathwayActivity/PathwayActivity_NSCLC2_mlm")
-my_comp <-  list( c("Current smoker", "Non-smoker"), c("Ex-smoker", "Non-smoker"), c("Current smoker", "Non-smoker") )
-
-cur_dat <- cur_dat %>%
-  as.data.frame() %>%
-  mutate(immucan_id = paste0("LUNG-",rownames(cur_dat))) %>%
-  left_join(traits,by = "immucan_id")
-
-cur_dat <- cur_dat %>%
-  pivot_longer(cols = 1:14)
-p <- cur_dat %>%
-  filter(!is.na(test)) %>%
-  ggplot(aes(x = test,y = value, fill = test))+
-  geom_boxplot(outliers = FALSE)+
-  geom_jitter(aes(color = test),position = position_jitterdodge(jitter.width = 0.2), size= 1)+
-  facet_wrap(.~name)+
-  scale_fill_manual(values = alpha(c("blue", "lightblue", "cyan3"),alpha = 0.5))+
-  scale_color_manual(values = c("blue", "lightblue", "cyan3"))+
-  stat_compare_means(size = 5,label = "p.signif", comparisons = my_comp)+
-  theme_bw()+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 1, size = 16),
-        axis.title.x = element_blank(),
-        axis.title.y = element_text(size = 14),
-        legend.text = element_text(size = 14),
-        strip.text.x = element_text(size = 14))
-
-p
-table(traits$TP53,traits$test)
-table(traits$censoring,traits$test)
-```
-
-differences in TME in smokers vs non vs ex smokers when excluding all TP-high patients
-
-
-```{r, fig.height=15, fig.width=25}
-
-table(traits$smoking_status,traits$TPS_score)
-condition <- c("Non-smoker","Non-smoker","Ex-smoker")
-names(condition) <- c("never_vs_current_smoker","never_vs_Ex_smoker","current_vs_Ex_smoker")
-
-
-p.list <- list()
-
-# merge with clinical data
-anno <- traits %>%
-  filter(!is.na(smoking_status),
-         TPS_score != "positive") 
-  
-for (i in data_type) {
-  
-   # get cell abundances and remove NAs
-  abundances <- dat %>%
-    select(contains(i)) %>%
-    filter(complete.cases(.))
-  abundances <- t(abundances)
-  colnames(abundances) <-dat %>%
-    select(contains(i),immucan_id) %>%
-    filter(complete.cases(.)) %>%
-    pull(immucan_id)
-  
-  abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
-  
-  meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-  Size <- factor(meta[,"smoking_status"])
-  meta$Size <- Size
-  
-  # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
-  y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-  design <- model.matrix(~0+group,data = y.ab$samples)
-  colnames(design) <- levels(y.ab$samples$group)
-  # we do not fit a trend 
-  y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-  y.ab$common.dispersion
-  #plotBCV(y.ab,pch = 5)
-  
-  # we only compare the diff abundance for Adeno vs Sqam.
-  fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-  fit_1_2 <- glmLRT(glmfit = fit.ab,contrast = c(1,-1,0))
-  fit_1_3 <- glmLRT(glmfit = fit.ab,contrast = c(1,0,-1))
-  fit_2_3 <- glmLRT(glmfit = fit.ab,contrast = c(0,1,-1))
-  res_list <- list(fit_1_2,fit_1_3,fit_2_3)
-  
-  cur_list <- lapply(res_list,function(x){
-    sig_dat <- x$table
-    sig_dat$celltypes <- rownames(sig_dat)
-    sig_dat$comparison <- gsub("Size","",x$comparison)
-    return(sig_dat)
-  })
-  
-  p.list[[i]] <- do.call(rbind,cur_list)
-}   
-    
-cur_dat <- do.call(rbind,p.list)
-
-
-cur_dat <- cur_dat %>%
-  mutate(tech = gsub("_density","",str_split_i(celltypes,"__",2)),
-         cond = ifelse(comparison == "1*Current smoker -1*Ex-smoker","CurrentSmoker_vs_ExSmoker","ExSmoker_vs_NonSmoker"),
-         cond = ifelse(comparison == "1*Current smoker -1*Non-smoker","CurrentSmoker_vs_NonSmoker",cond)) %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         sig = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         direction = ifelse(logFC > 0 ,"up", "down"),
-         ct_name = gsub("_density","",str_split_i(celltypes,"__",1)))
-  
-to_show <- cur_dat %>%
-  filter(sig_overall == TRUE) %>%
-  pull(ct_name)
-
-cur_dat <- cur_dat %>%
-  filter(ct_name %in% to_show) %>%
-  mutate(celltypes = gsub("_abundance","",celltypes))
-
-# get max and min fold change values
-max_up <- max(cur_dat$logFC)+1
-min_down <- min(cur_dat$logFC)-1
-
-# plot the data
-p <- cur_dat %>%
-  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
-  geom_point()+
-  theme_bw()+
-  scale_colour_gradientn(colours = c("blue","white","red"), 
-                         values = rescale(c(round(min_down),0,round(max_up))),
-                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  #scale_color_gradient(low = "white",   high = "red")+
-  scale_size(range = c(1,4))+
-  new_scale_colour() +
-  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =1.5)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
-        axis.text.y = element_text(size = 10),
-        legend.text = element_text(size = 10),
-        legend.title = element_text(size = 10),
-        axis.title.y = element_blank(),
-        legend.position =  "bottom",
-        plot.margin = unit(c(0.1, 1.2, 1.2, 1.2), "cm"))
-p
-
-```
-
-# survival of smokers and TPS mixed groups
-```{r}
-traits <- traits %>%
-  mutate(test = ifelse(smoking_status == "Current smoker", ifelse(TPS_score == "positive","smoker_TPS_high", "smoker_TPS_low"),NA))
-table(traits$test)
-table(traits$smoking_status,traits$TPS_score)
-
-ggforest(coxph( Surv(time_to_event, censoring) ~  simple_stage + LUAD_vs_LUSC + smoking_status ,data = as.data.frame(traits)))
-ggforest(coxph( Surv(time_to_event, censoring) ~  test,data = as.data.frame(traits)))
-```
-
-## smoking + TPS 
-
-here we will estimate the dispersion across the whole data set and then do the linear model of count comparison only for the groups of interest.
-```{r, fig.height=15, fig.width=25}
-p.list <- list()
-
-# merge with clinical data
-anno <- traits %>%
-  filter(TPS_score != "positive",
-         !is.na(never_vs_current_smoker)) 
-  
-for (i in data_type) {
-  
-  # get cell abundances and remove NAs
-  abundances <- dat %>%
-    select(contains(i)) %>%
-    filter(complete.cases(.))
-  abundances <- t(abundances)
-  colnames(abundances) <-dat %>%
-    select(contains(i),immucan_id) %>%
-    filter(complete.cases(.)) %>%
-    pull(immucan_id)
-  
-  abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
-  
-  meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-  Size <- factor(meta[,"never_vs_current_smoker"])
-  meta$Size <- Size
-  
-  # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
-  y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-  design <- model.matrix(~0+group,data = y.ab$samples)
-  colnames(design) <- levels(y.ab$samples$group)
-  # we do not fit a trend 
-  y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-  y.ab$common.dispersion
-  #plotBCV(y.ab,pch = 5)
-  
-  # we only compare the diff abundance for Adeno vs Sqam.
-  fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-  fit_1_2 <- glmLRT(glmfit = fit.ab,contrast = c(1,-1))
-  res_list <- list(fit_1_2)
-  
-  cur_list <- lapply(res_list,function(x){
-    sig_dat <- x$table
-    sig_dat$celltypes <- rownames(sig_dat)
-    sig_dat$comparison <- gsub("Size","",x$comparison)
-    return(sig_dat)
-  })
-  
-  p.list[[i]] <- do.call(rbind,cur_list)
-}   
-    
-cur_dat <- do.call(rbind,p.list)
-
-
-cur_dat <- cur_dat %>%
-  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = "smoking_TPS_low-vs-non_smoker") %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         sig = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         direction = ifelse(logFC > 0 ,"up", "down"),
-         ct_name = gsub("_density","",str_split_i(celltypes,"__",1)))
-  
-to_show <- cur_dat %>%
-  filter(sig_overall == TRUE) %>%
-  pull(ct_name)
-
-cur_dat <- cur_dat %>%
-  filter(ct_name %in% to_show) %>%
-  mutate(celltypes = gsub("_abundance","",celltypes))
-
-# get max and min fold change values
-max_up <- max(cur_dat$logFC)+1
-min_down <- min(cur_dat$logFC)-1
-
-# plot the data
-p <- cur_dat %>%
-  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
-  geom_point()+
-  theme_bw()+
-  scale_colour_gradientn(colours = c("blue","white","red"), 
-                         values = rescale(c(round(min_down),0,round(max_up))),
-                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  #scale_color_gradient(low = "white",   high = "red")+
-  scale_size(range = c(1,4))+
-  new_scale_colour() +
-  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =1.5)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
-        axis.text.y = element_text(size = 10),
-        legend.text = element_text(size = 10),
-        legend.title = element_text(size = 10),
-        axis.title.y = element_blank(),
-        legend.position =  "bottom",
-        plot.margin = unit(c(0.1, 1.2, 1.2, 1.2), "cm"))
-p
-
-```
-
-```{r, fig.height=15, fig.width=25}
-p.list <- list()
-
-# merge with clinical data
-anno <- traits %>%
-  mutate(test = paste0(smoking_status, "_",TPS_score)) %>%
-  filter(test %in% c("Current smoker_positive","Non-smoker_negative","Current smoker_negative"))
-
-for (i in data_type) {
-  
-  # get cell abundances and remove NAs
-  abundances <- dat %>%
-    select(contains(i)) %>%
-    filter(complete.cases(.))
-  abundances <- t(abundances)
-  colnames(abundances) <-dat %>%
-    select(contains(i),immucan_id) %>%
-    filter(complete.cases(.)) %>%
-    pull(immucan_id)
-  
-  abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
-  
-  meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-  Size <- factor(meta[,"test"])
-  meta$Size <- Size
-  
-  # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
-  y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-  design <- model.matrix(~0+group,data = y.ab$samples)
-  colnames(design) <- levels(y.ab$samples$group)
-  # we do not fit a trend 
-  y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-  y.ab$common.dispersion
-  #plotBCV(y.ab,pch = 5)
-  
-  # we only compare the diff abundance for Adeno vs Sqam.
-  fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-  fit_1_2 <- glmLRT(glmfit = fit.ab,contrast = c(1,-1))
-  res_list <- list(fit_1_2)
-  
-  cur_list <- lapply(res_list,function(x){
-    sig_dat <- x$table
-    sig_dat$celltypes <- rownames(sig_dat)
-    sig_dat$comparison <- gsub("Size","",x$comparison)
-    return(sig_dat)
-  })
-  
-  p.list[[i]] <- do.call(rbind,cur_list)
-}   
-    
-cur_dat <- do.call(rbind,p.list)
-
-
-cur_dat <- cur_dat %>%
-  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = "smoking_TPS_low-vs-non_smoker") %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         sig = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         direction = ifelse(logFC > 0 ,"up", "down"),
-         ct_name = gsub("_density","",str_split_i(celltypes,"__",1)))
-  
-to_show <- cur_dat %>%
-  filter(sig_overall == TRUE) %>%
-  pull(ct_name)
-
-cur_dat <- cur_dat %>%
-  filter(ct_name %in% to_show) %>%
-  mutate(celltypes = gsub("_abundance","",celltypes))
-
-# get max and min fold change values
-max_up <- max(cur_dat$logFC)+1
-min_down <- min(cur_dat$logFC)-1
-
-# plot the data
-p <- cur_dat %>%
-  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
-  geom_point()+
-  theme_bw()+
-  scale_colour_gradientn(colours = c("blue","white","red"), 
-                         values = rescale(c(round(min_down),0,round(max_up))),
-                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  #scale_color_gradient(low = "white",   high = "red")+
-  scale_size(range = c(1,4))+
-  new_scale_colour() +
-  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =1.5)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
-        axis.text.y = element_text(size = 10),
-        legend.text = element_text(size = 10),
-        legend.title = element_text(size = 10),
-        axis.title.y = element_blank(),
-        legend.position =  "bottom",
-        plot.margin = unit(c(0.1, 1.2, 1.2, 1.2), "cm"))
-p
-p_neg <- p
-
-cur_test <- left_join(dat, anno,"immucan_id")
-cur_test %>%
-  select(immucan_id,PMN_MDSC_abundance__IMC2,test) %>%
-  ggplot(aes(x = test,y = PMN_MDSC_abundance__IMC2))+
-  geom_boxplot()
-```
-
-```{r}
-cur_dat <- read.table("../../RNA/CURIE/inflammation_quantification_NSCLC2/outputs/pathwayActivity/PathwayActivity_NSCLC2_mlm")
-
-anno <- traits %>%
-  filter(TPS_score != "positive",
-         !is.na(never_vs_current_smoker)) 
-
-cur_dat <- cur_dat %>%
-  as.data.frame() %>%
-  mutate(immucan_id = paste0("LUNG-",rownames(cur_dat)))
-cur_dat <- left_join(anno,cur_dat, "immucan_id")
-
-cur_dat <- cur_dat %>%
-  pivot_longer(cols = c(JAK.STAT,NFkB,TNFa))
-
-p <- cur_dat %>%
-  filter(!is.na(never_vs_current_smoker)) %>%
-  ggplot(aes(x = never_vs_current_smoker,y = value, fill = never_vs_current_smoker))+
-  geom_boxplot(outliers = FALSE)+
-  geom_jitter(aes(color = never_vs_current_smoker),position = position_jitterdodge(jitter.width = 0.2), size= 1)+
-  facet_wrap(.~name)+
-  scale_fill_manual(values = alpha(c("blue", "lightblue", "cyan3"),alpha = 0.5))+
-  scale_color_manual(values = c("blue", "lightblue", "cyan3"))+
-  stat_compare_means(label = "p.signif")+
-  theme_bw()+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 1, size = 16),
-        axis.title.x = element_blank(),
-        axis.title.y = element_text(size = 14),
-        legend.text = element_text(size = 14),
-        strip.text.x = element_text(size = 14))
-
-p
-```
-
-
-## metastatic treatment
-
-here we will estimate the dispersion across the whole data set and then do the linear model of count comparison only for the groups of interest.
-```{r, fig.height=15, fig.width=25}
-p.list <- list()
-
-# merge with clinical data
-anno <- traits %>%
-  filter(!is.na(metastatic_treatment),
-         simple_histology == "Adenocarcinoma") 
-  
-for (i in data_type) {
-  
-  # get cell abundances and remove NAs
-  abundances <- dat %>%
-    select(contains(i)) %>%
-    filter(complete.cases(.))
-  abundances <- t(abundances)
-  colnames(abundances) <-dat %>%
-    select(contains(i),immucan_id) %>%
-    filter(complete.cases(.)) %>%
-    pull(immucan_id)
-  
-  abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
-  
-  meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-  Size <- factor(meta[,"metastatic_treatment"])
-  meta$Size <- Size
-  
-  # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
-  y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-  design <- model.matrix(~0+group,data = y.ab$samples)
-  colnames(design) <- levels(y.ab$samples$group)
-  # we do not fit a trend 
-  y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-  y.ab$common.dispersion
-  #plotBCV(y.ab,pch = 5)
-  
-  # we only compare the diff abundance for Adeno vs Sqam.
-  fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-  fit_1_2 <- glmLRT(glmfit = fit.ab,contrast = c(-1,1))
-  res_list <- list(fit_1_2)
-  
-  cur_list <- lapply(res_list,function(x){
-    sig_dat <- x$table
-    sig_dat$celltypes <- rownames(sig_dat)
-    sig_dat$comparison <- gsub("Size","",x$comparison)
-    return(sig_dat)
-  })
-  
-  p.list[[i]] <- do.call(rbind,cur_list)
-}   
-    
-cur_dat <- do.call(rbind,p.list)
-
-
-cur_dat <- cur_dat %>%
-  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = "future_metastasis") %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         sig = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         direction = ifelse(logFC > 0 ,"up", "down"),
-         ct_name = gsub("_density","",str_split_i(celltypes,"__",1)))
-  
-to_show <- cur_dat %>%
-  filter(sig_overall == TRUE) %>%
-  pull(ct_name)
-
-cur_dat <- cur_dat %>%
-  filter(ct_name %in% to_show) %>%
-  mutate(celltypes = gsub("_abundance","",celltypes))
-
-# get max and min fold change values
-max_up <- max(cur_dat$logFC)+1
-min_down <- min(cur_dat$logFC)-1
-
-# plot the data
-p <- cur_dat %>%
-  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
-  geom_point()+
-  theme_bw()+
-  scale_colour_gradientn(colours = c("blue","white","red"), 
-                         values = rescale(c(round(min_down),0,round(max_up))),
-                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  #scale_color_gradient(low = "white",   high = "red")+
-  scale_size(range = c(1,4))+
-  new_scale_colour() +
-  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =1.5)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
-        axis.text.y = element_text(size = 10),
-        legend.text = element_text(size = 10),
-        legend.title = element_text(size = 10),
-        axis.title.y = element_blank(),
-        legend.position =  "bottom",
-        plot.margin = unit(c(0.1, 1.2, 1.2, 1.2), "cm"))
-p
-
-table(traits$simple_histology,traits$metastatic_treatment)
-```

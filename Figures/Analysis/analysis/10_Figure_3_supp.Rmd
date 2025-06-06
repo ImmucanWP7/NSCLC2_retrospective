@@ -1,0 +1,1229 @@
+---
+title: "Figure 3"
+author: "Daniel Schulz"
+date: "2024-11-15"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(ggpubr)
+library(SingleCellExperiment)
+library(survivalAnalysis)
+library(ggsurvfit)
+library(survminer)
+library(survival)
+library(edgeR)
+library(cowplot)
+library(ggrepel)
+library(igraph)
+library(ggraph)
+library(ggrepel)
+library(scales)
+library(ggnewscale)
+```
+
+```{r}
+out_folder <- "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_3_supp/"
+```
+
+# load data
+we will load the data we generated at the beginning of figure 2
+```{r}
+dat <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/abundances_dat.rds")
+dens_dat <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/densities_dat.rds")
+cello_dat <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/cello_dat.rds")
+clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+int_dat <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/interaction_dat.rds")
+traits <- read_csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IMC/Rout/data/scores_for_sharing/all_traits.csv")
+
+# variables
+data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2))
+```
+
+
+
+
+
+
+
+# TMB & TPS groups
+
+```{r}
+cur_traits <- traits %>%
+  filter(! is.na(TPS_score),
+         ! is.na(TMB_score)) %>%
+  mutate(TMB_TPS = paste0(TMB_score,"-",TPS_score)) %>%
+  filter(simple_histology != "unknown") %>% 
+  as.data.frame()
+
+
+ggforest(coxph( Surv(time_to_event, censoring) ~ simple_stage + simple_histology + TPS_score,
+                data = cur_traits))
+ggforest(coxph( Surv(time_to_event, censoring) ~ simple_stage + simple_histology + TMB_score,
+                data = cur_traits))
+
+ggforest(coxph( Surv(time_to_event, censoring) ~ simple_stage  + TPS_score,
+                data = cur_traits %>% filter(simple_histology == "Adenocarcinoma")))
+ggforest(coxph( Surv(time_to_event, censoring) ~ simple_stage  + TMB_score,
+                data = cur_traits %>% filter(simple_histology == "Adenocarcinoma")))
+
+ggforest(coxph( Surv(time_to_event, censoring) ~ simple_stage  + TMB_TPS,
+                data = cur_traits))
+
+
+```
+
+
+
+# B cell patches
+
+## caculate B cell patch summaries
+note: the code is not evaluated automatically as the output is saved
+```{r, fig.height=20, fig.width=20, eval=FALSE}
+library(BiocParallel)
+cur_files <- list.files("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IF/IF1/tsv", 
+                        pattern = ".rds$", full.names = TRUE)
+
+bplapply(cur_files,function(x){
+  cur_sce <- readRDS(x)
+  
+  if (is.numeric(cur_sce$TLS.ID)) {
+    dat <- as.data.frame(colData(cur_sce))
+    sample_id <- unique(cur_sce$sample_id)
+
+    dat <- dat %>%
+      dplyr::select(sample_id,celltype, TLS.ID,cell.ID, in.ROI.tumor_tissue, nucleus.x,nucleus.y, dist_to_tumor)
+
+    # here we will collect the information of the size of TLS and their
+    # location. We will identify the location based on subset of cells in
+    # the tumor_tissue
+    dat <- dat  %>%
+      filter(!is.na(TLS.ID)) %>%
+      group_by(TLS.ID, in.ROI.tumor_tissue) %>%
+      summarise(size = n(),
+                TLS_dist_to_tumor = mean(dist_to_tumor)) %>%
+      mutate(tissue_location = "in_tumor",
+             tissue_location = ifelse(TLS_dist_to_tumor > -500 & TLS_dist_to_tumor < 500, "boundary",tissue_location),
+             tissue_location = ifelse(TLS_dist_to_tumor > 500, "outside_tumor",tissue_location))
+
+
+    cell_props <- as.data.frame(colData(cur_sce))
+    cell_props <- cell_props %>%
+      filter(!is.na(TLS.ID)) %>%
+      dplyr::select(sample_id,celltype, TLS.ID,cell.ID, in.ROI.tumor_tissue, nucleus.x,nucleus.y) %>%
+      group_by(TLS.ID) %>%
+      dplyr::count(celltype) %>%
+      mutate(total_cellcount = sum(n),
+             frac = n/total_cellcount) %>%
+      pivot_wider(id_cols = c(TLS.ID),names_from = celltype,values_from = frac, values_fill = 0)
+
+
+    dat <- left_join(dat,cell_props,"TLS.ID")
+    dat$location <- NULL
+    dat$sample_id <- sample_id
+
+  }
+  # No TLS in sample
+  else {
+    dat <- data.frame(TLS.ID = NA,
+                      size = NA,
+                      TLS_dist_to_tumor =NA,
+                      tissue_location = NA,
+                      B = NA,
+                      BnT = NA,
+                      DC = NA,
+                      `T`= NA,
+                      other = NA,
+                      Tumor = NA,
+                      MacCD163 = NA,
+                      Tumor_CD15 = NA,
+                      sample_id = unique(cur_sce$sample_id))
+                      
+  }
+  
+  write_csv(dat,paste0("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IF/Rout/IF1_features/TLS_summary/",unique(dat$sample_id),".csv"))
+}, BPPARAM = MulticoreParam(workers = 12))
+gc()
+```
+
+## calculate compartment based cell counts for tumor and outside only
+
+Here we calculate the number of cells in the normal and tumor tissue
+
+```{r, fig.height=20, fig.width=20, eval=FALSE}
+cur_files <- list.files("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IF/IF1/tsv",
+                        pattern = ".rds$", full.names = TRUE)
+
+if (!file.exists("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_3/dist_dat_all_cells_inTumor_outside.rds")) {
+    cur_list <- bplapply(cur_files,function(x){
+    cur_sce <- readRDS(x)
+    
+    
+    cur_dat <- as.data.frame(colData(cur_sce))
+    sample_id <- unique(cur_sce$sample_id)
+    rownames(cur_dat) <- NULL
+    
+    cur_dat <- cur_dat %>%
+      dplyr::select(sample_id,celltype, dist_to_tumor) %>%
+      mutate(location = ifelse(dist_to_tumor < 500, "in_tumor", "outside")) %>%
+      group_by(celltype,location) %>%
+      summarise(n = n(), .groups = "drop") %>%
+      mutate(sample_id = sample_id)
+    
+    return(cur_dat)
+    
+  }, BPPARAM = MulticoreParam(workers = 12))
+  gc()
+  dist_dat <- do.call(rbind, cur_list)
+  saveRDS(dist_dat,"/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_3/dist_dat_all_cells_inTumor_outside.rds")
+}
+
+dist_dat <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_3/dist_dat_all_cells_inTumor_outside.rds")
+dist_dat <- dist_dat %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(-sample_id)
+```
+
+
+# S3A B cell patch image
+```{r, fig.height=40, fig.width=40}
+cur_files <- list.files("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IF/Rout/IF1_features/TLS_summary",full.names = TRUE)
+cur_list <- list()
+for (i in cur_files) {
+  cur_file <- read.csv(i, check.names = FALSE)
+  cur_list[[i]] <- cur_file %>%
+    pivot_longer(cols = -c(colnames(cur_file)[1:4],colnames(cur_file)[ncol(cur_file)]))
+
+}
+
+TLS_summary <- do.call(rbind,cur_list)
+
+TLS_summary %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,size, TLS.ID) %>%
+  distinct() %>%
+  group_by(immucan_id) %>%
+  filter(!is.na(TLS.ID)) %>%
+  dplyr::count(immucan_id) %>%
+  arrange(desc(n))
+
+cur_sce_2 <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IF/IF1/tsv/LUNG-NSCLC2-0565-FIXT-01-IF1-01_#_cells_properties_#_12cf4d92f8de6204055505affdf85e90.rds")
+# we will assign all cells within 500 µm of the tumor annotation to tumor
+cur_sce_2[,cur_sce_2$dist_to_tumor < 500]$in.ROI.tumor_tissue <- TRUE
+
+cur_sce_2$TLS <- !is.na(cur_sce_2$TLS.ID)
+df <- as.data.frame(colData(cur_sce_2))
+df <- df %>%
+  mutate(TLS = ifelse(celltype %in% c("Tumor","Tumor_CD15"),"Tumor cells","Stroma cells"),
+         TLS = ifelse(in.ROI.tumor_tissue == FALSE,"Healthy",TLS),
+         TLS = ifelse(!is.na(TLS.ID),"TLS",TLS))
+colData(cur_sce_2) <- DataFrame(df)
+
+p <- imcRtools::plotSpatial(cur_sce_2,img_id = "sample_id",coords = c("nucleus.x","nucleus.y"),node_color_by = "TLS",node_size_fix = 0.2)+
+  scale_colour_manual(values = c("Healthy" = "gray", "Stroma cells" = "darkred", "Tumor cells" = "magenta", "TLS" = "darkorange1"))
+#p2 <- imcRtools::plotSpatial(cur_sce_2,img_id = "sample_id",coords = c("nucleus.x","nucleus.y"),node_color_by = "celltype",node_size_fix = 0.2)+
+#  scale_colour_manual(values = col_vec)
+
+p
+#p2
+ggsave(filename = paste0(out_folder,"S3A_TLS_example.png"),
+       plot = p,
+       device = "png",
+       width = 4000,
+       height = 4000,
+       units = "px")
+```
+
+## patients with TLS 
+percentage of patients at least 10 patches of 100 B cells
+```{r}
+TLS_pats <- TLS_summary %>%
+  as.data.frame() %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1),
+         B_count = size*value) %>%
+  filter(name == "B") %>%
+  select(immucan_id,B_count, TLS.ID) %>%
+  distinct() %>%
+  filter(B_count > 100) %>%
+  dplyr::count(immucan_id) %>%
+  filter(n >10) %>%
+  ungroup() %>%
+  left_join(clin_dat[,c("immucan_id","simple_histology")], by = "immucan_id")
+
+dim(TLS_pats)[1]/length(unique(clin_dat$immucan_id))
+df <- data.frame(hist_count = unclass(table(clin_dat$simple_histology)))
+
+# per histology
+Adeno_pats <- TLS_pats %>%
+  filter(simple_histology == "Adenocarcinoma")
+dim(Adeno_pats)[1]/df["Adenocarcinoma",]
+
+LUSC_pats <- TLS_pats %>%
+  filter(simple_histology == "Squamous cell carcinoma")
+dim(LUSC_pats)[1]/df["Squamous cell carcinoma",]
+```
+
+
+
+## S3B TLS size and number
+
+```{r}
+plot_dat <- TLS_summary %>%
+  as.data.frame() %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1),
+         B_count = size*value) %>%
+  filter(name == "B") %>%
+  select(immucan_id,B_count, TLS.ID) %>%
+  distinct() %>%
+  group_by(immucan_id) %>%
+  summarise(n = n(),
+            mean_size = as.integer(median(B_count)))
+
+p <- plot_dat %>%
+  filter(!is.na(mean_size)) %>%
+  ggplot(aes(x = mean_size,y = n))+
+  geom_point(size =0.6)+
+  theme_bw()+
+  ylab("B cell patch count per patient")+
+  xlab("average size of B cell patches")+
+  scale_y_log10()+
+  scale_x_log10(limits = c(10,350))
+
+p
+ggsave(filename = paste0(out_folder,"S3B_TLS_count_and_size.pdf"),
+       plot = p,
+       device = "pdf",
+       width = 2.5,
+       height = 2)
+```
+
+## S3C TLS abundance in compartments
+
+```{r}
+# check the fraction of B cells across compartments
+dist_dat %>%
+  group_by(immucan_id, location) %>%
+  mutate(total_cells = sum(n),
+         frac = n/total_cells) %>%
+  ungroup() %>%
+  filter(celltype == "B") %>%
+  ggplot(aes(x = location,y = frac))+
+  geom_boxplot()+
+  theme(legend.position = "none")+
+  stat_compare_means(comparisons = my_comp)
+
+# cound the number of TLS in each compartment
+TLS_dat <- TLS_summary %>%
+  as.data.frame() %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,size, TLS.ID,TLS_dist_to_tumor) %>%
+  distinct() %>%
+ mutate(location = ifelse(TLS_dist_to_tumor > 500, "outside","in_tumor")) %>%
+  group_by(immucan_id) %>%
+  dplyr::count(location,name = "TLS_count") %>%
+  filter(!is.na(location))
+
+# calculate the number of total cells per compartment
+cell_count <- dist_dat %>%
+  group_by(immucan_id, location) %>%
+  mutate(total_cells = sum(n)) %>%
+  select(immucan_id,total_cells, location) %>%
+  distinct()
+
+# merge data
+cur_dat <- left_join(TLS_dat,cell_count,c("immucan_id", "location"))
+
+# plot
+p <- cur_dat %>%
+  mutate(frac = TLS_count/total_cells) %>%
+  ggplot(aes(x = location,y = (frac)))+
+  geom_boxplot(outliers = FALSE)+
+  theme(legend.position = "none")+
+  geom_jitter(width = 0.2, col = "gray40")+
+  stat_compare_means()+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust = 1, size = 14),
+        axis.text.y = element_text(size = 14),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15))+
+  scale_y_log10()+
+  labs(x = "Location", y = "Frequency of patches among all cells")
+
+
+p
+
+ggsave(filename = paste0(out_folder,"3C_TLS_location.pdf"),
+       plot = p,
+       device = "pdf",
+       width = 3,
+       height = 8)
+```
+
+# S3D size of patches by location
+check if patches are larger in border
+```{r}
+p <- TLS_summary %>%
+  as.data.frame() %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,size, TLS.ID,TLS_dist_to_tumor) %>%
+  distinct() %>%
+  mutate(location = ifelse(TLS_dist_to_tumor > 500, "outside","in_tumor")) %>%
+  #group_by(immucan_id, location) %>%
+  #summarise(mean_size = mean(size)) %>%
+  filter(!is.na(location)) %>%
+  ggplot(aes(y = (size),x = location))+
+  geom_boxplot()+
+  scale_y_log10()+
+  stat_compare_means()+
+  stat_summary(fun = median, geom = "text", 
+               aes(label = round(..y.., 2)), 
+               vjust = -0.5, color = "red")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust = 1, size = 14),
+        axis.text.y = element_text(size = 14),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15))+
+  scale_y_log10()+
+  labs(x = "Location",y = "Patch size")
+
+p
+
+ggsave(filename = paste0(out_folder,"S3D_patch_size.pdf"),
+       plot = p,
+       device = "pdf",
+       width = 3,
+       height = 8)
+```
+
+# S3E T and B cell proportions in Patches by location
+composition of outside TLS
+```{r, fig.height=12, fig.width=10}
+p <- TLS_summary %>%
+  as.data.frame() %>%
+  filter(name %in% c("B","T")) %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  mutate(location = ifelse(TLS_dist_to_tumor > 500, "outside","in_tumor")) %>%
+  filter(!is.na(location)) %>%
+  ggplot(aes(x = location,y = value, fill=location))+
+  geom_boxplot(outliers = TRUE)+
+  stat_compare_means()+
+  facet_wrap(.~name, scales = "free",ncol = 1)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust = 1, size = 14),
+        axis.text.y = element_text(size = 14),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15))+
+  scale_fill_manual(values = c("in_tumor" = "magenta","outside" = "gray40"))
+
+p
+
+ggsave(filename = paste0(out_folder,"S3E_B_and_T_cell_by_location.pdf"),
+       plot = p,
+       device = "pdf",
+       width = 4,
+       height = 8)
+```
+
+# S3F density of patches by histology and stage
+
+only check inside and outside tumor. with 500 µm expansion of tumor
+
+```{r}
+# get the tumor size
+IF1 <- read_csv(paste0("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IF/Rout/IF1_features/IF1_cell_type_densities.csv"))
+IF1 <- IF1 %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,tumor_size)
+
+# count the number of TLS in each compartment
+TLS_dat <- TLS_summary %>%
+  as.data.frame() %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,size, TLS.ID,TLS_dist_to_tumor) %>%
+  distinct() %>%
+ mutate(location = ifelse(TLS_dist_to_tumor > 500, "outside","in_tumor")) %>%
+  group_by(immucan_id) %>%
+  dplyr::count(location,name = "TLS_count") %>%
+  filter(!is.na(location))
+
+# merge with tumor size data
+cur_dat <- left_join(TLS_dat,IF1,c("immucan_id"))
+
+# only keep in_tumor information
+cur_dat <- cur_dat %>%
+  filter(location == "in_tumor")
+
+# merge with clincial data
+cur_dat <- left_join(cur_dat, traits,"immucan_id")
+
+my_comp <-  list( c("LUAD", "LUSC"), c("LUAD", "Other"), c("LUSC", "Other") )
+
+# calculate patch density per histology and plot
+p <- cur_dat %>%
+  mutate(patch_density = TLS_count/tumor_size,
+         LUAD_vs_LUSC = ifelse(is.na(LUAD_vs_LUSC),"Other",LUAD_vs_LUSC),
+         LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma","LUAD",LUAD_vs_LUSC),
+         LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Squamous cell carcinoma","LUSC",LUAD_vs_LUSC)) %>%
+  ggplot(aes(x = LUAD_vs_LUSC,y = (patch_density), fill = LUAD_vs_LUSC))+
+  geom_boxplot(outliers = FALSE)+
+  geom_jitter(aes(color = LUAD_vs_LUSC),position = position_jitterdodge(jitter.width = 0.2), size= 0.3)+
+  scale_fill_manual(values = alpha(c("LUAD" ="orange","LUSC"= "darkgreen","Other"= "gray40"),alpha = 0.6))+
+  scale_color_manual(values = c("orange", "darkgreen", "gray40"))+
+  stat_compare_means(comparisons = my_comp,label = "p.signif")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust = 1, size = 14),
+        axis.text.y = element_text(size = 14),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15))+
+  scale_y_log10()+
+  labs(x = "Histology", y = expression("Density of patches in tumor [mm"^2*"]"))
+
+
+p
+
+
+ggsave(filename = paste0(out_folder,"S3F_Patch_density_for_histology.pdf"),
+       plot = p,
+       device = "pdf",
+       width = 3.5,
+       height = 5)
+```
+
+
+
+# S3G heatmap of correlations
+```{r, fig.height=4, fig.width=8}
+# cound the number of TLS in each compartment
+TLS_dat <- TLS_summary %>%
+  as.data.frame() %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,size, TLS.ID,TLS_dist_to_tumor) %>%
+  distinct() %>%
+  mutate(location = ifelse(TLS_dist_to_tumor > 500, "outside","in_tumor")) %>%
+  group_by(immucan_id) %>%
+  dplyr::count(location,name = "TLS_count") %>%
+  filter(!is.na(location))
+
+# merge data
+cur_dat <- left_join(TLS_dat,IF1,c("immucan_id"))%>%
+  filter(location == "in_tumor") %>%
+  #left_join(traits,by= "immucan_id") %>%
+  ungroup() %>%
+  mutate(Patch_density= TLS_count / tumor_size,
+         Patch_density_dicho = as.factor(ntile(Patch_density, 2)),
+         Patch_density_group_mean = ifelse(Patch_density > mean(Patch_density),TRUE, FALSE))
+
+y <- cur_dat %>%
+  filter(location == "in_tumor") %>%
+  left_join(dens_dat %>% pivot_longer(cols = c(-immucan_id)),"immucan_id") %>%
+  group_by(name) %>%
+  filter(!is.na(name)) %>%
+  summarise(correlation = cor.test(Patch_density, value,method= "spearman")$estimate,
+            p.value = cor.test(Patch_density, value,method= "spearman")$p.value) %>%
+  arrange(desc(correlation))
+
+x <- dens_dat %>%
+  pivot_longer(cols = c(-immucan_id, -B_density__IF1)) %>%
+  group_by(name) %>%
+  summarise(correlation_B_cells = cor.test(value, B_density__IF1,method= "spearman")$estimate,
+            p.value_ct = cor.test(value, B_density__IF1,method= "spearman")$p.value) %>%
+  arrange(desc(correlation_B_cells))
+
+mat <- left_join(x,y,"name")
+
+# Load necessary libraries
+library(ComplexHeatmap)
+library(circlize)
+
+
+
+# Convert to matrix
+mat <- as.data.frame(mat) %>%
+  mutate(FDR = p.adjust(p.value,method = "BH"))
+  #filter(! name %in% c("CD20_all_density__IF1","BnT_density__IF1"),
+  #FDR < 0.1)
+rownames(mat) <- mat$name
+plot_mat_matrix <- mat %>%
+  mutate(diff = correlation- correlation_B_cells) %>%
+  select(-p.value_ct,-p.value, -name) %>%
+  arrange(desc(correlation)) %>%
+  slice_head(n=25) %>%
+  arrange(desc(diff)) %>%
+  as.matrix()
+
+cor_matrix <- as.matrix(plot_mat_matrix[, c("correlation", "correlation_B_cells")])
+diff_matrix <- as.matrix(plot_mat_matrix[, "diff", drop = FALSE])
+
+# Define color scales
+col_fun_corr <- colorRamp2(c(-0.75, 0, 0.75), c("blue", "white", "red"))
+col_fun_corr2 <- colorRamp2(c(-0.2, 0, 0.15), c("purple", "white", "darkgreen"))
+
+# Create two heatmaps and combine them
+ht1 <- Heatmap(cor_matrix, name = "Correlation", col = col_fun_corr,
+               cluster_rows = FALSE, cluster_columns = FALSE,
+               show_column_dend = FALSE, show_row_dend = TRUE)
+
+ht2 <- Heatmap(diff_matrix, name = "Diff", col =col_fun_corr2,
+               cluster_rows = FALSE, cluster_columns = FALSE,
+               show_column_dend = FALSE, show_row_dend = FALSE)  # No row dendrogram for second heatmap
+
+#plot
+ht1 + ht2
+
+pdf(file = paste0(out_folder,"S3G_heatmap_of_correlations.pdf"),
+    width = 5,height = 7)
+ht1 + ht2
+dev.off()
+```
+
+# S3H overlap with PDL1, TMB and stage
+
+```{r}
+p1 <- cur_dat %>%
+  mutate(patch_density = TLS_count/tumor_size,
+         LUAD_vs_LUSC = ifelse(is.na(LUAD_vs_LUSC),"Other",LUAD_vs_LUSC),
+         LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma","LUAD",LUAD_vs_LUSC),
+         LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Squamous cell carcinoma","LUSC",LUAD_vs_LUSC)) %>%
+  ggplot(aes(x = log2(TPS),y = log2(Patch_density), col = (LUAD_vs_LUSC)))+
+  geom_point()+
+  geom_smooth(method = "lm",alpha = 0.2)+
+   ggpmisc::stat_poly_eq(
+    aes(label = after_stat(p.value.label)),
+    formula = y ~ x, 
+    parse = TRUE,
+    size = 6,
+    vstep = 0.07)+
+  theme_bw()+
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+         axis.title.x =  element_text(size = 10),
+        axis.title.y = element_text(size = 10))+
+  scale_colour_manual(values = c("LUAD" = "blue", "LUSC" = "forestgreen","Other" = "gray40"))+
+  labs(y = expression("Log2 B cell patch density [mm"^2*"]"),color = "Histology")+
+  coord_cartesian(ylim = c(-7.5,2.5))
+
+p2 <- cur_dat %>%
+  mutate(patch_density = TLS_count/tumor_size,
+         LUAD_vs_LUSC = ifelse(is.na(LUAD_vs_LUSC),"Other",LUAD_vs_LUSC),
+         LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma","LUAD",LUAD_vs_LUSC),
+         LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Squamous cell carcinoma","LUSC",LUAD_vs_LUSC)) %>%
+  ggplot(aes(x = log2(TMB),y = log2(Patch_density), col = (LUAD_vs_LUSC)))+
+  geom_point()+
+  geom_smooth(method = "lm",alpha = 0.2)+
+   ggpmisc::stat_poly_eq(
+    aes(label = after_stat(p.value.label)),
+    formula = y ~ x, 
+    parse = TRUE,
+    size = 6,
+    vstep = 0.07)+
+  theme_bw()+
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+         axis.title.x =  element_text(size = 10),
+        axis.title.y = element_text(size = 10))+
+  scale_colour_manual(values = c("LUAD" = "blue", "LUSC" = "forestgreen","Other" = "gray40"))+
+  labs(y = expression("Log2 B cell patch density [mm"^2*"]"),color = "Histology", y = "Log2 TMB")+
+  coord_cartesian(ylim = c(-7.5,2.5))
+p2
+
+p <- plot_grid(p1,p2, ncol = 2)
+p
+
+
+ggsave(filename = paste0(out_folder,"S3H_Overlap_with_clinical_and_PDL1.pdf"),
+       plot = p,
+       device = "pdf",
+       width = 8,
+       height = 4)
+```
+
+# S3I stage and patch density
+
+```{r}
+my_comp <-  list( c("I", "II"), c("I", "III"), c("II", "III") )
+p <- cur_dat %>%
+  mutate(patch_density = TLS_count/tumor_size) %>%
+  filter(simple_stage != "IV") %>%
+  ggplot(aes(y = patch_density,x = simple_stage, fill = simple_stage))+
+  geom_boxplot()+
+  scale_fill_manual(values = c("I" = "palevioletred3", "II" = "darkseagreen3", "III" = "darkorange2"))+
+  stat_compare_means(comparisons =  my_comp,label = "p.signif")+
+  theme_bw()
+
+ggsave(filename = paste0(out_folder,"S3I_Patches_stage.pdf"),
+       plot = p,
+       device = "pdf",
+       width = 2.5,
+       height = 2.5)
+```
+
+
+# S3G B cell and Patch density survival
+
+
+```{r}
+cur_dat <- left_join(TLS_dat,IF1,c("immucan_id"))%>%
+  filter(location == "in_tumor") %>%
+  left_join(traits,by= "immucan_id") %>%
+  ungroup() %>%
+  mutate(Patch_density= TLS_count / tumor_size,
+         Patch_density_dicho = as.factor(ntile(Patch_density, 2)),
+         Patch_density_group_median = ifelse(Patch_density > median(Patch_density),TRUE, FALSE),
+         LUAD_vs_LUSC = ifelse(is.na(LUAD_vs_LUSC),"Other",LUAD_vs_LUSC),
+         LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma","LUAD",LUAD_vs_LUSC),
+         LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Squamous cell carcinoma","LUSC",LUAD_vs_LUSC))
+
+
+
+p.list <- list()
+for(j in c("LUAD", "LUSC", "Other", "All")) {
+  if (j == "All") {
+    df <- cur_dat %>%
+      filter(!is.na(cur_dat[,"Patch_density_dicho"]))
+  } else{
+        df <- cur_dat %>%
+      filter(!is.na(cur_dat[,"Patch_density_dicho"]),
+             LUAD_vs_LUSC == j)
+  }
+ 
+  surv_ob <- Surv(df$time_to_event,df$censoring)
+  p.list[[paste0(j, "_Patch_density_dicho")]] <- coxph( as.formula(paste0("surv_ob ~ + Patch_density_dicho")),
+                                                        data = df)
+}
+
+df <- data.frame(HR =      unlist(lapply(p.list, function(x){summary(x)$coefficients[,"exp(coef)"]})),
+                 p.value = unlist(lapply(p.list, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 lower_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "lower .95"]})),
+                 upper_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "upper .95"]}))) 
+
+df1 <- df %>% 
+  mutate(hist = str_split_i(rownames(df),"_",1))
+  
+df1
+
+p <- df1 %>%
+  ggplot(aes(x = HR,y = hist, col = hist))+
+  geom_point(size = 2)+
+  geom_errorbar(aes(xmin=lower_conf, xmax = upper_conf),lwd =1,width = 0.3)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust= 1))+
+  #scale_y_discrete(labels = function(x) str_split_i(x,"_",2))+
+  scale_x_log10()+
+  theme_bw()+
+  geom_vline(xintercept = 1,linetype = "dashed")+
+  geom_text(aes(label = paste0("p : ",round(p.value,digits = 3))),
+            col = "black",
+            vjust = -1,
+            inherit.aes = TRUE)+
+  scale_color_manual(values = c("LUAD" = "blue", "LUSC" = "forestgreen", "Other" = "gray40", "All" = "black"),name = "Histology")+
+  theme(axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title.x = element_text(size = 10),
+        axis.title.y = element_text(size = 10))+
+  labs(x = "HR",y = "Histology")
+
+p
+
+ggsave(filename = paste0(out_folder,"S3j_survival.pdf"),
+       plot = p,
+       device = "pdf",
+       width = 3.5,
+       height = 3)
+```
+
+
+
+
+
+# mean marker expression on cells for clustering ratio - not in paper
+
+```{r}
+mean_exp1 <- read_csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/mean_marker_expr_per_celltype_p1.csv")
+mean_exp2 <- read_csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/mean_marker_expr_per_celltype_p2.csv")
+
+mean_exp1$tech <- "IMC1"
+mean_exp2$tech <- "IMC2"
+mean_exp <- rbind(mean_exp1,mean_exp2)
+```
+
+## panel 1 markers of interest - to be removeed
+```{r}
+markers_1 <- list()
+# we will not subcluters "uncertain" cells as the merging will be very difficult. we may inspect this at a later time point again
+
+#functional markers_1 for T cells
+markers_1[["CD4"]] <- mean_exp %>%
+  filter(grepl("CD27|LAG3|PD1|CD7|GrzB|ICOS|Ki67|TCF7",name)) %>%
+  pull(name) %>%
+  unique()
+
+markers_1[["CD8"]] <- mean_exp %>%
+  filter(grepl(pattern = "CD27|LAG3|PD1|CD7|GrzB|ICOS|Ki67|TCF7",name)) %>%
+  pull(name) %>%
+  unique()
+
+markers_1[["Treg"]] <- mean_exp %>%
+  filter(grepl(pattern = "CD27|LAG3|ICOS|Ki67|TCF7",name)) %>%
+  pull(name) %>% 
+  unique()
+
+# B and BnT cell markers_1
+markers_1[["BnT"]] <- mean_exp %>%
+  filter(grepl(pattern = "CD27|CD45RA|CD45RO|LAG3|PD1|CD7|GrzB|FOXP3|ICOS|Ki67|TCF7|VISTA|CD40|HLADR|CD38",name))%>% 
+  pull(name) %>%  
+  unique()
+
+markers_1[["B"]] <- mean_exp %>%  
+  filter(grepl(pattern = "CD27|CD40|Ki67",name)) %>% 
+  pull(name) %>% 
+  unique()
+
+# myeloid markers_1
+markers_1[["MacCD163"]] <- mean_exp %>%  
+  filter(grepl(pattern = "CD68|CD11c|PDL1|VISTA|CD40|CD14|CD206|IDO1|CD16",name)) %>% 
+  pull(name) %>% 
+  unique()
+
+# we will also use CD20 for DCs to detect those DCs that sit in TLS
+markers_1[["DC"]] <- mean_exp %>%  
+  filter(grepl(pattern = "PDL1|VISTA|CD40|IDO1|CD20",name)) %>% 
+  pull(name) %>%  
+  unique()
+
+# we will also use E-cad for HLADR cells as there may still be tumor cells in these cells
+markers_1[["HLADR"]] <- mean_exp %>%  
+  filter(grepl(pattern = "CD11b|CD163|CD68|CD11c|PDL1|ICOS|VISTA|TIM3|CD40|CD14|CD206|CD163|HLADR|Ecad",name)) %>%  
+  pull(name) %>%   
+  unique()
+
+# NK markers_1
+markers_1[["NK"]] <- mean_exp %>%  
+  filter(grepl(pattern = "CD7|GrzB|CD16|CD45RA|CD45RO",name)) %>%
+  pull(name) %>% 
+  unique()
+
+# Neutrophil markers_1
+markers_1[["Neutrophil"]] <- mean_exp %>%  
+  filter(grepl(pattern = "MPO|PDL1|VISTA",name)) %>% 
+  pull(name) %>% 
+  unique()
+
+# pDC markers_1
+markers_1[["pDC"]] <- mean_exp %>%  
+  filter(grepl(pattern = "CD303|CD4|GrzB|CD45RA|CD45RO|CD27",name)) %>%  
+  pull(name) %>%  
+  unique()
+
+# Plasma cell markers_1
+markers_1[["plasma"]] <- mean_exp %>%  
+  filter(grepl(pattern = "CD38|TCF7|CD27|CD45RA|CD45RO",name)) %>% 
+  pull(name) %>% 
+  unique()
+
+# stroma markers_1
+markers_1[["Mural"]] <- mean_exp %>%   
+  filter(grepl(pattern = "PDGFR|SMA",name)) %>% 
+  pull(name) %>% 
+  unique()
+
+# tumor markers_1
+markers_1[["Tumor"]] <- mean_exp %>%   
+  filter(grepl(pattern = "HLADR|CarbonicAnhydrase|cleavedPARP|PDL1|IDO1|CD15|Ki67|Ido|B2M",name)) %>%  
+  pull(name) %>%  
+  unique()
+```
+
+## panel 2 markers of interest - to be removed
+
+```{r}
+markers_2 <- list()
+# we will not subcluters "uncertain" cells as the merging will be very difficult. we may inspect this at a later time point again
+
+markers_2[["CD8"]] <- mean_exp2 %>% 
+  filter(grepl(pattern = "CD7$|PD1|Bcl2|GATA3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",name)) %>%
+  pull(name) %>%  
+  unique()
+  
+markers_2[["CD4"]] <- mean_exp2 %>% 
+  filter(grepl(pattern = "CD7$|PD1|Bcl2|GATA3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",name)) %>%
+  pull(name) %>%  
+  unique()
+markers_2[["Treg"]] <- mean_exp2 %>%
+  filter(grepl(pattern = "CD7$|Bcl2|GATA3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",name)) %>%
+  pull(name) %>%  
+  unique()
+
+
+# NK markers_2
+markers_2[["NK"]] <- mean_exp2 %>% 
+  filter(grepl(pattern = "Tbet|Bcl2|GATA3|NKG2A|EOMES|GITR",name)) %>%
+  pull(name) %>%  
+  unique()
+
+
+# B and BnT cell markers_2
+markers_2[["B"]] <- mean_exp2 %>%
+  filter(grepl(pattern = "Bcl2|Ki67",name)) %>%
+  pull(name) %>%  
+  unique()
+markers_2[["BnT"]] <- mean_exp2 %>% 
+  filter(grepl(pattern = "CD7$|PD1|FOXP3|Bcl2|GATA3|CD8a|LAG3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",name)) %>%
+  pull(name) %>%  
+  unique()
+
+
+
+# myeloid markers_2
+markers_2[["MacCD204"]] <- mean_exp2 %>% 
+  filter(grepl(pattern = "CD11c|Arg1|MMP9|CD73|CD10|Tim3",name)) %>%
+  pull(name) %>%  
+  unique()
+markers_2[["MacCD209"]] <- mean_exp2 %>% 
+  filter(grepl(pattern = "CD11c|Arg1|MMP9|CD73|CD10|Tim3",name)) %>%
+  pull(name) %>%  
+  unique()
+markers_2[["MacCD204_CD209"]] <- mean_exp2 %>%
+  filter(grepl(pattern = "CD11c|Arg1|MMP9|CD73|CD10|Tim3",name)) %>%
+  pull(name) %>%  
+  unique()
+# DCs
+markers_2[["DC"]] <- mean_exp2 %>% 
+  filter(grepl(pattern = "CD137|Tim3|CD20$",name)) %>%
+  pull(name) %>%  
+  unique()
+markers_2[["mregDC"]] <- mean_exp2 %>% 
+  filter(grepl(pattern = "CD11c|CD137|Tim3",name)) %>%
+  pull(name) %>%  
+  unique()
+
+
+# MDSCs
+markers_2[["MDSC"]] <- mean_exp2 %>%
+  filter(grepl(pattern = "CD11b|CD10|CXCL8|Arg1|MMP9",name)) %>%
+  pull(name) %>%  
+  unique()
+markers_2[["PMN_MDSC"]] <- mean_exp2 %>%
+  filter(grepl(pattern = "CD11b|CD15$|CD66b|CD10|CXCL8|Arg1|MMP9",name)) %>%
+  pull(name) %>%  
+  unique()
+markers_2[["Neutrophil"]] <- mean_exp2 %>%
+  filter(grepl(pattern = "CD11b|CD15$|CD66b|CD10|CXCL8|Arg1|MMP9",name)) %>%
+  pull(name) %>%  
+  unique()
+
+
+# stroma markers_2
+markers_2[["Vasculature"]] <- mean_exp2 %>% filter(grepl(pattern = "CD31|CD146",name)) %>%
+  pull(name) %>%  
+  unique()
+
+markers_2[["vCAF"]] <- mean_exp2 %>%
+  filter(grepl(pattern = "SMA|CD146",name)) %>%
+  pull(name) %>%  
+  unique()
+
+markers_2[["Fibro"]] <- mean_exp2 %>% 
+  filter(grepl(pattern = "Podoplanin|CD10|MMP9|SMA",name)) %>%
+  pull(name) %>%  
+  unique()
+
+
+# tumor markers_2
+markers_2[["Tumor"]] <- mean_exp2 %>%
+  filter(grepl(pattern = "panCK|Ecad|Arg1|EGFR|MMP9|p53|Lamp3|CD73|Bcl2|GATA3|CD155|CD10|CD56|CXCL8|Ki67|Podoplanin|IgG",name)) %>%
+  pull(name) %>%  
+  unique()
+```
+
+filter data
+```{r}
+cur_files_1 <- lapply(names(markers_1), function(x){
+  cur_dat <- mean_exp %>%
+    filter(celltypes == x,
+           name %in% markers_1[[x]])
+})
+cur_files_2 <- lapply(names(markers_2), function(x){
+  mean_exp %>%
+    filter(celltypes == x,
+           name %in% markers_2[[x]])
+})
+
+mean_exp1 <- do.call(rbind,cur_files_1)
+mean_exp2 <- do.call(rbind,cur_files_2)
+
+mean_data <- distinct(rbind(mean_exp1,mean_exp2))
+```
+
+
+```{r}
+TLS_dat <- TLS_summary %>%
+  as.data.frame() %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,size, TLS.ID,TLS_dist_to_tumor) %>%
+  distinct() %>%
+  mutate(location = ifelse(TLS_dist_to_tumor > 500, "outside","in_tumor")) %>%
+  group_by(immucan_id) %>%
+  dplyr::count(location,name = "TLS_count") %>%
+  filter(!is.na(location))
+
+# calculate the number of total cells per compartment
+cell_count <- dist_dat %>%
+  group_by(immucan_id, location) %>%
+  mutate(total_cells = sum(n)) %>%
+  select(immucan_id,total_cells, location) %>%
+  distinct()
+
+# merge data
+cur_dat <- left_join(TLS_dat,cell_count,c("immucan_id", "location"))
+
+cur_dat <- cur_dat %>%
+  filter(location == "in_tumor") %>%
+  mutate(patch_ratio = TLS_count/total_cells)
+
+# merge with filtered expression data
+cur_dat <- left_join(cur_dat,mean_data,"immucan_id")
+
+cur_dat %>%
+  group_by(name, celltypes) %>%
+  summarise(correlation = cor(patch_ratio,mean_exp,use = "na.or.complete")) %>%
+  arrange(desc(correlation))
+```
+
+# linear model predicting patch number by density - not in paper
+we will calculate:
+1. B cell density
+2. Patch count density
+3. mean patch area -> average numbe of cells in patch
+```{r}
+# B density
+B_density <- dens_dat %>%
+  select(immucan_id,B_density__IF1)
+
+# Patch count density
+Patch_count <- TLS_summary %>%
+  as.data.frame() %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,size, TLS.ID,TLS_dist_to_tumor) %>%
+  distinct() %>%
+  mutate(location = ifelse(TLS_dist_to_tumor > 500, "outside","in_tumor")) %>%
+  group_by(immucan_id) %>%
+  dplyr::count(location,name = "TLS_count") %>%
+  filter(location == "in_tumor")
+
+IF1 <- read_csv(paste0("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IF/Rout/IF1_features/IF1_cell_type_densities.csv"))
+IF1 <- IF1 %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,tumor_size)
+
+Patch_count <- Patch_count %>%
+  left_join(IF1,"immucan_id") %>%
+  mutate(Patch_density = TLS_count/tumor_size)
+
+# mean patch size
+patch_size <- TLS_summary %>%
+  as.data.frame() %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,size, TLS.ID,TLS_dist_to_tumor) %>%
+  distinct() %>%
+  mutate(location = ifelse(TLS_dist_to_tumor > 500, "outside","in_tumor")) %>%
+  filter(location == "in_tumor")%>%
+  group_by(immucan_id) %>%
+  summarise(mean_patch_size = mean(size,na.rm =TRUE), .groups = "drop")
+
+cur_dat <- left_join(B_density,Patch_count,"immucan_id")
+cur_dat <- left_join(cur_dat,patch_size,"immucan_id")
+
+# filter samples for which we have no tumor_size
+cur_dat <- cur_dat %>%
+  filter(!is.na(tumor_size))
+
+rownames(cur_dat) <- cur_dat$immucan_id
+
+# model
+lm_density <- lm(Patch_density ~ B_density__IF1, data = cur_dat)
+lm_size <- lm(mean_patch_size ~ B_density__IF1, data = cur_dat)
+summary(lm_size)
+res_density <- residuals(lm_density)
+res_size <- residuals(lm_size)
+
+cur_dat$res_Patch_density <- res_density[cur_dat$immucan_id]
+cur_dat$res_TLS_size <- res_size[cur_dat$immucan_id]
+
+
+cur_dat %>%
+  ggplot(aes(x = B_density__IF1,y = res_Patch_density))+
+  geom_point()
+cur_dat %>%
+  ggplot(aes(x = B_density__IF1,y = res_TLS_size))+
+  geom_point()
+
+cur_dat <- cur_dat %>%
+  mutate(Patch_density_clustered = as.factor(ntile(res_Patch_density,2)),
+         TLS_size_clustered = as.factor(ntile(res_TLS_size,2)))
+
+
+cur_dat %>%
+  left_join(dens_dat %>% pivot_longer(cols = -immucan_id),"immucan_id") %>%
+  group_by(name) %>%
+  summarise(correlation = cor.test(res_Patch_density, value,method= "spearman")$estimate,
+            p.value = cor.test(res_Patch_density, value,method= "spearman")$p.value) %>%
+  mutate(FDR = p.adjust(p.value,method = "BH")) %>%
+  filter(FDR < 0.1) %>%
+  arrange((FDR))
+
+
+
+plot_dat <- cur_dat %>%
+  left_join(dens_dat,"immucan_id")
+plot_dat %>%
+  ggplot(aes(x = log2(CD8_TCF7_density__IMC1),y = res_density))+
+  geom_point()
+
+plot_dat %>%
+  ggplot(aes(x = log2(CD4_TCF7_density__IMC1),y = B_density__IMC1))+
+  geom_point()
+
+cor(plot_dat$B_density__IMC1,plot_dat$CD4_TCF7_density__IMC1)
+cor(plot_dat$Patch_density,plot_dat$CD4_TCF7_density__IMC1)
+```
+
+
+
+
+
+are B cells more clustered inside tumors or in normal tissue? ratio of B cells in patch vs B cell count
+
+```{r}
+compartment_summary <- TLS_summary %>%
+  as.data.frame() %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,size, TLS.ID,TLS_dist_to_tumor) %>%
+  distinct() %>%
+  mutate(TLS_location = ifelse(TLS_dist_to_tumor > 500, "outside","in_tumor")) %>%  
+  group_by(immucan_id, TLS_location) %>%
+  summarise(total_TLS_count = sum(size), .groups = "drop") %>%
+  pivot_wider(id_cols = immucan_id,names_from = TLS_location,values_from = total_TLS_count,values_fill = 0) %>%
+  select(-`NA`)
+B_count_dat <- dist_dat %>%
+  filter(celltype == "B") %>%
+  pivot_wider(id_cols = immucan_id,names_from = location,values_from = n,values_fill = 0,names_prefix = "B_count_")
+
+cur_dat <- left_join(compartment_summary,B_count_dat,"immucan_id")
+
+cur_dat %>%
+  filter(B_count_outside != 0,
+         B_count_in_tumor != 0) %>%
+  mutate(in_tumor_ratio = in_tumor/B_count_in_tumor + 0.001,
+         outside_ratio = outside/B_count_outside + 0.001,
+         ) %>%
+  pivot_longer(cols = c(in_tumor_ratio,outside_ratio)) %>%
+  ggplot(aes(x = name, y = value))+
+  geom_boxplot()+
+  scale_y_log10()+
+  stat_compare_means()+
+  stat_summary(fun = median, geom = "text", 
+               aes(label = round(..y.., 2)), 
+               vjust = -0.5, color = "red")+
+  theme_bw()
+```
+
+Are B cell patches more frequent in any histology
+```{r}
+TLS_dat <- TLS_summary %>%
+  as.data.frame() %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  select(immucan_id,size, TLS.ID,TLS_dist_to_tumor) %>%
+  distinct() %>%
+  mutate(location = ifelse(TLS_dist_to_tumor > 500, "outside","in_tumor")) %>%
+  group_by(immucan_id) %>%
+  dplyr::count(location,name = "TLS_count") %>%
+  filter(!is.na(location))
+
+# calculate the number of total cells per compartment
+cell_count <- dist_dat %>%
+  group_by(immucan_id, location) %>%
+  mutate(total_cells = sum(n)) %>%
+  select(immucan_id,total_cells, location) %>%
+  distinct()
+
+# merge data
+cur_dat <- left_join(TLS_dat,cell_count,c("immucan_id", "location"))
+cur_dat <- left_join(cur_dat,traits,"immucan_id")
+# plot
+cur_dat %>%
+  filter(!is.na(LUAD_vs_LUSC)) %>%
+  mutate(frac = TLS_count/total_cells) %>%
+  ggplot(aes(x = location,y = frac, fill = LUAD_vs_LUSC))+
+  geom_boxplot(outliers = FALSE)+
+  theme(legend.position = "none")+
+  geom_jitter(aes(color = LUAD_vs_LUSC),position = position_jitterdodge(jitter.width = 0.2), size= 0.3)+
+  scale_fill_manual(values = alpha(c("orange", "darkgreen"),alpha = 0.6))+
+  scale_color_manual(values = c("orange", "darkgreen"))+
+  stat_compare_means()+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust = 1))
+
+
+
+int_dat <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/cell-pair_interaction_count_normalized_by_cell_count_IF1.csv")
+
+cur_dat <- left_join(int_dat,traits,"immucan_id")
+cur_dat %>%
+  filter(!is.na(LUAD_vs_LUSC)) %>%
+  ggplot(aes(x = LUAD_vs_LUSC,y = B.B, fill= LUAD_vs_LUSC))+
+  geom_boxplot()+
+  geom_jitter(aes(color = LUAD_vs_LUSC),position = position_jitterdodge(jitter.width = 0.2), size= 0.3)+
+  scale_fill_manual(values = alpha(c("orange", "darkgreen"),alpha = 0.6))+
+  scale_color_manual(values = c("orange", "darkgreen"))+
+  stat_compare_means()+
+  theme_bw()
+```
+
+
+
+interaction counts of immune cells by TLS patches
+```{r}
+int_dat <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/cell-pair_interaction_count_normalized_by_cell_count_IF1.csv")
+int_dat
+```
+
+
+
+```{r, fig.width=30, fig.height=30}
+TLS_summary %>%
+  ggplot(aes(x = log10(size),y = value))+
+  geom_point()+
+  facet_wrap(.~name)
+  
+x <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IF/IF1/tsv/LUNG-NSCLC2-0621-FIXT-01-IF1-01_#_cells_properties_#_1e28a0cb4682bc7a40ee7eb3fe3f63cc.rds")
+colData(x) %>%
+  as.data.frame() %>%
+  filter(TLS.ID == 100)
+cur_x <- x[,x$TLS.ID %in% 100]
+imcRtools::plotSpatial(cur_sce,img_id = "sample_id", coords = c("nucleus.x","nucleus.y"), node_color_by = "celltype")
+```
+
+# clustering index of B cells via interaction count - not in paper
+```{r, fig.height=20, fig.width=20}
+int_dat <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/cell-pair_interaction_count_normalized_by_cell_count_IF1.csv")
+
+hist(int_dat$B.B, breaks = 100)
+
+dens_dat %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(int_dat[,c("immucan_id","B.B")],by = "immucan_id") %>%
+  ggplot(aes(x = B.B, y = log10(value))) +
+  geom_point()+
+  facet_wrap(.~name)
+```
+
+
+
+
