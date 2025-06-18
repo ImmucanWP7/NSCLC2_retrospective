@@ -88,16 +88,16 @@ for (i in c(data_type,"cello1","cello2")) {
     
     # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
     y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-    design <- model.matrix(~0+group,data = y.ab$samples)
+    design <- model.matrix(~group,data = y.ab$samples)
     colnames(design) <- levels(y.ab$samples$group)
     # we do not fit a trend 
     y.ab <- estimateDisp(y.ab, design, trend.method = "none")
     y.ab$common.dispersion
     #plotBCV(y.ab,pch = 5)
     
-    # subset design matrix  for Adenocarcinoma
+    # subset design matrix for Adenocarcinoma
     design <- design[,c("Adenocarcinoma_FALSE","Adenocarcinoma_TRUE")]
-    # we only compare the diff abundance for Adeno vs Sqam.
+    
     fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
     fit_LUAD <- glmLRT(glmfit = fit.ab,contrast = c(-1,1))
 
@@ -172,85 +172,147 @@ p <- cur_dat %>%
 p
 ```
 
+# Wilcoxon test for EGFR - not in paper
+here we see that actually the differential abundance test does not capture the difference in HLADR+ tumor cells while there is a strong difference based on a Wilcoxon or t-test.
+```{r}
+dat %>%
+  left_join(traits,"immucan_id") %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  ggplot(aes(x = EGFR,y = log2(Tumor_HLADR_abundance__IMC1)))+
+  geom_boxplot()+
+  stat_compare_means(method = "t.test")
+dens_dat %>%
+  left_join(traits,"immucan_id") %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  ggplot(aes(x = EGFR,y = log2(Tumor_HLADR_density__IMC1)))+
+  geom_boxplot()+
+  stat_compare_means(method = "t.test")
 
-# test to be removed
+# we run systematic wilcoxon tests for all markers for EGFR
+dat %>%
+  select(contains("immucan_id"), contains("IMC1")) %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(test = map(data, ~ wilcox.test(value ~ EGFR, data = .x)),
+         summary = map(test, broom::tidy))%>%
+  select(name, summary) %>%
+  unnest(summary)
 
-```{r, fig.height=15, fig.width=20}
+w_test <- dat %>%
+  select(contains("immucan_id"), contains("IMC1")) %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(
+    # Wilcoxon test
+    test = map(data, ~ wilcox.test(value ~ EGFR, data = .x)),
+    summary = map(test, broom::tidy),
+    
+    # Compute medians for fold change
+    medians = map(data, ~ .x %>%
+                    group_by(EGFR) %>%
+                    summarise(median = median(value, na.rm = TRUE), .groups = "drop") %>%
+                    pivot_wider(names_from = EGFR, values_from = median, names_prefix = "EGFR_")
+                 ),
+    
+    # Compute fold change: TRUE / FALSE
+    fold_change = map_dbl(medians, ~ .x$EGFR_TRUE / .x$EGFR_FALSE)
+  ) %>%
+  select(name, summary, fold_change) %>%
+  unnest(summary)
+
+w_test <- w_test %>%
+  mutate(test = "EGFR",
+         sig = p.value < 0.05) 
+  
+w_test %>%
+  ggplot(aes(x=name, y = test,col = log2(fold_change), size= -log10(p.value)))+
+  #geom_tile(aes(fill = sig))+
+  #theme_bw()+
+  geom_point()+
+  theme_bw()+
+  scale_colour_gradient2(low = "blue", mid = "white",high ="red")+
+  new_scale_colour() +
+  geom_point(data = w_test %>% filter(sig == TRUE),shape = 1,aes(size = -log10(p.value), col = sig), stroke =2.5)+
+  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"))+
+coord_flip()
+```
+
+to be deleted. here we test if the results are the same if we estimate the dispersion only for LUAD samples
+```{r, fig.height=10}
 condition <- c(FALSE,FALSE,FALSE, FALSE)
 names(condition) <- c("KRAS","EGFR","STK11", "TP53")
 
 # loop over conditions and do two way abundance difference tests
 p.list <- list()
-for (i in c(data_type,"cello1","cello2")) {
-  for (j in names(condition)) {
-    
-    if(grepl("cello",i)){
-      abundances <- cello_dat %>%
-        select(contains(i))
-      abundances <- t(abundances)
-      colnames(abundances) <- cello_dat$immucan_id
-    } else {
-      abundances <- dat %>%
-        select(contains(i)) %>%
-        filter(complete.cases(.))
-      abundances <- t(abundances)
-      colnames(abundances) <-dat %>%
-        select(contains(i),immucan_id) %>%
-        filter(complete.cases(.)) %>%
-        pull(immucan_id)
-    }
-    anno <- traits
-    
-    pats <- anno %>%
-      filter(EGFR == FALSE,
-             TP53 == FALSE,
-             KRAS == FALSE,
-             STK11 == FALSE,
-             PIK3CA == FALSE) %>%
-      pull(immucan_id)
-    
-    meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-    meta$histology_cond <- paste0(meta$simple_histology,"_",meta[,j])
-    meta <- meta %>%
-      mutate(all_neg = ifelse(immucan_id %in% pats, TRUE, FALSE),
-             histology_cond = ifelse(histology_cond == "Adenocarcinoma_FALSE" & all_neg == "FALSE","double", histology_cond))
-    Size <- factor(meta[,"histology_cond"])
-    meta$Size <- Size
-    
-    # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
-    y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-    design <- model.matrix(~0+group,data = y.ab$samples)
-    colnames(design) <- levels(y.ab$samples$group)
-    # we do not fit a trend 
-    y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-    y.ab$common.dispersion
-    #plotBCV(y.ab,pch = 5)
-    
-    # subset design matrix  for Adenocarcinoma
-    design <- design[,c("Adenocarcinoma_FALSE","Adenocarcinoma_TRUE")]
-    # we only compare the diff abundance for Adeno vs Sqam.
-    fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-    fit_LUAD <- glmLRT(glmfit = fit.ab,contrast = c(-1,1))
+i <- "IMC1"
+j <- "EGFR"
 
-    res_list <-list(fit_LUAD)
-    cur_list <- lapply(as.list(res_list),function(x){
-      sig_dat <- x$table
-      sig_dat$celltypes <- rownames(sig_dat)
-      sig_dat$cond <- j
-      sig_dat$comparison <- grep("Adeno|Squamous",x$comparison,value = TRUE)
-      return(sig_dat)
-    })
-
-    p.list[[paste0(i,"_",j)]] <- do.call(rbind,cur_list)
-    
-  }
+if(grepl("cello",i)){
+  abundances <- cello_dat %>%
+    select(contains(i))
+  abundances <- t(abundances)
+  colnames(abundances) <- cello_dat$immucan_id
+} else {
+  abundances <- dat %>%
+    select(contains(i)) %>%
+    filter(complete.cases(.))
+  abundances <- t(abundances)
+  colnames(abundances) <-dat %>%
+    select(contains(i),immucan_id) %>%
+    filter(complete.cases(.)) %>%
+    pull(immucan_id)
 }
+anno <- traits
 
-# define fold change cutoff for plotting
-cutoff <- 0
+meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
+meta$histology_cond <- paste0(meta$simple_histology,"_",meta[,j])
+Size <- factor(meta[,"histology_cond"])
+meta$Size <- Size
 
-cur_dat <- do.call(rbind,p.list)
-cur_dat <- cur_dat %>%
+####### test if the results are different if only use the adenocarcinoma and EGFR samples
+meta <- meta[meta$histology_cond %in% c("Adenocarcinoma_FALSE","Adenocarcinoma_TRUE"),]
+abundances <- abundances[,colnames(abundances) %in% meta$immucan_id]
+
+y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
+design <- model.matrix(~0+group,data = y.ab$samples)
+colnames(design) <- levels(y.ab$samples$group)
+# we do not fit a trend 
+y.ab <- estimateDisp(y.ab, design, trend.method = "none")
+y.ab$common.dispersion
+#plotBCV(y.ab,pch = 5)
+
+cur_mat <- cpm(abundances,prior.count = 1,log = TRUE)
+
+library(ComplexHeatmap)
+Heatmap(cur_mat, 
+        col = viridis::viridis(100),
+        column_split = meta$histology_cond)%v%
+  columnAnnotation(histology_cond = anno_simple(meta$histology_cond))
+
+# subset design matrix for Adenocarcinoma
+design <- design[,c("Adenocarcinoma_FALSE","Adenocarcinoma_TRUE")]
+
+fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
+fit_LUAD <- glmLRT(glmfit = fit.ab,contrast = c(-1,1))
+
+res_list <-list(fit_LUAD)
+cur_list <- lapply(as.list(res_list),function(x){
+  sig_dat <- x$table
+  sig_dat$celltypes <- rownames(sig_dat)
+  sig_dat$cond <- j
+  sig_dat$comparison <- grep("Adeno|Squamous",x$comparison,value = TRUE)
+  return(sig_dat)
+})
+
+
+cur_list
+cur_dat <- cur_list[[1]] %>%
   mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
          cond = paste0(cond, "_mut")) %>%
   group_by(tech, cond) %>%
@@ -302,6 +364,7 @@ p <- cur_dat %>%
   #theme(plot.margin = unit(c(5, 2.5, 2.5, 2.5), "cm"))
 p
 ```
+
 
 # Driver mutations LUSC
 
@@ -479,20 +542,30 @@ ggsave(filename = paste0(out_folder,"4B_diff_abundance_driver_mutations.pdf"),
 ```
 
 
+
 # expression differences across cell types
 ```{r, fig.height=7, fig.width=15}
 mean_exp1 <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/mean_marker_expr_per_celltype_p1.csv"))
 mean_exp2 <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/mean_marker_expr_per_celltype_p2.csv"))
 
+# long format
+mean_exp1 <- mean_exp1 %>%
+  pivot_longer(-immucan_id)
+mean_exp2 <- mean_exp2 %>%
+  pivot_longer(-immucan_id)
+
 mean_exp1$tech <- "IMC1"
 mean_exp2$tech <- "IMC2"
 mean_exp <- rbind(mean_exp1,mean_exp2)
 
+mean_exp <- mean_exp %>%
+  mutate(celltypes = str_split_i(name,"-",1),
+         name = str_split_i(name,"-",2))
 # load sce object panel 1
 sce1 <- readRDS(paste0(mount_path,"data/IMC/Panel_1/Rout/sce.rds"))
 sce1 <- sce1[,sce1$ROI != 4]
 # Panel 2
-sce1 <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/sce.rds"))
+sce2 <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/sce.rds"))
 ```
 
 
@@ -504,7 +577,7 @@ mean_exp %>%
          grepl("PD1|LAG|GrzB|Ki67|CD38|TCF7|CD27|ICOS|CXCL13|GITR|Tbet|GATA3|NKG2A|Tim3|Ki67|EOMES",name)) %>%
   left_join(traits, by = "immucan_id") %>%
   filter(simple_histology == "Adenocarcinoma") %>%
-  ggplot(aes(x = EGFR, y = mean_exp,fill= EGFR))+
+  ggplot(aes(x = EGFR, y = value,fill= EGFR))+
   geom_boxplot()+
   facet_wrap(.~name, scales= "free")+
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
@@ -523,7 +596,7 @@ p_Tumor_HLADR_EGFR <- mean_exp %>%
          name %in% c("HLADR_p1")) %>%
   left_join(traits, by = "immucan_id") %>%
   filter(simple_histology == "Adenocarcinoma") %>%
-  ggplot(aes(x = EGFR, y = mean_exp,fill= EGFR))+
+  ggplot(aes(x = EGFR, y = value,fill= EGFR))+
   geom_boxplot(outlier.shape = NA)+
   geom_jitter(aes(color = EGFR),position = position_jitterdodge(jitter.width = 0.2), size= 0.3)+
   scale_fill_manual(values = alpha(c("red", "blue"),alpha = 0.6))+
@@ -577,8 +650,8 @@ EGFRpos <- c("LUNG-NSCLC2-0624","LUNG-NSCLC2-0689","LUNG-NSCLC2-0659")
 
 # load images
 library(cytomapper)
-masks <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IMC/Rout/data/masks.rds")
-images <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IMC/Rout/data/images.rds")
+masks <- readRDS(paste0(mount_path,"data/IMC/Panel_1/Rout/masks.rds"))
+images <- readRDS(paste0(mount_path,"data/IMC/Panel_1/Rout/images.rds"))
 
 cur_df <- as.data.frame(colData(sce1))
 rownames(cur_df) <- NULL
@@ -631,7 +704,7 @@ plotPixels(image = cur_images,
            bcg = list(Ecad  = c(0,2,1),
                       HLADR = c(0,1.5,1),
                       DNA1  = c(0,1,1)),
-            image_title = NULL,save_plot = list(filename = "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_4/HLADR_tumor_2.png"))
+            image_title = NULL,save_plot = list(filename = paste0(out_folder,"HLADR_tumor_2.png")))
 ```
 
 
@@ -643,7 +716,7 @@ p_CD8_CXCL13_EGFR <- mean_exp %>%
          name %in% c("CXCL13_p2", "PD1_p2","LAG3_p1", "Tim3_p2")) %>%
   left_join(traits, by = "immucan_id") %>%
   filter(simple_histology == "Adenocarcinoma") %>%
-  ggplot(aes(x = EGFR, y = mean_exp,fill= EGFR))+
+  ggplot(aes(x = EGFR, y = value,fill= EGFR))+
   geom_boxplot(outliers = FALSE)+
   geom_jitter(aes(color = EGFR),position = position_jitterdodge(jitter.width = 0.2), size= 0.5)+
   scale_fill_manual(values = alpha(c("red", "blue"),alpha = 0.6))+
@@ -675,7 +748,7 @@ p_Tumor_HLADR_STK11 <- mean_exp %>%
          name %in% c("EGFR_p2", "HLADR_p1")) %>%
   left_join(traits, by = "immucan_id") %>%
   filter(simple_histology == "Adenocarcinoma") %>%
-  ggplot(aes(x = STK11, y = mean_exp,fill= STK11))+
+  ggplot(aes(x = STK11, y = value,fill= STK11))+
   geom_boxplot(outliers = FALSE)+
   geom_jitter(aes(color = STK11),position = position_jitterdodge(jitter.width = 0.2), size= 0.5)+
   scale_fill_manual(values = alpha(c("red", "blue"),alpha = 0.6))+
@@ -709,7 +782,7 @@ p_Tumor_Ki67_P53_TP53 <- mean_exp %>%
          name %in% c("p53_p2","Ki67_p1")) %>%
   left_join(traits, by = "immucan_id") %>%
   filter(simple_histology == "Adenocarcinoma") %>%
-  ggplot(aes(x = TP53, y = mean_exp,fill= TP53))+
+  ggplot(aes(x = TP53, y = value,fill= TP53))+
   geom_boxplot(outlier.shape = NA)+
   geom_jitter(aes(color = TP53),position = position_jitterdodge(jitter.width = 0.2), size= 0.75)+
   scale_fill_manual(values = alpha(c("red", "blue"),alpha = 0.6))+
@@ -767,8 +840,8 @@ p53pos <- traits$immucan_id[grepl(paste(p53pos,collapse = "|"),traits$ibbl_kit_i
 
 # load images
 library(cytomapper)
-masks <- readRDS("/mnt/immucan_volume/processed_data/Panel_2/IMMUcan_NSCLC2/IMC/Rout/data/masks.rds")
-images <- readRDS("/mnt/immucan_volume/processed_data/Panel_2/IMMUcan_NSCLC2/IMC/Rout/data/images.rds")
+masks <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/masks.rds"))
+images <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/images.rds"))
 
 cur_df <- as.data.frame(colData(sce2))
 rownames(cur_df) <- NULL
@@ -823,7 +896,7 @@ plotPixels(image = cur_images,
            bcg = list(Ecad  = c(0,2,1),
                       p53 = c(0,1.5,1),
                       DNA1  = c(0,1,1)),
-            image_title = NULL,save_plot = list(filename = "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_4/p53_tumor.png"))
+            image_title = NULL,save_plot = list(filename = paste0(out_folder,"p53_tumor.png")))
 ```
 
 ```{r}
@@ -863,7 +936,7 @@ p_Treg_GITR_PIK3CA <- mean_exp %>%
          name %in% c("GITR_p2","CD137_p2", "GATA3_p2")) %>%
   left_join(traits, by = "immucan_id") %>%
   filter(simple_histology == "Squamous cell carcinoma") %>%
-  ggplot(aes(x = PIK3CA, y = mean_exp,fill= PIK3CA))+
+  ggplot(aes(x = PIK3CA, y = value,fill= PIK3CA))+
   geom_boxplot(outliers = FALSE)+
   geom_jitter(aes(color = PIK3CA),position = position_jitterdodge(jitter.width = 0.2), size= 0.5)+
   scale_fill_manual(values = alpha(c("red", "blue"),alpha = 0.6))+
@@ -890,110 +963,5 @@ ggsave(filename = paste0(out_folder,"4G_activation_markers_on_Tregs.pdf"),
 ```
 
 
-```{r}
-counts2 <- as.data.frame(t(assay(sce2,"exprs")))
-head(counts2)
-dim(counts2)
-
-counts2$celltypes <- sce2$celltypes
-counts2$immucan_id <- sce2$immucan_id
-counts2$sample_id <- sce2$sample_id
-counts2 %>%
-  filter(celltypes == "Treg") %>%
-  ggplot(aes(x = FOXP3,y = GITR))+
-  geom_point()
-
-counts2 <- left_join(counts2, traits,"immucan_id")
-
-counts2 %>%
-  filter(simple_histology == "Squamous cell carcinoma",
-         celltypes == "Treg") %>%
-  mutate(PIK3CApos = ifelse(GITR > 1, TRUE,FALSE)) %>%
-  group_by(sample_id,.drop = FALSE) %>%
-  dplyr::count(PIK3CApos) %>%
-  mutate(total_cells = sum(n),
-         frac = n/total_cells) %>%
-  filter(PIK3CApos == TRUE) %>%
-  arrange(frac)
-
-# selected images
-ims <- c("IMMUcan_Batch20210921_LUNG_10041582-LUNG-VAR-TIS-01-IMC-02_003","IMMUcan_Batch20210701_LUNG_10040761-LUNG-VAR-TIS-01-IMC-02_001")
-
-
-# load images
-library(cytomapper)
-masks <- readRDS("/mnt/immucan_volume/processed_data/Panel_2/IMMUcan_NSCLC2/IMC/Rout/data/masks.rds")
-images <- readRDS("/mnt/immucan_volume/processed_data/Panel_2/IMMUcan_NSCLC2/IMC/Rout/data/images.rds")
-
-cur_df <- as.data.frame(colData(sce2))
-rownames(cur_df) <- NULL
-cur_df <- cur_df %>%
-  select(immucan_id,image, sample_id) %>%
-  distinct() %>%
-  mutate(image = gsub(".tiff","",image))
-rownames(cur_df) <- cur_df$image
-
-
-# unify metadata of masks and images
-mcols(images)$immucan_id <- cur_df[names(images),"immucan_id"]
-mcols(masks)$immucan_id <- cur_df[names(masks),"immucan_id"]
-mcols(images)$sample_id <- cur_df[names(images),"sample_id"]
-mcols(masks)$sample_id <- cur_df[names(masks),"sample_id"]
-
-
-cur_sce <- sce2[,sce2$sample_id %in% ims]
-
-
-cur_ims <- getImages(images,ims)
-cur_masks <- getImages(masks, ims)
-
-# read images into memory and normalize
-cur_images <- CytoImageList(cur_ims, on_disk = FALSE)
-cur_masks <- CytoImageList(cur_masks, on_disk = FALSE)
-cur_images <- scaleImages(cur_images,value = 2^16-1)
-#cur_masks <- scaleImages(cur_masks,value = 2^16-1)
-cur_images <- normalize(cur_images, separateImages = TRUE)
-cur_images <- normalize(cur_images, separateImages = TRUE, 
-                        inputRange = c(0, 0.2))
-
-channelNames(cur_images) <- rownames(cur_sce)
-
-# define all tumor and non-tumor cells
-cur_sce$Treg <- "nonTreg"
-cur_sce[,cur_sce$celltypes == "Treg"]$Treg <- "Treg"
-plot_sce <- cur_sce[,cur_sce$celltypes == "Treg"]
-
-test_images <- endoapply(cur_images, gblur, sigma = 1)
-
-# generate images
-plotPixels(image = test_images,
-           mask = cur_masks,
-           object = plot_sce,
-           cell_id = "ObjectNumber",
-           img_id = "sample_id",
-           colour_by = c("CD137", "GITR", "FOXP3"),
-           outline_by = "Treg",
-           colour = list(CD137 = c("black", "green"),GITR = c("black","red"),FOXP3 = c("black","blue"),
-                        Treg = c(Treg = "white")),
-           bcg = list(CD137  = c(0,1.5,1),
-                      GITR = c(0,1.5,1),
-                      FOXP3  = c(0,3,1)),
-            image_title = NULL,save_plot = list(filename = "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_4_supp/GITR_Tregs_blurred.png"))
-
-plotPixels(image = cur_images,
-           mask = cur_masks,
-           object = plot_sce,
-           cell_id = "ObjectNumber",
-           img_id = "sample_id",
-           colour_by = c("CD137", "GITR", "FOXP3"),
-           outline_by = "Treg",
-           colour = list(CD137 = c("black", "green"),GITR = c("black","red"),FOXP3 = c("black","blue"),
-                        Treg = c(Treg = "white")),
-           bcg = list(CD137  = c(0,1.5,1),
-                      GITR = c(0,1.5,1),
-                      FOXP3  = c(0,3,1)),
-            image_title = NULL,save_plot = list(filename = "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_4_supp/GITR_Tregs.png"))
-
-```
 
 

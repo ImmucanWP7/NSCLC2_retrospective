@@ -27,19 +27,24 @@ library(survival)
 
 
 ```{r}
-out_folder <- "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_4_supp/"
+mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_4_supp/"
+
+if (!dir.exists(out_folder)) {
+  dir.create(out_folder)
+}
 ```
 
 
 # load data
 we will load the data we generated at the beginning of figure 2
 ```{r}
-dat <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/abundances_dat.rds")
-dens_dat <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/densities_dat.rds")
-cello_dat <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/cello_dat.rds")
+dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/abundances_dat.rds"))
+dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
+cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
 clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
-int_dat <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/interaction_dat.rds")
-traits <- read_csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IMC/Rout/data/scores_for_sharing/all_traits.csv")
+int_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/interaction_dat.rds"))
+traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
 
 # variables
 data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2))
@@ -210,12 +215,22 @@ ggsave(filename = paste0(out_folder,"S4B_driver_mutation_enrichment_in_clinical.
 
 # S4C mean expression of markers across cell types and driver mutations
 ```{r}
-mean_exp1 <- read_csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/mean_marker_expr_per_celltype_p1.csv")
-mean_exp2 <- read_csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/mean_marker_expr_per_celltype_p2.csv")
+mean_exp1 <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/mean_marker_expr_per_celltype_p1.csv"))
+mean_exp2 <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/mean_marker_expr_per_celltype_p2.csv"))
+
+# long format
+mean_exp1 <- mean_exp1 %>%
+  pivot_longer(-immucan_id)
+mean_exp2 <- mean_exp2 %>%
+  pivot_longer(-immucan_id)
 
 mean_exp1$tech <- "IMC1"
 mean_exp2$tech <- "IMC2"
 mean_exp <- rbind(mean_exp1,mean_exp2)
+
+mean_exp <- mean_exp %>%
+  mutate(celltypes = str_split_i(name,"-",1),
+         name = str_split_i(name,"-",2))
 ```
 
 ## panel 1 markers of interest - to be removeed
@@ -223,83 +238,85 @@ mean_exp <- rbind(mean_exp1,mean_exp2)
 markers_1 <- list()
 # we will not subcluters "uncertain" cells as the merging will be very difficult. we may inspect this at a later time point again
 
+mean_exp1 <- mean_exp %>%
+  filter(tech == "IMC1")
 #functional markers_1 for T cells
-markers_1[["CD4"]] <- mean_exp %>%
+markers_1[["CD4"]] <- mean_exp1 %>%
   filter(grepl("CD27|LAG3|PD1|CD7|GrzB|ICOS|Ki67|TCF7",name)) %>%
   pull(name) %>%
   unique()
 
-markers_1[["CD8"]] <- mean_exp %>%
+markers_1[["CD8"]] <- mean_exp1 %>%
   filter(grepl(pattern = "CD27|LAG3|PD1|CD7|GrzB|ICOS|Ki67|TCF7",name)) %>%
   pull(name) %>%
   unique()
 
-markers_1[["Treg"]] <- mean_exp %>%
+markers_1[["Treg"]] <- mean_exp1 %>%
   filter(grepl(pattern = "CD27|LAG3|ICOS|Ki67|TCF7",name)) %>%
   pull(name) %>% 
   unique()
 
 # B and BnT cell markers_1
-markers_1[["BnT"]] <- mean_exp %>%
+markers_1[["BnT"]] <- mean_exp1 %>%
   filter(grepl(pattern = "CD27|CD45RA|CD45RO|LAG3|PD1|CD7|GrzB|FOXP3|ICOS|Ki67|TCF7|VISTA|CD40|HLADR|CD38",name))%>% 
   pull(name) %>%  
   unique()
 
-markers_1[["B"]] <- mean_exp %>%  
+markers_1[["B"]] <- mean_exp1 %>%  
   filter(grepl(pattern = "CD27|CD40|Ki67",name)) %>% 
   pull(name) %>% 
   unique()
 
 # myeloid markers_1
-markers_1[["MacCD163"]] <- mean_exp %>%  
+markers_1[["MacCD163"]] <- mean_exp1 %>%  
   filter(grepl(pattern = "CD68|CD11c|PDL1|VISTA|CD40|CD14|CD206|IDO1|CD16",name)) %>% 
   pull(name) %>% 
   unique()
 
 # we will also use CD20 for DCs to detect those DCs that sit in TLS
-markers_1[["DC"]] <- mean_exp %>%  
+markers_1[["DC"]] <- mean_exp1 %>%  
   filter(grepl(pattern = "PDL1|VISTA|CD40|IDO1|CD20",name)) %>% 
   pull(name) %>%  
   unique()
 
 # we will also use E-cad for HLADR cells as there may still be tumor cells in these cells
-markers_1[["HLADR"]] <- mean_exp %>%  
+markers_1[["HLADR"]] <- mean_exp1 %>%  
   filter(grepl(pattern = "CD11b|CD163|CD68|CD11c|PDL1|ICOS|VISTA|TIM3|CD40|CD14|CD206|CD163|HLADR|Ecad",name)) %>%  
   pull(name) %>%   
   unique()
 
 # NK markers_1
-markers_1[["NK"]] <- mean_exp %>%  
+markers_1[["NK"]] <- mean_exp1 %>%  
   filter(grepl(pattern = "CD7|GrzB|CD16|CD45RA|CD45RO",name)) %>%
   pull(name) %>% 
   unique()
 
 # Neutrophil markers_1
-markers_1[["Neutrophil"]] <- mean_exp %>%  
+markers_1[["Neutrophil"]] <- mean_exp1 %>%  
   filter(grepl(pattern = "MPO|PDL1|VISTA",name)) %>% 
   pull(name) %>% 
   unique()
 
 # pDC markers_1
-markers_1[["pDC"]] <- mean_exp %>%  
+markers_1[["pDC"]] <- mean_exp1 %>%  
   filter(grepl(pattern = "CD303|CD4|GrzB|CD45RA|CD45RO|CD27",name)) %>%  
   pull(name) %>%  
   unique()
 
 # Plasma cell markers_1
-markers_1[["plasma"]] <- mean_exp %>%  
+markers_1[["plasma"]] <- mean_exp1 %>%  
   filter(grepl(pattern = "CD38|TCF7|CD27|CD45RA|CD45RO",name)) %>% 
   pull(name) %>% 
   unique()
 
 # stroma markers_1
-markers_1[["Mural"]] <- mean_exp %>%   
+markers_1[["Mural"]] <- mean_exp1 %>%   
   filter(grepl(pattern = "PDGFR|SMA",name)) %>% 
   pull(name) %>% 
   unique()
 
 # tumor markers_1
-markers_1[["Tumor"]] <- mean_exp %>%   
+markers_1[["Tumor"]] <- mean_exp1 %>%   
   filter(grepl(pattern = "HLADR|CarbonicAnhydrase|cleavedPARP|PDL1|IDO1|CD15|Ki67|Ido|B2M",name)) %>%  
   pull(name) %>%  
   unique()
@@ -308,6 +325,8 @@ markers_1[["Tumor"]] <- mean_exp %>%
 ## panel 2 markers of interest - to be removed
 
 ```{r}
+mean_exp2 <- mean_exp %>%
+  filter(tech == "IMC2")
 markers_2 <- list()
 # we will not subcluters "uncertain" cells as the merging will be very difficult. we may inspect this at a later time point again
 
@@ -405,6 +424,7 @@ markers_2[["Tumor"]] <- mean_exp2 %>%
   filter(grepl(pattern = "panCK|Ecad|Arg1|EGFR|MMP9|p53|Lamp3|CD73|Bcl2|GATA3|CD155|CD10|CD56|CXCL8|Ki67|Podoplanin|IgG",name)) %>%
   pull(name) %>%  
   unique()
+
 ```
 
 ```{r, fig.height=15, fig.width=15}
@@ -427,7 +447,7 @@ mean_data <- distinct(rbind(mean_exp1,mean_exp2))
 mean_exp %>%
   left_join(traits,"immucan_id") %>%
   group_by(EGFR, celltypes,name) %>%
-  summarise(mean(mean_exp))
+  summarise(mean(value))
 
 library(dplyr)
 library(rstatix)
@@ -441,8 +461,8 @@ p.list[["LUAD_EGFR"]] <- mean_data %>%
          simple_histology == "Adenocarcinoma") %>%
   group_by(celltypes, name) %>%
   summarise(
-    wilcox_test = list(wilcox_test(mean_exp ~ EGFR, data = cur_data(), detailed = TRUE)),
-    logFC = log2(mean(mean_exp[EGFR == TRUE], na.rm = TRUE) / mean(mean_exp[EGFR == FALSE], na.rm = TRUE)),
+    wilcox_test = list(wilcox_test(value ~ EGFR, data = cur_data(), detailed = TRUE)),
+    logFC = log2(mean(value[EGFR == TRUE], na.rm = TRUE) / mean(value[EGFR == FALSE], na.rm = TRUE)),
     .groups = "drop"
   ) %>%
   unnest(wilcox_test) %>%
@@ -455,8 +475,8 @@ p.list[["LUAD_KRAS"]] <- mean_data %>%
          simple_histology == "Adenocarcinoma") %>%
   group_by(celltypes, name) %>%
   summarise(
-    wilcox_test = list(wilcox_test(mean_exp ~ KRAS, data = cur_data(), detailed = TRUE)),
-    logFC = log2(mean(mean_exp[KRAS == TRUE], na.rm = TRUE) / mean(mean_exp[KRAS == FALSE], na.rm = TRUE)),
+    wilcox_test = list(wilcox_test(value ~ KRAS, data = cur_data(), detailed = TRUE)),
+    logFC = log2(mean(value[KRAS == TRUE], na.rm = TRUE) / mean(value[KRAS == FALSE], na.rm = TRUE)),
     .groups = "drop"
   ) %>%
   unnest(wilcox_test) %>%
@@ -469,8 +489,8 @@ p.list[["LUAD_STK11"]] <- mean_data %>%
          simple_histology == "Adenocarcinoma") %>%
   group_by(celltypes, name) %>%
   summarise(
-    wilcox_test = list(wilcox_test(mean_exp ~ STK11, data = cur_data(), detailed = TRUE)),
-    logFC = log2(mean(mean_exp[STK11 == TRUE], na.rm = TRUE) / mean(mean_exp[STK11 == FALSE], na.rm = TRUE)),
+    wilcox_test = list(wilcox_test(value ~ STK11, data = cur_data(), detailed = TRUE)),
+    logFC = log2(mean(value[STK11 == TRUE], na.rm = TRUE) / mean(value[STK11 == FALSE], na.rm = TRUE)),
     .groups = "drop"
   ) %>%
   unnest(wilcox_test) %>%
@@ -483,8 +503,8 @@ p.list[["LUAD_p53"]] <- mean_data %>%
          simple_histology == "Adenocarcinoma") %>%
   group_by(celltypes, name) %>%
   summarise(
-    wilcox_test = list(wilcox_test(mean_exp ~ TP53, data = cur_data(), detailed = TRUE)),
-    logFC = log2(mean(mean_exp[TP53 == TRUE], na.rm = TRUE) / mean(mean_exp[TP53 == FALSE], na.rm = TRUE)),
+    wilcox_test = list(wilcox_test(value ~ TP53, data = cur_data(), detailed = TRUE)),
+    logFC = log2(mean(value[TP53 == TRUE], na.rm = TRUE) / mean(value[TP53 == FALSE], na.rm = TRUE)),
     .groups = "drop"
   ) %>%
   unnest(wilcox_test) %>%
@@ -497,22 +517,22 @@ p.list[["LUSC_PIK3CA"]] <- mean_data %>%
          simple_histology == "Squamous cell carcinoma") %>%
   group_by(celltypes, name) %>%
   summarise(
-    wilcox_test = list(wilcox_test(mean_exp ~ PIK3CA, data = cur_data(), detailed = TRUE)),
-    logFC = log2(mean(mean_exp[PIK3CA == TRUE], na.rm = TRUE) / mean(mean_exp[PIK3CA == FALSE], na.rm = TRUE)),
+    wilcox_test = list(wilcox_test(value ~ PIK3CA, data = cur_data(), detailed = TRUE)),
+    logFC = log2(mean(value[PIK3CA == TRUE], na.rm = TRUE) / mean(value[PIK3CA == FALSE], na.rm = TRUE)),
     .groups = "drop"
   ) %>%
   unnest(wilcox_test) %>%
   mutate(condition = "LUSC_PIK3CA")
 
 # LUSC TP53
-p.list[["LUSC_PIK3CA"]] <- mean_data %>%
+p.list[["LUSC_TP53"]] <- mean_data %>%
   left_join(traits,"immucan_id") %>%
   filter(!is.na(TP53),
          simple_histology == "Squamous cell carcinoma") %>%
   group_by(celltypes, name) %>%
   summarise(
-    wilcox_test = list(wilcox_test(mean_exp ~ TP53, data = cur_data(), detailed = TRUE)),
-    logFC = log2(mean(mean_exp[TP53 == TRUE], na.rm = TRUE) / mean(mean_exp[TP53 == FALSE], na.rm = TRUE)),
+    wilcox_test = list(wilcox_test(value ~ TP53, data = cur_data(), detailed = TRUE)),
+    logFC = log2(mean(value[TP53 == TRUE], na.rm = TRUE) / mean(value[TP53 == FALSE], na.rm = TRUE)),
     .groups = "drop"
   ) %>%
   unnest(wilcox_test) %>%
@@ -523,23 +543,24 @@ dat <- do.call(rbind,p.list)
 dat <- dat %>%
   group_by(celltypes, condition) %>%
   mutate(p_adjust =p.adjust(p = p,method = "BH"),
-         FCcutoff = ifelse(abs(logFC)>0.4,TRUE,FALSE),
-         show =  p_adjust < 0.1 & FCcutoff == TRUE)
+         FCcutoff = ifelse(abs(logFC)>0.33,TRUE,FALSE),
+         show =  p_adjust < 0.101 & FCcutoff == TRUE)
 dat %>%
   filter(celltypes == "Treg",
          condition == "LUSC_PIK3CA")
 
 library(ggrepel)
-col_vec1 <- readRDS("../data/col_vec1.rds")
-col_vec2 <- readRDS("../data/col_vec2.rds")
+sce1 <- readRDS(paste0(mount_path,"data/IMC/Panel_1/Rout/sce.rds"))
+sce2 <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/sce.rds"))
+
 col_vec <- c(col_vec1,col_vec2)
-col_vec <- col_vec[!duplicated(col_vec)]
+col_vec <- col_vec[!duplicated(names(col_vec))]
 
 
 p <- dat %>%
   ggplot(aes(x = logFC,y = -log10(p), col= celltypes, shape = factor(condition)))+
   geom_point(size = 4)+
-  geom_text_repel(data = dat %>% filter(show == TRUE),aes(x = logFC,y = -log10(p),label= paste(name, celltypes,sep = "-")), col = "black",size = 6.5,box.padding = 0.5)+
+  geom_text_repel(data = dat %>% filter(show == TRUE),aes(x = logFC,y = -log10(p),label= paste(name, celltypes,sep = "-")), col = "black",size = 5,box.padding = 0.5,max.overlaps = 20)+
   scale_color_manual(values = col_vec)+
   theme_bw()+
   theme(legend.position = "bottom",
@@ -552,12 +573,15 @@ ggsave(filename = paste0(out_folder,"S4C_marker_exp_fold_changes_all_celltypes.p
        device = "pdf",
        width = 15,
        height = 10)
+dat %>%
+  filter(celltypes == "CD8") %>%
+  arrange(p)
+  filter(show == TRUE)
 ```
 
 # S4D number HLADR positive tumor cells in EGFR
 
 ```{r, fig.width=4, fig.height=8}
-sce1 <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IMC/Rout/data/sce.rds")
 sce1 <- sce1[,sce1$ROI != 4]
 
 counts <- as.data.frame(t(assay(sce1,"exprs")))
@@ -599,20 +623,13 @@ dev.off()
 # Ki67 and p53 on tumor cells in LUSC
 
 ```{r}
-mean_exp1 <- read_csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/mean_marker_expr_per_celltype_p1.csv")
-mean_exp2 <- read_csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/mean_marker_expr_per_celltype_p2.csv")
-
-mean_exp1$tech <- "IMC1"
-mean_exp2$tech <- "IMC2"
-mean_exp <- rbind(mean_exp1,mean_exp2)
-
 p_Tumor_Ki67_P53_TP53_LUSC <- mean_exp %>%
   filter(celltypes == "Tumor",
          name %in% c("p53_p2","Ki67_p1","Ki67_p2")) %>%
   left_join(traits, by = "immucan_id") %>%
   filter(simple_histology == "Squamous cell carcinoma", 
          !is.na(TP53)) %>%
-  ggplot(aes(x = TP53, y = mean_exp,fill= TP53))+
+  ggplot(aes(x = TP53, y = value,fill= TP53))+
   geom_boxplot(outliers = FALSE)+
   geom_jitter(aes(color = TP53),position = position_jitterdodge(jitter.width = 0.2), size= 1)+
   scale_fill_manual(values = alpha(c("red", "blue"),alpha = 0.6))+
@@ -636,296 +653,111 @@ ggsave(filename = paste0(out_folder,"S4E_Ki67_p53_tumor_cells_LUSC.pdf"),
        height = 3)
 ```
 
-
-# check IF data for PDL1 expression on Tumor in EGFR
-
-```{r}
-files <- list.files("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IF/IF2/tsv",pattern = "*.rds",full.names = TRUE)
-library(BiocParallel)
-cur_files <- bplapply(files,function(x){
-  cur_file <- readRDS(x)
-  cur_counts <- as.data.frame(t(assay(cur_file,"normalized"))) 
-  cur_counts$celltype <- cur_file$celltype
-
-  cur_counts <- cur_counts %>%
-    group_by(celltype) %>%
-    summarise(across(where(is.numeric),mean))
-  cur_counts$immucan_id <- str_split_i(unique(cur_file$sample_id),"-FIXT",1)
-  return(cur_counts)
-}, BPPARAM = MulticoreParam(workers = 10))
-
-cur_dat <- do.call(rbind,cur_files)
-cur_dat <- left_join(cur_dat, traits,"immucan_id")
-cur_dat %>%
-  filter(simple_histology == "Adenocarcinoma",
-         celltype == "Tumor") %>%
-  ggplot(aes(x = EGFR,y = PDL1))+
-  geom_boxplot()+
-  geom_jitter(position = position_dodge2(width = 0.2))+
-  theme_bw()
-  
-```
-
-# check IF data for PD1 expression on CD8 in EGFR
-```{r}
-cur_dat %>%
-  filter(simple_histology == "Adenocarcinoma",
-         celltype == "CD8") %>%
-  ggplot(aes(x = EGFR,y = PD1))+
-  geom_boxplot()+
-  geom_jitter(position = position_dodge2(width = 0.2))+
-  theme_bw()
-```
-
-
-# TP53 further analyis
-Here we investigate the differences between patients that die with TP53 mutation and those that don't
+# S4F GITR on Tregs
 
 ```{r}
-traits <- traits %>%
-  mutate(TP53_death = ifelse(TP53 == TRUE & censoring == 1,"TP53_poor",NA),
-         TP53_death = ifelse(TP53 == TRUE & censoring == 0,"TP53_good",TP53_death))
+counts2 <- as.data.frame(t(assay(sce2,"exprs")))
+head(counts2)
+dim(counts2)
 
-table(traits$TP53_death, traits$LUAD_vs_LUSC)
+counts2$celltypes <- sce2$celltypes
+counts2$immucan_id <- sce2$immucan_id
+counts2$sample_id <- sce2$sample_id
+counts2 %>%
+  filter(celltypes == "Treg") %>%
+  ggplot(aes(x = FOXP3,y = GITR))+
+  geom_point()
 
-table(traits$TP53,traits$metastatic_treatment)
-table(traits$censoring,traits$metastatic_treatment)
-table(traits$TP53_death,traits$KRAS)
-```
+counts2 <- left_join(counts2, traits,"immucan_id")
 
-```{r}
-condition <- c(0)
-names(condition) <- c("TP53_death")
+counts2 %>%
+  filter(simple_histology == "Squamous cell carcinoma",
+         celltypes == "Treg") %>%
+  mutate(PIK3CApos = ifelse(GITR > 1, TRUE,FALSE)) %>%
+  group_by(sample_id,.drop = FALSE) %>%
+  dplyr::count(PIK3CApos) %>%
+  mutate(total_cells = sum(n),
+         frac = n/total_cells) %>%
+  filter(PIK3CApos == TRUE) %>%
+  arrange(frac)
 
-pats <- traits %>%
-      filter(!is.na(TP53_death)) %>%
-  pull(immucan_id)
-# loop over conditions and do two way abundance difference tests
-p.list <- list()
-for (i in c(data_type,"cello1","cello2")) {
-  for (j in names(condition)) {
-    
-    if(grepl("cello",i)){
-      abundances <- cello_dat %>%
-        select(contains(i))
-      abundances <- t(abundances)
-      colnames(abundances) <- cello_dat$immucan_id
-    } else {
-      abundances <- dat %>%
-        select(contains(i)) %>%
-        filter(complete.cases(.))
-      abundances <- t(abundances)
-      colnames(abundances) <-dat %>%
-        select(contains(i),immucan_id) %>%
-        filter(complete.cases(.)) %>%
-        pull(immucan_id)
-    }
-    anno <- traits %>%
-      filter(!is.na(TP53_death),
-             LUAD_vs_LUSC == "Squamous cell carcinoma")
-    
-    # subset abundances
-    abundances <- abundances[,which(colnames(abundances) %in% anno$immucan_id)]
-    
-    
-    meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-    Size <- factor(meta[,j])
-    meta$Size <- Size
-    dim(meta)
-    
-    
-    # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
-    y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-    design <- model.matrix(~0+group,data = y.ab$samples)
-    colnames(design) <- levels(y.ab$samples$group)
-    # we do not fit a trend 
-    y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-    y.ab$common.dispersion
-    #plotBCV(y.ab,pch = 5)
-
-    # we only compare the diff abundance for Adeno vs Sqam.
-    fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-    fit_LUAD <- glmLRT(glmfit = fit.ab,contrast = c(1,-1))
+# selected images
+ims <- c("IMMUcan_Batch20210921_LUNG_10041582-LUNG-VAR-TIS-01-IMC-02_003","IMMUcan_Batch20210701_LUNG_10040761-LUNG-VAR-TIS-01-IMC-02_001")
 
 
-      sig_dat <- fit_LUAD$table
-      sig_dat$celltypes <- rownames(sig_dat)
-      sig_dat$cond <- j
-      sig_dat$comparison <- grep("TP53",fit_LUAD$comparison,value = TRUE)
+# load images
+library(cytomapper)
+masks <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/masks.rds"))
+images <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/images.rds"))
+
+cur_df <- as.data.frame(colData(sce2))
+rownames(cur_df) <- NULL
+cur_df <- cur_df %>%
+  select(immucan_id,image, sample_id) %>%
+  distinct() %>%
+  mutate(image = gsub(".tiff","",image))
+rownames(cur_df) <- cur_df$image
 
 
-  }
-}
-
-# define fold change cutoff for plotting
-cutoff <- 0
-
-cur_dat <- sig_dat %>%
-  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = "TP53_good_over_poor") %>%
-  group_by(tech, cond) %>%
-  mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         sig = ifelse(FDR < 0.1 & abs(logFC) > cutoff,TRUE,FALSE),
-         direction = ifelse(logFC > 0 ,"up", "down"),
-         ct_name = gsub("_abundance","",str_split_i(celltypes,"__",1)))
-  
-cur_dat_LUAD <- cur_dat 
-to_show_LUAD <- cur_dat %>%
-  filter(sig == TRUE) %>%
-  pull(celltypes)
-
-cur_dat <- cur_dat %>%
-  filter(celltypes %in% to_show_LUAD) %>%
-  mutate(celltypes = gsub("_abundance","",celltypes))
-
-# get max and min fold change values
-max_up <- max(cur_dat$logFC)+1
-min_down <- min(cur_dat$logFC)-1
-
-# plot the data
-p <- cur_dat %>%
-  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
-  geom_point()+
-  theme_bw()+
-  scale_colour_gradientn(colours = c("blue","white","red"), 
-                         values = rescale(c(round(min_down),0,round(max_up))),
-                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  #scale_color_gradient(low = "white",   high = "red")+
-  scale_size(range = c(1,8))+
-  new_scale_colour() +
-  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 20),
-        xis.text.y = element_text(size = 20),
-        legend.text = element_text(size = 20),
-        legend.title = element_text(size = 20),
-        legend.location = "plot",
-        axis.title.x = element_blank(),
-        axis.title.y = element_blank())+
-  coord_flip()
-  #theme(plot.margin = unit(c(5, 2.5, 2.5, 2.5), "cm"))
-p
-
-sig_dat %>%
-  filter(celltypes == "Tumor_IDO1_abundance__IMC1")
-```
-
-```{r}
-dat %>%
-  left_join(traits, "immucan_id") %>%
-  ggplot(aes(x = TP53_death,y = log2(Tumor_IDO1_abundance__IMC1)))+
-  geom_boxplot()
-test
-```
-
-# PIK3CA differential expression of  PIK3CA mutated tumors - not included in manuscript
-
-note: we only have RNAseq data for 4 patients that are PIK3CA mutated.
-```{r, fig.height=8, fig.width=8}
-library(DESeq2)
-library(org.Hs.eg.db)
-library(clusterProfiler)
-counts <- read.table("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/RNAseq/Rout/tables/RNAseq/rawcounts_proteins.txt", sep = "\t",check.names = FALSE)
-# we will fix the version names of the genes
-clean_ids <- gsub("\\..*", "", rownames(counts))
-rownames(counts) <- clean_ids
-
-# metadata
-metadata <- traits[,c("immucan_id","PIK3CA")]
-
-qc_matrix <- read.delim("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/RNAseq/STAR_counts/qc_matrix.tsv", sep="\t", header=T)
-rownames(qc_matrix) <- qc_matrix$ID
-
-seq_matrix <- read.delim("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/RNAseq/STAR_counts/sequencing_qc.csv", sep=",", header = T)
-seq_matrix$lib.kit <- factor(ifelse(grepl("Takara",seq_matrix$assay_library), "takara", "kapa"))
-seq_matrix <- unique(seq_matrix[,c("sample_id","date_of_extraction", "number_of_reads", "percent_unique","lib.kit")])
-rownames(seq_matrix) <- seq_matrix$sample_id
-
-metadata <- merge(seq_matrix, qc_matrix, by=0, sort=F)
-metadata$Row.names <- NULL
-metadata$immucan_id <- str_split_i(metadata$sample_id,"-FIXT",1)
+# unify metadata of masks and images
+mcols(images)$immucan_id <- cur_df[names(images),"immucan_id"]
+mcols(masks)$immucan_id <- cur_df[names(masks),"immucan_id"]
+mcols(images)$sample_id <- cur_df[names(images),"sample_id"]
+mcols(masks)$sample_id <- cur_df[names(masks),"sample_id"]
 
 
-# add condition to metadata
-metadata <- left_join(metadata,as.data.frame(traits),"immucan_id")
-rownames(metadata) <- metadata$sample_id
-
-metadata <- metadata %>%
-  filter(sample_id %in% colnames(counts))
-
-stopifnot(all(colnames(counts) == rownames(metadata)))
-
-# factorize treatment
-metadata <- metadata %>%
-  mutate(PIK3CA = as.factor(ifelse(PIK3CA == TRUE,"mutated", "wildtype")))
-
-# we will only keep LUSC samples
-ids <- metadata %>%
-  filter(LUAD_vs_LUSC == "Squamous cell carcinoma") %>%
-  pull(sample_id)
-counts <- counts[,ids]
-metadata <- metadata %>%
-  filter(sample_id %in% ids)
-# perform differential expression analysis
-dds <- DESeqDataSetFromMatrix(countData = counts,
-                              colData = metadata,
-                              design = ~ lib.kit + PIK3CA)
-# Filter low-count genes
-dds <- dds[rowSums(counts(dds)) > 10,]
-
-dds <- DESeq(dds)
-
-res <- results(dds, contrast = c("PIK3CA", "mutated", "wildtype"))
-
-# Order and remove NAs
-res <- res[order(res$pvalue), ]
-res <- na.omit(res)
-
-# Add gene symbols as a column if not rownames already
-res$symbol <- rownames(res)
-
-# Map SYMBOL to ENTREZID
-res$entrez <- mapIds(org.Hs.eg.db,
-                     keys = res$symbol,
-                     column = "SYMBOL",
-                     keytype = "ENSEMBL",
-                     multiVals = "first")
-
-# Drop NAs
-res <- res[!is.na(res$entrez), ]
-
-# Create ranked list (can use log2FoldChange or stat)
-gene_list <- res$log2FoldChange
-names(gene_list) <- res$entrez
-gene_list <- sort(gene_list, decreasing = TRUE)
+cur_sce <- sce2[,sce2$sample_id %in% ims]
 
 
-gsea_res <- gseGO(geneList = gene_list,
-                  OrgDb = org.Hs.eg.db,
-                  ont = "BP",
-                  keyType = "SYMBOL",
-                  minGSSize = 10,
-                  maxGSSize = 500,
-                  pvalueCutoff = 0.05,
-                  verbose = FALSE)
+cur_ims <- getImages(images,ims)
+cur_masks <- getImages(masks, ims)
 
-# View top results
-head(gsea_res)
+# read images into memory and normalize
+cur_images <- CytoImageList(cur_ims, on_disk = FALSE)
+cur_masks <- CytoImageList(cur_masks, on_disk = FALSE)
+cur_images <- scaleImages(cur_images,value = 2^16-1)
+cur_masks <- scaleImages(cur_masks,value = 2^16-1)
+cur_images <- normalize(cur_images, separateImages = TRUE)
+cur_images <- normalize(cur_images, separateImages = TRUE, 
+                        inputRange = c(0, 0.2))
 
-dotplot(gsea_res, showCategory = 20, title = "GSEA - GO: Biological Process")
-```
+channelNames(cur_images) <- rownames(cur_sce)
 
+# define all tumor and non-tumor cells
+cur_sce$Treg <- "nonTreg"
+cur_sce[,cur_sce$celltypes == "Treg"]$Treg <- "Treg"
+plot_sce <- cur_sce[,cur_sce$celltypes == "Treg"]
 
-```{r}
-library(DESeq2)
-expr <- read.table(file="/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/RNAseq/Rout/tables/RNAseq/vstcounts_adj_proteins.txt", header=TRUE, stringsAsFactors=FALSE, row.names=1, check.names = F)
+test_images <- endoapply(cur_images, gblur, sigma = 1)
 
-MetadataFile <- "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/RNAseq/Rout/tables/RNAseq/metadata.txt"
+# generate images
+plotPixels(image = test_images,
+           mask = cur_masks,
+           object = plot_sce,
+           cell_id = "ObjectNumber",
+           img_id = "sample_id",
+           colour_by = c("CD137", "GITR", "FOXP3"),
+           outline_by = "Treg",
+           colour = list(CD137 = c("black", "green"),GITR = c("black","red"),FOXP3 = c("black","blue"),
+                        Treg = c(Treg = "white")),
+           bcg = list(CD137  = c(0,1.5,1),
+                      GITR = c(0,1.5,1),
+                      FOXP3  = c(0,3,1)),
+            image_title = NULL,save_plot = list(filename = paste0(out_folder,"S4F_GITR_Tregs_blurred.png")))
+
+plotPixels(image = cur_images,
+           mask = cur_masks,
+           object = plot_sce,
+           cell_id = "ObjectNumber",
+           img_id = "sample_id",
+           colour_by = c("CD137", "GITR", "FOXP3"),
+           outline_by = "Treg",
+           colour = list(CD137 = c("black", "green"),GITR = c("black","red"),FOXP3 = c("black","blue"),
+                        Treg = c(Treg = "white")),
+           bcg = list(CD137  = c(0,1.5,1),
+                      GITR = c(0,1.5,1),
+                      FOXP3  = c(0,3,1)),
+            image_title = NULL,save_plot = list(filename = paste0(out_folder,"S4F_GITR_Tregs.png")))
+
 ```
 

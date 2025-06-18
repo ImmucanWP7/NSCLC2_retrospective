@@ -39,7 +39,7 @@ library(BiocParallel)
 cur_files <- list.files(paste0(old_mount,"IF/IF3/tsv"), 
                         pattern = ".rds$", full.names = TRUE)
 
-inf_dat <- bplapply(cur_files[1:10],function(x){
+inf_dat <- bplapply(cur_files,function(x){
   cur_sce <- readRDS(x)
   print(unique(cur_sce$sample_id))
   

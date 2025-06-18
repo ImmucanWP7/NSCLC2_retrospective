@@ -61,9 +61,9 @@ Whole exome sequencing data was processed by the "vegan-pipelin" for calling and
   
 In this notebook variants are filtered by folowing criteria:  
     - Only variants that passed "vegan" quality control are kept ("PASS" filter)
-    - Variants with a population allele frequency above 0.1%, as by "vegan" from the gnomAD data base are rmeoved from furhter analysis.  
+    - Variants with a population allele frequency above 1%, as by "vegan" from the gnomAD data base are removed from further analysis.  
     - Only variants included in the COSMIC data base as annotated by the "vegan-pipeline" are kept for further analysis
-    - Variants are further filterd to only include functionally relevant alterations for downstream analysis
+    - Variants are further filtered to only include functionally relevant alterations for downstream analysis
 
    
   
@@ -197,7 +197,7 @@ data_mut
 ### Filter mutations {.tabsets}
 
 #### gnomAD_VAF
-Remove all population allele frequency above 0.1%
+Remove all population allele frequency above 1%
 ```{r}
 data_mut[["FILTER_AF"]] <- ifelse(data_mut$AF < 0.01, "keep", "remove")
 data_mut[["FILTER_AF"]][which(is.na(data_mut[["FILTER_AF"]]))] <- "keep"
@@ -405,7 +405,12 @@ data_plot <- data_plot %>%
 rownames(data_plot) <- data_plot[["GENE"]]
 data_plot[["GENE"]] <- NULL
 
-data_plot
+data_plot %>%
+  pivot_longer(-GENE) %>%
+  group_by(GENE) %>%
+  count(value) %>%
+  filter(!is.na(value))%>%
+  arrange(desc(n))
 ```
 
 ```{r}
@@ -519,7 +524,7 @@ ht <- ComplexHeatmap::oncoPrint(data_plot,
                     #, heatmap_legend_param = list(legend_gp = gpar(fontsize = 12))
   )
 ht
-pdf(file = "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/Figure_4/4A_oncoprint.pdf",width = 10,height = 9)
+pdf(file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_4/4A_oncoprint.pdf",width = 10,height = 9)
 draw(ht,
      heatmap_legend_side = "bottom"
      ,annotation_legend_side = "bottom"

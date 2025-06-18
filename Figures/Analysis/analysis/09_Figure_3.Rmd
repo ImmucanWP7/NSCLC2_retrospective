@@ -32,7 +32,7 @@ library(imcRtools)
 
 ```{r}
 mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
-out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_2/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_3/"
 
 if (!dir.exists(out_folder)) {
   dir.create(out_folder)
@@ -607,7 +607,7 @@ dittoSeq::dittoHeatmap(mean_sce,genes = rownames(mean_sce)[grepl("CD7|CD8|PD1|LA
 # 3G nfiltration ratio and cox model
 T
 ```{r}
-inf_dat <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/infiltration_harmonized.rds")
+inf_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/infiltration_harmonized.rds"))
 
 # compare densities of infiltrating, bystanding and ignored from IMC1, IMC2 and mIF
 inf_dat <- inf_dat %>%
@@ -861,27 +861,12 @@ ggsave(filename = paste0(out_folder,"3F_correlation_interaction_ratio_and_TPS_co
 
 ```
 
-# plot not in paper
-```{r, fig.height=8, fig.width=10}
-mean_exp_1 <- read_csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/mean_marker_expr_per_celltype_p1.csv")
-mean_exp_2 <- read_csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/mean_marker_expr_per_celltype_p2.csv")
-
-mean_exp_1 %>%
-  filter(celltypes == "CD8",
-         grepl("PD1|LAG|GrzB|Ki67|CD38|TCF7|CD27|ICOS",name)) %>%
-  left_join(traits, by = "immucan_id") %>%
-  ggplot(aes(x = name, y = mean_exp,fill= TPS_score))+
-  geom_boxplot()+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
-```
-
-
 
 # 3H
 RNA based pathway activity as calculated by Jane Merlevede [here](../../RNA/CURIE/inflammation_quantification_NSCLC2/inflammation_quantification_analysis.Rmd). We will extract the relevant information to prepare the figure here
 
 ```{r}
-cur_dat <- read.table("../../RNA/CURIE/inflammation_quantification_NSCLC2/outputs/pathwayActivity/PathwayActivity_NSCLC2_mlm")
+cur_dat <- read.table(paste0(mount_path,"data/RNAseq/CURIE/inflammation_quantification_NSCLC2/outputs/pathwayActivity/PathwayActivity_NSCLC2_mlm"))
 p <- cur_dat %>%
   as.data.frame() %>%
   mutate(immucan_id = paste0("LUNG-",rownames(cur_dat))) %>%
@@ -892,7 +877,7 @@ p <- cur_dat %>%
   filter(!is.na(TPS_score)) %>%
   ggplot(aes(x = LUAD_vs_LUSC,y = JAK.STAT, fill = TPS_score))+
   geom_boxplot()+
-  geom_jitter(aes(color = TPS_score),position = position_jitterdodge(jitter.width = 0.2), size= 0.3)+
+  geom_jitter(aes(color = TPS_score),position = position_jitterdodge(jitter.width = 0.2), size= 1.5)+
   scale_fill_manual(values = alpha(c("orange", "darkgreen"),alpha = 0.6))+
   scale_color_manual(values = c("orange", "darkgreen"))+
   stat_compare_means(size = 8,label = "p.signif")+
@@ -915,8 +900,8 @@ ggsave(filename = paste0(out_folder,"3H_inflammation_score_across_TPS.pdf"),
 # 3I enrichment in clinical traits for TMB
 ```{r, fig.height=5, fig.width=5}
 cur_traits <- traits %>% select("TMB_score","age_dicho", "gender","stage_1_2","stage_1_3","stage_2_3","LUAD_vs_LUSC","never_vs_current_smoker",
-            "never_vs_Ex_smoker","current_vs_Ex_smoker", "N0_vs_Nx","M0_vs_Mx", "long_survivors","T1_vs_T2b", "TPS_score")
-condition <- c("high","low", "Female","I","I","II","Adenocarcinoma","Non-smoker","Non-smoker","Ex-smoker", "node_neg", "met_neg", "alive","T1a", "negative")
+            "never_vs_Ex_smoker","current_vs_Ex_smoker", "N0_vs_Nx","M0_vs_Mx", "long_survivors","T1_vs_Tother", "TPS_score")
+condition <- c("high","low", "Female","I","I","II","Adenocarcinoma","Non-smoker","Non-smoker","Ex-smoker", "node_neg", "met_neg", "alive","T1", "negative")
 
 names(condition) <- colnames(cur_traits)
 
@@ -1077,24 +1062,33 @@ p <- cur_dat %>%
   #theme_bw()+
   geom_point()+
   theme_bw()+
-  scale_colour_gradientn(colours = c("blue","white","red"), 
-                         values = rescale(c(round(min_down),0,round(max_up))),
-                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  #scale_color_gradient(low = "white",   high = "red")+
+  scale_colour_gradientn(
+    colours = c("blue", "white", "red"), 
+    values = rescale(c(round(min_down), 0, round(max_up))),
+    limits = c(round(min_down), round(max_up)),
+    guide = guide_colorbar(
+      title = "logFC",                   # optional: add a title
+      barwidth = 12,                     # increase bar width
+      barheight = 1.5,                   # adjust height
+      title.theme = element_text(size = 16),
+      label.theme = element_text(size = 14)
+    )
+  )+
+  #scale_colour_gradientn(colours = c("blue","white","red"), 
+  #                       values = rescale(c(round(min_down),0,round(max_up))),
+  #                       guide = "colorbar", limits=c(round(min_down),round(max_up)))+
   scale_size(range = c(1,8))+
   new_scale_colour() +
   geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
   scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
   theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 14),
-        axis.text.y = element_text(size = 10),
-        legend.text = element_text(size = 10),
-        legend.title = element_text(size = 10),
-        legend.location = "plot",
+        axis.text.y = element_text(size = 14),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        #legend.location = "plot",
         axis.title.x = element_blank(),
-        axis.title.y = element_blank())
+        axis.title.y = element_blank(),
+        legend.position = "bottom")
 
 p
 ggsave(filename = paste0(out_folder,"3J_diff_abundance_TMB_LUSC_LUAD_bubble_plot.pdf"),
