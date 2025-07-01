@@ -128,7 +128,15 @@ p <- cur_dat %>%
     theme_bw()+
   coord_cartesian(xlim = c(-2,4),ylim = c(0,7))+
   geom_vline(xintercept = c(-cutoff, cutoff), lwd = 0.7, col = "gray", linetype = "dashed")+
-  ggtitle("cell type abundance enrichment for histology")
+  ggtitle("Cell type abundance enrichment for histology")+
+  theme(axis.text.x = element_text(size = 15),
+        axis.text.y = element_text(size = 15),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15),
+        plot.title = element_text(hjust = 0.5, size = 16, face = "bold"))+
+  guides(size = guide_legend(override.aes = list(size = 10)))
 
 p
 ggsave(filename = paste0(out_folder,"2A_diff_abundance_histology.pdf"),
@@ -208,14 +216,22 @@ p <- cur_dat %>%
   coord_cartesian(xlim = c(-2.5,5),ylim = c(0,12.5))+
   scale_color_manual(values = c("cello1" = "green4", "cello2" = "magenta3"))+
   geom_vline(xintercept = c(-cutoff, cutoff), lwd = 0.7, col = "gray", linetype = "dashed")+
-  ggtitle("Cellohood cluster enrichment for histology")
+  ggtitle("Cellohood cluster enrichment for histology")+
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12),
+        plot.title = element_text(hjust = 0.5, size = 11, face = "bold"))+
+  guides(size = guide_legend(override.aes = list(size = 10)))
 
 p
 ggsave(filename = paste0(out_folder,"2B_diff_abundance_celloClusters_histology.pdf"),
        plot = p,
        device = "pdf",
-       width = 7,
-       height = 5)
+       width = 9,
+       height = 6)
 ```
 
 # 2C images P1 CN_2
@@ -481,18 +497,32 @@ p <- dens_dat %>%
          stage != 4) %>%
   ggplot(aes(x = name,y = log10(value+1),fill=as.factor(stage))) +
   geom_boxplot(outliers = FALSE)+
-  geom_jitter(position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.2),size= 0.5, show.legend = FALSE)+
   theme_bw()+
-  theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust = 1, size = 20))+
-  geom_text(data = p_sig_dat, aes(x = name,y=3.5,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE)+
+  geom_text(data = p_sig_dat,
+            aes(x = name,
+                y=3.5,
+                label = paste0("p : ",round(p.value,digits = 3))),
+            inherit.aes = FALSE,
+            size = 6)+
   coord_cartesian(ylim = c(0,3.5))+
-  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "darkorange2"))
+  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "darkorange2"))+
+  theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust = 1, size = 14),
+        axis.text.y = element_text(size = 14),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 16),
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15))+
+  guides(fill = guide_legend(override.aes = list(size = 8,
+                                                 shape = 22)))+
+  labs(y = expression("Log10(density)"),
+       fill = "Stage")
 
 p 
 ggsave(filename = paste0(out_folder,"2E_linear_model_densities_for_stages.pdf"),
        plot = p,
        device = "pdf",
-       width = 10,
+       width = 8,
        height = 8)
 ```
 
@@ -702,9 +732,9 @@ cur_dat <- rbind(cur_dat.groups, cur_dat.SBS)
 
 cur_dat <- cur_dat %>%
   mutate(tech = gsub("_density","",str_split_i(celltypes,"__",2)),
-         cond = ifelse(comparison == "1*Current smoker -1*Ex-smoker","CurrentSmoker_vs_ExSmoker","ExSmoker_vs_NonSmoker"),
-         cond = ifelse(comparison == "1*Current smoker -1*Non-smoker","CurrentSmoker_vs_NonSmoker",cond),
-         cond = ifelse(comparison == "-1*low 1*high","SBS4-SBS92_High_vs_Low",cond)) %>%
+         cond = ifelse(comparison == "1*Current smoker -1*Ex-smoker","CurrentSmoker_over_ExSmoker","ExSmoker_over_NonSmoker"),
+         cond = ifelse(comparison == "1*Current smoker -1*Non-smoker","CurrentSmoker_over_NonSmoker",cond),
+         cond = ifelse(comparison == "-1*low 1*high","SBS4-SBS92_High_over_Low",cond)) %>%
   group_by(tech) %>%
   mutate(FDR = p.adjust(PValue,method = "BH"),
          sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
@@ -726,32 +756,37 @@ min_down <- min(cur_dat$logFC)-1
 
 # plot the data
 p <- cur_dat %>%
-  ggplot(aes(x=celltypes, y = factor(cond, levels = c("SBS4-SBS92_High_vs_Low",
-                                                      "CurrentSmoker_vs_ExSmoker",
-                                                      "ExSmoker_vs_NonSmoker",
-                                                      "CurrentSmoker_vs_NonSmoker")),col = logFC, size= -log10(PValue)))+
+  ggplot(aes(x=celltypes, y = factor(cond, levels = c("SBS4-SBS92_High_over_Low",
+                                                      "CurrentSmoker_over_ExSmoker",
+                                                      "ExSmoker_over_NonSmoker",
+                                                      "CurrentSmoker_over_NonSmoker")),col = logFC, size= -log10(PValue)))+
   #geom_tile(aes(fill = sig))+
   #theme_bw()+
   geom_point()+
   theme_bw()+
-  scale_colour_gradientn(colours = c("blue","white","red"), 
-                         values = rescale(c(round(min_down),0,round(max_up))),
-                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  #scale_color_gradient(low = "white",   high = "red")+
+  scale_colour_gradientn(
+    colours = c("blue", "white", "red"), 
+    values = rescale(c(round(min_down), 0, round(max_up))),
+    limits = c(round(min_down), round(max_up)),
+    guide = guide_colorbar(
+      title = "logFC",                   
+      barwidth = 9,                     
+      barheight = 1,                   
+      title.theme = element_text(size = 16),
+      label.theme = element_text(size = 14)
+    )
+  )+
   scale_size(range = c(1,4))+
   new_scale_colour() +
   geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =1.5)+
   scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
-        axis.text.y = element_text(size = 10),
-        legend.text = element_text(size = 10),
-        legend.title = element_text(size = 10),
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15),
         axis.title.y = element_blank(),
-        legend.position =  "bottom",
-        plot.margin = unit(c(0.1, 1.2, 1.2, 1.2), "cm"))
+        axis.title.x = element_blank(),
+        legend.position =  "bottom")
 p
 
 ggsave(filename = paste0(out_folder,"2F_diff_abundance_smoking.pdf"),

@@ -82,6 +82,22 @@ out <- data.frame(feature = names(p.list),
 
 out <- out[-1,]
 
+out <- out %>%
+  mutate(feature = ifelse(feature == "age_dicho","Old_over_Young", feature),
+         feature = ifelse(feature == "gender","Male_over_Female", feature),
+         feature = ifelse(feature == "stage_1_2","Stage_II_over_I", feature),
+         feature = ifelse(feature == "stage_1_3","Stage_III_over_I", feature),
+         feature = ifelse(feature == "stage_2_3","Stage_III_over_II", feature),
+         feature = ifelse(feature == "LUAD_vs_LUSC","LUSC_over_LUAD", feature),
+         feature = ifelse(feature == "never_vs_current_smoker","Smoker_over_Never-smoker", feature),
+         feature = ifelse(feature == "never_vs_Ex_smoker","Ex-smoker_over_Never-smoker", feature),
+         feature = ifelse(feature == "current_vs_Ex_smoker","Smoker_over_Ex-smoker", feature),
+         feature = ifelse(feature == "N0_vs_Nx","Node-pos_over_Node-neg", feature),
+         feature = ifelse(feature == "M0_vs_Mx","Met-pos_over_Met-neg", feature),
+         feature = ifelse(feature == "long_survivors","Dead_over_Alive", feature),
+         feature = ifelse(feature == "T1_vs_Tother","T1_over_T-other", feature))
+
+
 p <- out %>%
   mutate(TPS_score = "negative",
          FDR = p.adjust(p.value,method = "BH"),
@@ -100,10 +116,10 @@ p <- out %>%
   new_scale_colour() +
   geom_point(shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.5)+
   scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
-        axis.text.y = element_text(size = 10),
-        legend.text = element_text(size = 10),
-        legend.title = element_text(size = 10),
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12),
         axis.title.y = element_blank())+
   coord_flip()
 p
@@ -111,7 +127,7 @@ p
 ggsave(filename = paste0(out_folder,"3B_TPS_enrichment_in_clinical.pdf"),
        plot = p,
        device = "pdf",
-       width = 3.5,
+       width = 4.5,
        height = 6)
 ```
 
@@ -221,7 +237,7 @@ p <- cur_dat %>%
   #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
   #theme_bw()+
   #scale_color_gradient(low = "white",   high = "red")+
-  scale_size(range = c(1,8))+
+  scale_size(range = c(1,10))+
   new_scale_colour() +
   geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =1)+
   scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
@@ -661,11 +677,103 @@ p <- plot_grid(p1, p2,ncol = 1)
 p
 
 
+
+```
+
+# new figure 3G
+
+```{r}
+inf_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/infiltration_harmonized.rds"))
+
+# compare densities of infiltrating, bystanding and ignored from IMC1, IMC2 and mIF
+inf_dat <- inf_dat %>%
+  group_by(immucan_id,tech) %>%
+  mutate(total_CD8 = sum(bystanding,ignored,infiltrating,na.rm = TRUE)/im_size,
+         bystanding = round(bystanding/im_size),
+         ignored = round(ignored/im_size),
+         infiltrating = round(infiltrating/im_size)) %>%
+  ungroup()
+
+
+p1 <- inf_dat %>%
+  ggplot()+
+  geom_density(aes(x = bystanding, col = tech), lwd = 1)+
+  ggtitle("bystanding")
+p2 <- inf_dat %>%
+  ggplot()+
+  geom_density(aes(x = ignored, col = tech), lwd = 1)+
+  ggtitle("ignored")
+p3 <- inf_dat %>%
+  ggplot()+
+  geom_density(aes(x = infiltrating, col = tech), lwd = 1)+
+  ggtitle("infiltrating")
+
+plot_grid(p1, p2,p3)
+
+# define interactor over bystander ratio
+inf_dat <- inf_dat %>%
+  group_by(immucan_id, tech) %>%
+  mutate(int_over_bystander = (infiltrating+bystanding)/ignored)
+  
+inf_dat %>%
+  ggplot()+
+  geom_density(aes(x = int_over_bystander, col = tech), lwd = 1)+
+  ggtitle("infiltrating")
+
+inf_dat[(is.infinite(inf_dat$int_over_bystander)),]$int_over_bystander <- NA
+
+# we will average the ratios across technologies
+inf_dat <- inf_dat %>%
+  group_by(immucan_id) %>%
+  mutate(mean_inf_ratio = mean(int_over_bystander,na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(mean_inf_ratio_dicho = ntile(mean_inf_ratio,2),
+         mean_inf_ratio_dicho = ifelse(mean_inf_ratio_dicho == 2, "high", "low"))
+
+res <- left_join(inf_dat %>% select(immucan_id,mean_inf_ratio_dicho) %>% distinct(), traits,"immucan_id")
+
+cm_LUSC <- coxph( Surv(time_to_event, censoring) ~  mean_inf_ratio_dicho ,data = as.data.frame(res) %>% filter(simple_histology == "Squamous cell carcinoma"))
+cm_LUAD <- coxph( Surv(time_to_event, censoring) ~  mean_inf_ratio_dicho ,data = as.data.frame(res) %>% filter(simple_histology == "Adenocarcinoma"))
+
+dfLUAD <- data.frame(histology = "LUAD",
+                     HR = summary(cm_LUAD)$coefficients[,"exp(coef)"],
+                     p.value = summary(cm_LUAD)$coefficients[, "Pr(>|z|)"],
+                     lower_conf = summary(cm_LUAD)$conf.int[, "lower .95"],
+                     upper_conf = summary(cm_LUAD)$conf.int[, "upper .95"]) 
+dfLUSC <- data.frame(histology = "LUSC",
+                     HR = summary(cm_LUSC)$coefficients[,"exp(coef)"],
+                     p.value = summary(cm_LUSC)$coefficients[, "Pr(>|z|)"],
+                     lower_conf = summary(cm_LUSC)$conf.int[, "lower .95"],
+                     upper_conf = summary(cm_LUSC)$conf.int[, "upper .95"]) 
+df1 <- rbind(dfLUAD,dfLUSC)
+
+p1 <- df1 %>%
+  ggplot(aes(x = HR,y = histology, col = histology))+
+  geom_point(size = 2)+
+  geom_errorbar(aes(xmin=lower_conf, xmax = upper_conf),lwd =1,width = 0.3)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust= 1))+
+  #scale_y_discrete(labels = function(x) str_split_i(x,"_",2))+
+  scale_x_log10()+
+  theme_bw()+
+  geom_vline(xintercept = 1,linetype = "dashed")+
+  geom_text(aes(label = paste0("p : ",round(p.value,digits = 3))),
+            col = "black",
+            vjust = -1,
+            inherit.aes = TRUE)+
+  scale_color_manual(values = c("LUAD" = "blue", "LUSC" = "orange"))+
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.position = "none",
+        axis.title.y = element_blank(),
+        plot.title = element_text(hjust = 0.5))+
+  ggtitle("HR for low infiltration ratio")
+  p1
+
 ggsave(filename = paste0(out_folder,"3G_cox_model_infiltration.pdf"),
-       plot = p,
+       plot = p1,
        device = "pdf",
-       width = 7,
-       height = 3.5)
+       width = 3,
+       height = 2)
 ```
 
 check if infiltration ratio also works for each individual modality
@@ -770,7 +878,7 @@ p1 <- cur_traits %>%
           LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Squamous cell carcinoma","LUSC", LUAD_vs_LUSC)) %>%
   ggplot(aes(x = log2(TPS),y = log2(mean_total_CD8_density), col = (LUAD_vs_LUSC)))+
   geom_point()+
-  geom_smooth(method = "lm",alpha = 0.2)+
+  geom_smooth(method = "lm",alpha = 0.2, show.legend = FALSE)+
   ggpmisc::stat_poly_eq(
     aes(label = after_stat(paste(rr.label, p.value.label, sep = "*\", \"*"))),
     formula = y ~ x, 
@@ -781,17 +889,20 @@ p1 <- cur_traits %>%
   theme(legend.position = "bottom",
         axis.text.x = element_text(size = 14),
         axis.text.y = element_text(size = 14),
-         axis.title.x =  element_text(size = 14),
-        axis.title.y = element_text(size = 14))+
+        axis.title.x =  element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15))+
   scale_colour_manual(values = c("LUAD" = "blue", "LUSC" = "forestgreen","other" = "black"))+
   labs(y = expression("Log2 CD8 density [mm"^2*"]"),color = "Histology")+
-  coord_cartesian(ylim = c(4,13))
+  coord_cartesian(ylim = c(4,13))+
+  guides(color = guide_legend(override.aes = list(size = 5)))
 
 p1 
 ggsave(filename = paste0(out_folder,"3D_correlation_T_cell_density_and_TPS_colored.pdf"),
        plot = p1,
        device = "pdf",
-       width = 4,
+       width = 5,
        height = 4)
 ```
 
@@ -836,7 +947,7 @@ p1 <- cur_traits %>%
           LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Squamous cell carcinoma","LUSC", LUAD_vs_LUSC)) %>%
   ggplot(aes(x = log2(TPS),y = log2(mean_inf_ratio), col = (LUAD_vs_LUSC)))+
   geom_point()+
-  geom_smooth(method = "lm",alpha = 0.2)+
+  geom_smooth(method = "lm",alpha = 0.2, show.legend = FALSE)+
   ggpmisc::stat_poly_eq(
     aes(label = after_stat(paste(rr.label, p.value.label, sep = "*\", \"*"))),
     formula = y ~ x, 
@@ -847,10 +958,13 @@ p1 <- cur_traits %>%
   theme(legend.position = "bottom",
         axis.text.x = element_text(size = 14),
         axis.text.y = element_text(size = 14),
-         axis.title.x =  element_text(size = 14),
-        axis.title.y = element_text(size = 14))+
+        axis.title.x =  element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15))+
   scale_colour_manual(values = c("LUAD" = "blue", "LUSC" = "forestgreen","other" = "black"))+
-  labs(y = "Log2 Infiltration ratio",color = "Histology")
+  labs(y = "Log2 Infiltration ratio",color = "Histology")+
+  guides(color = guide_legend(override.aes = list(size = 5)))
 
 p1 
 ggsave(filename = paste0(out_folder,"3F_correlation_interaction_ratio_and_TPS_colored.pdf"),
@@ -875,26 +989,32 @@ p <- cur_dat %>%
          LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma","LUAD",LUAD_vs_LUSC),
          LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Squamous cell carcinoma","LUSC",LUAD_vs_LUSC)) %>%
   filter(!is.na(TPS_score)) %>%
+  mutate(TPS_score = ifelse(TPS_score == "positive", "pos","neg")) %>%
   ggplot(aes(x = LUAD_vs_LUSC,y = JAK.STAT, fill = TPS_score))+
   geom_boxplot()+
-  geom_jitter(aes(color = TPS_score),position = position_jitterdodge(jitter.width = 0.2), size= 1.5)+
+  geom_jitter(aes(color = TPS_score),position = position_jitterdodge(jitter.width = 0.2), size= 1.75, show.legend = FALSE)+
   scale_fill_manual(values = alpha(c("orange", "darkgreen"),alpha = 0.6))+
   scale_color_manual(values = c("orange", "darkgreen"))+
-  stat_compare_means(size = 8,label = "p.signif")+
+  stat_compare_means(size = 8,label = "p.signif",method = "t.test")+
   theme_bw()+
   theme(legend.position = "bottom",
-        axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 1, size = 14),
+        axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 1, size = 16),
+        axis.text.y= element_text(size = 14),
         axis.title.x = element_blank(),
         axis.title.y = element_text(size = 14),
-        legend.text = element_text(size = 16))
+        legend.text = element_text(size = 16),
+        legend.title = element_text(size = 16))+
+    guides(fill = guide_legend(override.aes = list(size = 5)))+
+  coord_cartesian(ylim = c(-2,4.1))
+  
 
 p
 
 ggsave(filename = paste0(out_folder,"3H_inflammation_score_across_TPS.pdf"),
        plot = p,
        device = "pdf",
-       width = 4,
-       height = 8)
+       width = 3,
+       height = 6)
 ```
 
 # 3I enrichment in clinical traits for TMB
@@ -927,37 +1047,49 @@ out <- data.frame(feature = names(p.list),
 
 out <- out[-1,]
 
+out <- out %>%
+  mutate(feature = ifelse(feature == "TPS_score","TPS-High_over_Low", feature),
+         feature = ifelse(feature == "age_dicho","Old_over_Young", feature),
+         feature = ifelse(feature == "gender","Male_over_Female", feature),
+         feature = ifelse(feature == "stage_1_2","Stage_II_over_I", feature),
+         feature = ifelse(feature == "stage_1_3","Stage_III_over_I", feature),
+         feature = ifelse(feature == "stage_2_3","Stage_III_over_II", feature),
+         feature = ifelse(feature == "LUAD_vs_LUSC","LUSC_over_LUAD", feature),
+         feature = ifelse(feature == "never_vs_current_smoker","Smoker_over_Never-smoker", feature),
+         feature = ifelse(feature == "never_vs_Ex_smoker","Ex-smoker_over_Never-smoker", feature),
+         feature = ifelse(feature == "current_vs_Ex_smoker","Smoker_over_Ex-smoker", feature),
+         feature = ifelse(feature == "N0_vs_Nx","Node-pos_over_Node-neg", feature),
+         feature = ifelse(feature == "M0_vs_Mx","Met-pos_over_Met-neg", feature),
+         feature = ifelse(feature == "long_survivors","Dead_over_Alive", feature),
+         feature = ifelse(feature == "T1_vs_Tother","T1_over_T-other", feature))
+
+
 p <- out %>%
-  mutate(TMB_score = "low",
+  mutate(TMB_score = "TMB-high",
          FDR = p.adjust(p.value,method = "BH"),
          sig = ifelse(FDR < 0.1,TRUE, FALSE)) %>%
   ggplot(aes(x=feature, y = TMB_score,col = odds_ratio, size= -log10(p.value)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
   geom_point()+
   theme_bw()+
-  #scale_colour_viridis_c()+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
   scale_color_gradient2(low = "blue",mid = "white",   high = "red",midpoint = 1)+
   scale_size(range = c(1,4))+
   new_scale_colour() +
   geom_point(shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.5)+
   scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
   theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
-        axis.text.y = element_text(size = 10),
+        axis.text.y = element_text(size = 11),
         legend.text = element_text(size = 10),
         legend.title = element_text(size = 10),
-        axis.title.y = element_blank())+
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank())+
   coord_flip()
 p
 
 ggsave(filename = paste0(out_folder,"3I_TMB_enrichment_in_clinical.pdf"),
        plot = p,
        device = "pdf",
-       width = 3.5,
-       height = 4)
+       width = 4,
+       height = 4.75)
 ```
 
 
@@ -1058,8 +1190,6 @@ min_down <- min(cur_dat$logFC)-1
 # plot the data
 p <- cur_dat %>%
   ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
   geom_point()+
   theme_bw()+
   scale_colour_gradientn(
@@ -1067,16 +1197,13 @@ p <- cur_dat %>%
     values = rescale(c(round(min_down), 0, round(max_up))),
     limits = c(round(min_down), round(max_up)),
     guide = guide_colorbar(
-      title = "logFC",                   # optional: add a title
-      barwidth = 12,                     # increase bar width
-      barheight = 1.5,                   # adjust height
+      title = "logFC",                   
+      barwidth = 12,                     
+      barheight = 1.5,                   
       title.theme = element_text(size = 16),
       label.theme = element_text(size = 14)
     )
   )+
-  #scale_colour_gradientn(colours = c("blue","white","red"), 
-  #                       values = rescale(c(round(min_down),0,round(max_up))),
-  #                       guide = "colorbar", limits=c(round(min_down),round(max_up)))+
   scale_size(range = c(1,8))+
   new_scale_colour() +
   geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
@@ -1085,7 +1212,6 @@ p <- cur_dat %>%
         axis.text.y = element_text(size = 14),
         legend.text = element_text(size = 14),
         legend.title = element_text(size = 14),
-        #legend.location = "plot",
         axis.title.x = element_blank(),
         axis.title.y = element_blank(),
         legend.position = "bottom")

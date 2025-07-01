@@ -126,8 +126,8 @@ for (i in c(data_type,"cello1","cello2")) {
 cur_dat <- do.call(rbind,p.list)
 cur_dat <- cur_dat %>%
   mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = ifelse(comparison == "-1*I 1*II","stage_2_vs_1","stage_3_vs_1"),
-         cond = ifelse(comparison == "-1*II 1*III","stage_3_vs_2",cond)) %>%
+         cond = ifelse(comparison == "-1*I 1*II","stage_2_over_1","stage_3_over_1"),
+         cond = ifelse(comparison == "-1*II 1*III","stage_3_over_2",cond)) %>%
   group_by(tech) %>%
   mutate(FDR = p.adjust(PValue,method = "BH"),
          sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
@@ -152,17 +152,11 @@ min_down <- min(cur_dat$logFC)-1
 # plot the data
 p <- cur_dat %>%
   ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
   geom_point()+
   theme_bw()+
   scale_colour_gradientn(colours = c("blue","white","red"), 
                          values = rescale(c(round(min_down),0,round(max_up))),
                          guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  #scale_color_gradient(low = "white",   high = "red")+
   scale_size(range = c(1,4))+
   new_scale_colour() +
   geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =1)+
@@ -309,7 +303,7 @@ ggsave(filename = paste0(out_folder,"S2C_linear_model_CD8_CD4_across_stages_spli
 ```
 
 
-# S2E TCGA across stages adenocarcinoma
+# S2D TCGA across stages adenocarcinoma
 ```{r}
 tcga <- read.csv(paste0(mount_path,"data/RNAseq/luad_tcga_pan_can_atlas_2018/luad_tcga_pan_can_atlas_2018/xcell_between_samples_scores.csv"), sep = "\t")
 tcga_patient <- read.csv(paste0(mount_path,"data/RNAseq/luad_tcga_pan_can_atlas_2018/luad_tcga_pan_can_atlas_2018/data_clinical_patient.txt"), sep = "\t")
@@ -470,8 +464,8 @@ for (i in c("cello1","cello2")) {
 cur_dat <- do.call(rbind,p.list)
 cur_dat <- cur_dat %>%
   mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = ifelse(comparison == "1*Current smoker -1*Ex-smoker","CurrentSmoker_vs_ExSmoker","ExSmoker_vs_NonSmoker"),
-         cond = ifelse(comparison == "1*Current smoker -1*Non-smoker","CurrentSmoker_vs_NonSmoker",cond)) %>%
+         cond = ifelse(comparison == "1*Current smoker -1*Ex-smoker","CurrentSmoker_over_ExSmoker","ExSmoker_over_NonSmoker"),
+         cond = ifelse(comparison == "1*Current smoker -1*Non-smoker","CurrentSmoker_over_NonSmoker",cond)) %>%
   group_by(tech) %>%
   mutate(FDR = p.adjust(PValue,method = "BH"),
          sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
@@ -494,17 +488,11 @@ min_down <- min(cur_dat$logFC)-1
 # plot the data
 p <- cur_dat %>%
   ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
   geom_point()+
   theme_bw()+
   scale_colour_gradientn(colours = c("blue","white","red"), 
                          values = rescale(c(round(min_down),0,round(max_up))),
                          guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  #scale_color_gradient(low = "white",   high = "red")+
   scale_size(range = c(1,5))+
   new_scale_colour() +
   geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =1.5)+

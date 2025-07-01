@@ -92,15 +92,6 @@ markers[["Tumor"]] <- rownames(sce)[grepl(pattern = "panCK|Ecad|Arg1|EGFR|MMP9|p
 good_markers <- rownames(sce)[!grepl("DNA|Histone",rownames(sce))]
 ```
 
-# different normalization
-scaled: z-scaled arcsinh transformated counts
-normalized: 99th percentile normalized counts
-```{r}
-# assay(sce,"scaled") <- t(scale(t(assay(sce,"exprs"))))
-# norm_counts <- t(apply(assay(sce, "counts"), 1, function(x)(x-min(x))/(quantile(x,0.99)-min(x))))
-# normalized_count <- t(apply(norm_counts,1,function(x) pmin(x,1)))
-# assay(sce,"normalized") <- normalized_count
-```
 
 # cell type heatmap
 ```{r,fig.width=15, fig.height=8}
@@ -611,8 +602,7 @@ table(mregDC_sce$cluster)
 saveRDS(mregDC_sce,paste0(mount_path,"Rout/subclustering/mregDC_sce.rds"))
 ```
 
-
-# meta clustering
+# meta clustering CD4 and CD8
 we will meta cluster CD4, CD8, myeloid cells, BnT and NK.
 for Treg and MDSC I am not convinced they can be metaclustered
 
@@ -736,15 +726,9 @@ colData(sce) <- DataFrame(x)
 
 ## add clustering to sce
 ```{r}
-sces  <- lapply(list.files("/mnt/immucan_volume/processed_data/Panel_2/IMMUcan_NSCLC2/IMC/Rout/data/subclustering/sce_files/",
+sces  <- list.files(paste0(mount_path,"Rout/subclustering"),
                            full.names = TRUE,
-                           pattern = "*.rds"),readRDS)
-sces  <- list.files("/mnt/immucan_volume/processed_data/Panel_2/IMMUcan_NSCLC2/IMC/Rout/data/subclustering/sce_files",
-                           full.names = TRUE,
-                           pattern = "*.rds")
-
-test <- readRDS("/mnt/immucan_volume/processed_data/Panel_2/IMMUcan_NSCLC2/IMC/Rout/data/subclustering/sce_files//B.rds")
-sces[1]
+                           pattern = "*sce.rds")
 
 sce$clusters <- sce$celltypes
 
