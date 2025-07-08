@@ -1,0 +1,397 @@
+---
+title: "Figure 5 Supps - MOFA"
+output: html_document
+date: '2023-03-15'
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+# Set path
+if (Sys.info()["sysname"] == "Darwin"){
+  mount_path <- "/Volumes/G_DQBM_BB_Central$/projects/immucan/"
+} else if (Sys.info()["sysname"] == "Linux"){
+  mount_path <- "/mnt/immucan_volume/"
+} else if (Sys.info()["sysname"] == "Windows"){
+  mount_path <- "Y:/"
+} else {
+  stop("Operating system is not supported")
+}
+```
+
+
+load libraries
+```{r}
+library(ggplot2)
+library(reticulate)
+library(MOFA2)
+library(dplyr)
+library(tidyverse)
+```
+
+## load model
+```{r}
+mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/MOFA"
+out_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_5_supp/"
+
+model_path <- paste0(mount_path, '/mofa_V6_minor.rds')
+
+if (!dir.exists(out_path)){
+  dir.create(out_path)
+  dir.create(paste0(out_path, "/extras"))
+}
+model <- readRDS(model_path)
+```
+
+# 5A supp: GSEA per Factor
+```{r}
+# Load required libraries
+library(MOFA2)
+library(dplyr)
+library(clusterProfiler)
+library(msigdbr)
+library(tibble)
+library(readr)
+
+# === Define your MOFA object and output path ===
+mofa_model <- model  # replace with your MOFA object
+output_dir <- mount_path
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+# === Step 1: Load GO Biological Process gene sets ===
+msig_gobp <- msigdbr(species = "Homo sapiens", category = "C5", subcategory = "GO:BP")
+term2gene <- msig_gobp[, c("gs_name", "gene_symbol")]
+term2name <- msig_gobp[, c("gs_name", "gs_description")]
+
+# === Step 2: Extract RNA weights from MOFA model ===
+weights <- get_weights(mofa_model, views = "RNA", as.data.frame = TRUE)
+
+# === Step 3: Loop over factors and run GSEA ===
+for (f in unique(weights$factor)) {
+  # Filter and rank genes by factor weight
+  factor_weights <- weights %>%
+    filter(factor == f) %>%
+    arrange(desc(value))  # or use abs(value) if needed
+
+  ranked_genes <- factor_weights$value
+  names(ranked_genes) <- factor_weights$feature
+
+  # Clean ranking list
+  ranked_genes <- ranked_genes[!is.na(ranked_genes)]
+  ranked_genes <- ranked_genes[!duplicated(names(ranked_genes))]
+
+  # Run GSEA
+  set.seed(123)
+  gsea_res <- GSEA(
+    geneList = ranked_genes,
+    TERM2GENE = term2gene,
+    TERM2NAME = term2name,
+    pvalueCutoff = 1,
+    pAdjustMethod = "BH",
+    minGSSize = 10,
+    maxGSSize = 500,
+    scoreType = "std"
+  )
+
+  # Save results
+  save(gsea_res, file = file.path(output_dir, paste0("GSEA_GOBP_Factor", f, ".RData")))
+  write.table(gsea_res@result,
+              file = file.path(output_dir, paste0("GSEA_GOBP_Factor", f, ".txt")),
+              sep = "\t", row.names = FALSE)
+}
+```
+
+
+
+## plot heatmap (C5)
+```{r, fig.height=8, fig.width=8}
+
+library(ComplexHeatmap)
+library(circlize)
+# === Define parameters ===
+pathway <- "GOBP"
+input_dir <- output_dir  # defined earlier as your GSEA output directory
+factors <- unique(weights$factor)
+comparison_dir <- file.path(input_dir, "GOBP/comparison")
+if (!file.exists(comparison_dir)) dir.create(comparison_dir, recursive = TRUE)
+
+# === Retrieve top 10 enriched pathways per factor ===
+all_SignP <- lapply(factors, function(f) {
+  res_GSEA_tb <- read.delim(file.path(input_dir, paste0("GSEA_GOBP_Factor", f, ".txt")))
+  res_GSEA_tb$ID[1:min(10, nrow(res_GSEA_tb))]
+})
+all_SignP_uq <- unique(unlist(all_SignP))
+# === Filter to retain only pathways with significant FDR in at least one factor ===
+signif_pathways <- unique(unlist(lapply(factors, function(f) {
+  res <- read.delim(file.path(input_dir, paste0("GSEA_GOBP_Factor", f, ".txt")))
+  sig <- res[res$p.adjust < 0.05, "ID"]
+  return(sig)
+})))
+
+# Keep only those pathways that are both in the top 10 and significant somewhere
+all_SignP_uq <- intersect(all_SignP_uq, signif_pathways)
+
+# === Collect enrichment results for selected pathways ===
+comp_tables <- lapply(factors, function(f) {
+  res_GSEA_tb <- read.delim(file.path(input_dir, paste0("GSEA_GOBP_Factor", f, ".txt")))
+  # rownames(res_GSEA_tb) <- res_GSEA_tb$Description
+  rownames(res_GSEA_tb) <- res_GSEA_tb$ID
+  res_GSEA_sel <- res_GSEA_tb[intersect(all_SignP_uq, rownames(res_GSEA_tb)), ]
+  return(res_GSEA_sel)
+})
+names(comp_tables) <- paste0("Factor", factors)
+
+# === Prepare NES table ===
+summary_tb_NES <- do.call("cbind", lapply(1:length(comp_tables), function(i) {
+  tb <- comp_tables[[i]]
+  res_df <- data.frame(NES = tb$NES, row.names = gsub("GOBP_", "", rownames(tb)))
+  colnames(res_df) <- names(comp_tables)[i]
+  return(res_df)
+}))
+hr_rows <- hclust(dist(summary_tb_NES))
+hr_cols <- hclust(dist(t(summary_tb_NES)))
+
+# === Prepare FDR table and stars ===
+summary_tb_padj <- do.call("cbind", lapply(1:length(comp_tables), function(i) {
+  tb <- comp_tables[[i]]
+  res_df <- data.frame(padj = tb$p.adjust, row.names = gsub("GOBP_", "", rownames(tb)))
+  colnames(res_df) <- names(comp_tables)[i]
+  return(res_df)
+}))
+pval_to_stars <- function(p) {
+  sapply(p, function(x) {
+    if (is.na(x)) return("")
+    else if (x < 0.001) return("***")
+    else if (x < 0.01) return("**")
+    else if (x < 0.05) return("*")
+    else return("")
+  })
+}
+
+# Apply across summary_tb_padj to create cellnotes
+cellnotes <- apply(summary_tb_padj, 2, pval_to_stars)
+# === Plot heatmap ===
+library(gplots)
+library(RColorBrewer)
+
+Reds_palette <- brewer.pal(n = 7, name = "Reds")
+myPalette <- c("lightgray", Reds_palette[c(1,3,5,7)])
+colnames(summary_tb_NES) <- c(1,2,3,4,5,6)
+
+cell_fun = function(j, i, x, y, width, height, fill) {
+  grid.text(cellnotes[i, j], x, y, gp = gpar(fontsize = 6, col = "black"))
+  
+  # Get corresponding padj value
+  pval <- summary_tb_padj[i, j]
+  
+  # Draw black box if significant
+  if (!is.na(pval) && pval < 0.05) {
+    grid.rect(x, y, width, height, gp = gpar(col = "black", fill = NA, lwd = 1))
+  }
+}
+
+ht <- Heatmap(
+  as.matrix(summary_tb_NES),
+  heatmap_legend_param = list(),
+  name = "NES",
+  column_title = "Factor",
+  column_title_gp = gpar(fontsize = 13.2, fontface = "bold"),
+  col = colorRamp2(
+    c(min(summary_tb_NES, na.rm=TRUE), 0, max(summary_tb_NES, na.rm=TRUE)), 
+    c("blue", "white", "red")
+  ),
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    grid.text(cellnotes[i, j], x, y, gp = gpar(fontsize = 6, col = "black"))
+    pval <- summary_tb_padj[i, j]
+    if (!is.na(pval) && pval < 0.05) {
+      grid.rect(x, y, width, height, gp = gpar(col = "black", fill = NA, lwd = 1))
+    }
+  },
+  cluster_rows = TRUE,
+  cluster_columns = FALSE,
+  width = unit(4, "cm"),
+  row_names_gp = gpar(fontsize = 10),
+  column_names_gp = gpar(fontsize = 10, fontface = "bold", just = "left"),
+  column_names_side = "top",
+  column_names_rot = 0
+)
+pdf(paste0(out_path,"/5A_GSEA_GOBP_C5_heatmap.pdf"), height = 14, width = 10)
+draw(ht, heatmap_legend_side = "left")
+dev.off()
+```
+
+# 5B supp: Association LF5 and LCNEC
+```{r}
+library(ggpubr)
+factors <- get_factors(model, as.data.frame = TRUE) %>%
+  dplyr::select(- group) %>%
+  pivot_wider(names_from = "factor", values_from = value) %>%
+  column_to_rownames("sample")
+
+clin <- samples_metadata(model) %>%
+  dplyr::select(-group)
+
+factors <- factors[clin$sample,]
+
+temp <- factors %>%
+  rownames_to_column("Immucan_id") %>%
+  left_join(clin %>%
+              rownames_to_column("Immucan_id"), by = "Immucan_id")
+
+ggplot(temp %>%
+         mutate(is_LCNEC = simple_histology == "LCNEC"), aes(x = is_LCNEC, y = Factor5)) +
+  geom_boxplot() +
+  stat_compare_means(method = "t.test")  # adds p-value from t-test
+
+ggplot(temp, aes(x = simple_histology, y = Factor5)) +
+  geom_boxplot() +
+  stat_compare_means(method = "t.test")
+
+library(ggplot2)
+library(dplyr)
+library(ggpubr)
+
+highlight_groups <- c("LCNEC", "Other")
+
+temp <- temp %>%
+  mutate(
+    hist_group = ifelse(simple_histology %in% highlight_groups, "Highlighted", "Other"),
+    shape_group = case_when(
+      simple_histology == "LCNEC" ~ "LCNEC",
+      simple_histology == "Other" ~ "Other",
+      TRUE ~ "LUSC/LUAD/Adenosquamous/Unknown"
+    ),
+    shape_group = factor(shape_group, levels = c("LCNEC", "Other", "LUSC/LUAD/Adenosquamous/Unknown"))
+  )
+
+# Define shapes: triangle (17), square (15), circle (16)
+shape_values <- c("LCNEC" = 8, "Other" = 0, "LUSC/LUAD/Adenosquamous/Unknown" = 16)
+
+gg <- ggplot(temp, aes(x = hist_group, y = Factor5, fill = hist_group)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.8) +
+  geom_jitter(aes(shape = shape_group), width = 0.2, alpha = 0.6, size = 2) +
+  scale_shape_manual(values = shape_values, name = "Histology") +
+  scale_fill_manual(values = c("Highlighted" = "firebrick", "Other" = "grey70"), guide = "none") +
+  scale_x_discrete(labels = c("Highlighted" = "LCNEC + Other", "Other" = "Rest")) +  # relabel x-axis
+  stat_compare_means(method = "wilcox.test") +
+  theme_minimal() +
+  theme(
+    plot.title = element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(size = 9),
+    axis.ticks.x = element_blank()
+  ) +
+  labs(y = "Factor5")
+
+ggsave(paste0(out_path,"/5B_Factor5_LCNEC_OTHER.pdf"), plot = gg)
+```
+
+# 5C supp: Factor1 Survival analysis
+## LUAD/LUSC
+```{r}
+## survival analysis
+library(survminer)
+library(survivalAnalysis)
+library(survival)
+
+factors <- get_factors(model, as.data.frame = TRUE) %>%
+  dplyr::select(- group) %>%
+  pivot_wider(names_from = "factor", values_from = value) %>%
+  column_to_rownames("sample")
+
+clin <- samples_metadata(model)
+cur_dat <- factors %>%
+  rownames_to_column("sample") %>%
+  full_join(clin, by = "sample") %>%
+  filter(simple_histology == "Adenocarcinoma")
+
+p.list <- list()
+for (i in names(factors)) {
+    surv_ob <- Surv(cur_dat$time_to_event,cur_dat$censoring)
+    p.list[[i]] <- coxph( as.formula(paste0("surv_ob ~ ",i)),
+                          data = cur_dat)
+  # }
+}
+
+df_luad <- data.frame(HR = unlist(lapply(p.list, function(x){summary(x)$coefficients[,"exp(coef)"]})),
+                 p.value = unlist(lapply(p.list, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 lower_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "lower .95"]})),
+                 upper_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "upper .95"]}))) 
+
+
+custom_order <- c("Factor10", "Factor9", "Factor8", "Factor7", "Factor6", "Factor5", "Factor4", "Factor3", "Factor2", "Factor1")
+
+# LUSC
+
+library(survminer)
+library(survivalAnalysis)
+library(survival)
+
+factors <- get_factors(model, as.data.frame = TRUE) %>%
+  dplyr::select(- group) %>%
+  pivot_wider(names_from = "factor", values_from = value) %>%
+  column_to_rownames("sample")
+
+clin <- samples_metadata(model)
+cur_dat <- factors %>%
+  rownames_to_column("sample") %>%
+  full_join(clin, by = "sample") %>%
+  filter(simple_histology == "Squamous cell carcinoma")
+
+p.list <- list()
+for (i in names(factors)) {
+    surv_ob <- Surv(cur_dat$time_to_event,cur_dat$censoring)
+    p.list[[i]] <- coxph( as.formula(paste0("surv_ob ~ ",i)),
+                          data = cur_dat)
+  # }
+}
+
+df_lusc <- data.frame(HR = unlist(lapply(p.list, function(x){summary(x)$coefficients[,"exp(coef)"]})),
+                 p.value = unlist(lapply(p.list, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 lower_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "lower .95"]})),
+                 upper_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "upper .95"]}))) 
+
+custom_order <- c("Factor10", "Factor9", "Factor8", "Factor7", "Factor6", "Factor5", "Factor4", "Factor3", "Factor2", "Factor1")
+
+
+library(dplyr)
+library(ggplot2)
+
+# ------------------------------------------------------------------
+# 1.  Pull out the Factor 1 row from each data-frame
+# ------------------------------------------------------------------
+plot_df <- bind_rows(
+  df_luad %>%                        # LUAD results
+    dplyr::slice(match("Factor1", rownames(.))) %>% 
+    mutate(Cohort = "LUAD"),
+  df_lusc %>%                        # LUSC results
+    dplyr::slice(match("Factor1", rownames(.))) %>% 
+    mutate(Cohort = "LUSC")
+) %>% 
+  select(Cohort, HR, lower_conf, upper_conf, p.value)
+
+# ------------------------------------------------------------------
+# 2.  Forest plot on a log scale
+# ------------------------------------------------------------------
+p1 <- ggplot(plot_df, aes(y = Cohort, x = HR)) +
+  geom_point(size = 3) +
+  geom_errorbarh(aes(xmin = lower_conf, xmax = upper_conf), height = 0.25) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  scale_x_log10() +
+  labs(
+    x = "HR",
+    y = NULL,
+    title = "Factor 1",
+    subtitle = sprintf(
+      "LUAD p = %.3g   |   LUSC p = %.3g",
+      plot_df$p.value[plot_df$Cohort == "LUAD"],
+      plot_df$p.value[plot_df$Cohort == "LUSC"]
+    )
+  ) +
+  theme_minimal(base_size = 11)
+
+print(plot_df)
+
+ggsave(paste0(out_path,"/5C_Factor1_LUAD_LUSC.pdf"), plot = p1)
+```
