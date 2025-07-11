@@ -1188,7 +1188,9 @@ max_up <- max(cur_dat$logFC)+1
 min_down <- min(cur_dat$logFC)-1
 
 # plot the data
-p <- cur_dat %>%
+plot_dat <- cur_dat %>%
+  mutate(cond = str_split_i(cond,"_",2))
+p <- plot_dat %>%
   ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
   geom_point()+
   theme_bw()+
@@ -1206,7 +1208,7 @@ p <- cur_dat %>%
   )+
   scale_size(range = c(1,8))+
   new_scale_colour() +
-  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
+  geom_point(data = plot_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
   scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
   theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 14),
         axis.text.y = element_text(size = 14),
@@ -1214,14 +1216,59 @@ p <- cur_dat %>%
         legend.title = element_text(size = 14),
         axis.title.x = element_blank(),
         axis.title.y = element_blank(),
-        legend.position = "bottom")
+        legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5, size = 14))+
+  ggtitle("Differential abundance for TMB-high")
+  
 
 p
 ggsave(filename = paste0(out_folder,"3J_diff_abundance_TMB_LUSC_LUAD_bubble_plot.pdf"),
        plot = p,
        device = "pdf",
-       width = 15,
+       width = 12,
        height = 5)
 ```
 
 
+# S2K inflammation signature for TMB
+
+```{r}
+cur_dat <- read.table(paste0(mount_path,"data/RNASeq/CURIE/inflammation_quantification_NSCLC2/outputs/pathwayActivity/PathwayActivity_NSCLC2_mlm"))
+my_comp <-  list( c("low", "high"))
+
+cur_dat <- cur_dat %>%
+  as.data.frame() %>%
+  mutate(immucan_id = paste0("LUNG-",rownames(cur_dat))) %>%
+  left_join(traits,by = "immucan_id")
+
+cur_dat <- cur_dat %>%
+  pivot_longer(cols = c(JAK.STAT,NFkB,TNFa))
+
+p <- cur_dat %>%
+  select(-TMB) %>%
+  dplyr::rename(TMB = TMB_score) %>%
+  filter(!is.na(TMB)) %>%
+  ggplot(aes(x = name,y = value, fill = TMB))+
+  geom_boxplot(outliers = FALSE)+
+  geom_jitter(aes(color = TMB),position = position_jitterdodge(jitter.width = 0.2), size= 1)+
+  #facet_wrap(.~name)+
+  scale_fill_manual(values = alpha(c("blue", "red"),alpha = 0.5))+
+  scale_color_manual(values = c("blue", "red"))+
+  stat_compare_means(size = 8,label = "p.signif",method = "t.test")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 1, size = 20),
+        axis.text.y = element_text(size = 20),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 20),
+        legend.text = element_text(size = 20),
+        legend.title = element_text(size = 20),
+        strip.text.x = element_text(size = 20))+
+  ylab("Pathway score")
+
+p
+ggsave(filename = paste0(out_folder,"3K_inflammation_score_for_TMB.pdf"),
+       plot = p,
+       device = "pdf",
+       width = 4,
+       height = 6)
+```

@@ -498,6 +498,7 @@ p <- dens_dat %>%
   ggplot(aes(x = name,y = log10(value+1),fill=as.factor(stage))) +
   geom_boxplot(outliers = FALSE)+
   geom_jitter(position = position_jitterdodge(jitter.width = 0.2),size= 0.5, show.legend = FALSE)+
+  scale_fill_manual(values = c("palevioletred3", "darkseagreen3", "dodgerblue"))+
   theme_bw()+
   geom_text(data = p_sig_dat,
             aes(x = name,
@@ -506,7 +507,6 @@ p <- dens_dat %>%
             inherit.aes = FALSE,
             size = 6)+
   coord_cartesian(ylim = c(0,3.5))+
-  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "darkorange2"))+
   theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust = 1, size = 14),
         axis.text.y = element_text(size = 14),
         axis.title.x = element_blank(),

@@ -55,9 +55,10 @@ data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2
 ```{r, fig.height=6}
 surv_fit <- survfit(Surv(time_to_event, censoring) ~ simple_stage, data = clin_dat)
 
-p <- ggsurvplot(surv_fit, data = clin_dat, risk.table = TRUE, pval = TRUE)
+p <- ggsurvplot(surv_fit, data = clin_dat, risk.table = TRUE, pval = TRUE,palette = c("palevioletred3","darkseagreen3","dodgerblue", "darkorange"))
 
 p <- plot_grid(p$plot,p$table,ncol = 1, rel_heights = c(1,0.5))
+p
 ggsave(p,filename = paste0(out_folder,"S2A_Kaplan_Meier_CPS_score.pdf"),device = "pdf",width = 6, height = 5)
 ```
 
@@ -236,7 +237,7 @@ p1 <- dens_dat %>%
         axis.title = element_blank())+
   geom_text(data = summary_dat, aes(x = name,y=y_position,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE)+
   coord_cartesian(ylim = c(0,1000))+
-  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "darkorange2"))+
+  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
   ggtitle(label = "LUSC")
   
 sigs <- dens_dat %>%
@@ -291,7 +292,7 @@ p2 <- dens_dat %>%
         axis.title = element_blank())+
   geom_text(data = summary_dat, aes(x = name,y=y_position,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE)+
   coord_cartesian(ylim = c(0,1000))+
-  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "darkorange2"))+
+  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
   ggtitle(label = "LUAD")
 
 plot_grid(p1,p2,nrow = 1)
@@ -349,7 +350,7 @@ p <- tcga %>%
   geom_boxplot()+
   theme_bw()+
   theme(axis.text.x = element_text(angle = 90, vjust =0.5,hjust = 1, size = 10))+
-  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "darkorange2"))+
+  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
   ggtitle(label = "Deconvoluted cell types across stages in TCGA LUAD")
 
 p
@@ -361,56 +362,6 @@ ggsave(filename = paste0(out_folder,"S2D_Xcell_across_TCGA_stages_within_LUAD.pd
        height = 6)
 ```
 
-# TCGA across stages squamous cell carcinoma - to do or remove
-TO DO - where to get the LUSC data from TCGA?
-```{r, eval=FALSE, include=FALSE}
-tcga <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/RNAseq/lusc_tcga_pan_can_atlas_2018/lusc_tcga_pan_can_atlas_2018/xcell_between_samples_scores.csv", sep = "\t")
-tcga_patient <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/RNAseq/luad_tcga_pan_can_atlas_2018/luad_tcga_pan_can_atlas_2018/data_clinical_patient.txt", sep = "\t")
-tcga_clin <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/RNAseq/luad_tcga_pan_can_atlas_2018/luad_tcga_pan_can_atlas_2018/data_clinical_sample.txt", sep = "\t")
-
-tcga <- as.data.frame(t(tcga))
-tcga <- tcga %>%
-  mutate(PATIENT_ID = rownames(tcga)) %>%
-  select(PATIENT_ID,everything())
-rownames(tcga) <- NULL
-
-tcga_patient <- tcga_patient %>%
-  mutate(PATIENT_ID = gsub("-",".",PATIENT_ID))
-
-tcga <- tcga %>%
-  left_join(tcga_patient %>% select(PATIENT_ID,AJCC_PATHOLOGIC_TUMOR_STAGE),"PATIENT_ID") %>%
-  mutate(stage = ifelse(AJCC_PATHOLOGIC_TUMOR_STAGE %in% c("STAGE I","STAGE IA","STAGE IB"),1,NA),
-         stage = ifelse(AJCC_PATHOLOGIC_TUMOR_STAGE %in% c("STAGE II","STAGE IIA","STAGE IIB"),2,stage),
-         stage = ifelse(AJCC_PATHOLOGIC_TUMOR_STAGE %in% c("STAGE IIIA","STAGE IIIB"),3,stage)) %>%
-  filter(!is.na(stage)) %>%
-  select(-AJCC_PATHOLOGIC_TUMOR_STAGE)
-
-res <- tcga %>%
-  pivot_longer(-c(PATIENT_ID, stage)) %>%
-  mutate(stage = as.numeric(as.factor(stage))) %>%
-  group_by(name) %>%
-  nest() %>%
-  mutate(model = map(data, ~ lm(value ~ stage, data = .x)),
-         summary = map(model, broom::tidy)) %>%
-  select(name, summary) %>%
-  unnest(c(summary)) %>%
-  filter(term == "stage") %>%
-  ungroup() %>%
-  mutate(FDR = p.adjust(p = p.value,method = "BH")) %>%
-  filter(FDR < 0.1)
-
-tcga %>%
-  pivot_longer(-c(PATIENT_ID, stage)) %>%
-  mutate(stage = as.numeric(as.factor(stage))) %>%
-  group_by(name) %>%
-  filter(name %in% res$name) %>%
-  ggplot(aes(x = name, y = value,fill=as.factor(stage)))+
-  geom_boxplot()+
-  theme_bw()+
-  theme(axis.text.x = element_text(angle = 90, vjust =0.5,hjust = 1))+
-  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "darkorange2"))
-
-```
 
 # S2E diff abundance smoking cellohood
 here we will estimate the dispersion across the whole data set and then do the linear model of count comparison only for the groups of interest.

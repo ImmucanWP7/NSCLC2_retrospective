@@ -1,0 +1,297 @@
+---
+title: "general stats for NSCLC2"
+author: "Daniel Schulz"
+date: "2024-08-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(survivalAnalysis)
+library(ggsurvfit)
+library(survminer)
+library(survival)
+```
+
+```{r}
+mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_1_supp/"
+
+if (!dir.exists(out_folder)) {
+  dir.create(out_folder)
+}
+```
+
+
+```{r}
+traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
+```
+
+# number of cells in mIF
+```{r}
+dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/abundances_dat.rds"))
+dat <- dat[,grepl("IF",colnames(dat))]
+x <- sum(rowSums(dat,na.rm = TRUE),na.rm = TRUE)/10^6
+x
+```
+
+in mIF we have `r round(x)` million cells
+
+# number of cells in IMC
+```{r}
+dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/abundances_dat.rds"))
+dat <- dat[,grepl("IMC1",colnames(dat))]
+(x <- sum(rowSums(dat),na.rm = TRUE)/10^6)
+
+dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/abundances_dat.rds"))
+dat <- dat[,grepl("IMC2",colnames(dat))]
+(y <- sum(rowSums(dat),na.rm = TRUE)/10^6)
+```
+
+in IMC panel 1 we have `r round(x)` and in panel 2 `r round(y)` million cells
+
+
+```{r, eval=FALSE}
+sce1 <- readRDS(paste0(mount_path,"/data/IMC/Panel_1/Rout/sce.rds"))
+cur_sce <- sce1[,sce1$ROI != 4]
+dat <- as.data.frame(sort(table(cur_sce$celltypes)/ncol(cur_sce)))
+
+dat %>%
+  filter(Var1 %in% c("Treg","CD4","CD8")) %>%
+  summarise(sum(Freq))
+
+dat %>%
+  filter(Var1 %in% c("DC","MacCD163", "HLADR","Neutrophil")) %>%
+  summarise(sum(Freq))
+```
+
+# survival for neo-adjuvant and adjuvant treatment
+```{r}
+ggforest(coxph( Surv(time_to_event, censoring) ~  neo_adjuvant_treatment,data = traits))
+x<- coxph( Surv(time_to_event, censoring) ~  neo_adjuvant_treatment,data = traits)
+
+(p <- summary(x)$coefficients[, "Pr(>|z|)"])
+(HR <- summary(x)$coefficients[, "exp(coef)"])
+```
+
+Neo-adjuvant treatment has a HR of `r round(HR, digits = 2)` and a p value of `r round(p, digits = 2)`
+
+# survival for adjuvant and adjuvant treatment
+```{r}
+ggforest(coxph( Surv(time_to_event, censoring) ~  adjuvant_treatment,data = traits))
+x<- coxph( Surv(time_to_event, censoring) ~  adjuvant_treatment,data = traits)
+
+(p <- summary(x)$coefficients[, "Pr(>|z|)"])
+(HR <- summary(x)$coefficients[, "exp(coef)"])
+```
+
+Adjuvant treatment has a HR of `r round(HR, digits = 2)` and a p value of `r round(p, digits = 2)`
+
+# survival for TPS and CPS
+```{r}
+ggforest(coxph( Surv(time_to_event, censoring) ~  TPS_score,data = traits))
+x<- coxph( Surv(time_to_event, censoring) ~  TPS_score,data = traits)
+summary(x)
+
+table(traits$TPS_score)/nrow(traits)
+
+(p_TPS <- summary(x)$coefficients[, "Pr(>|z|)"])
+(HR_TPS <- summary(x)$coefficients[, "exp(coef)"])
+
+ggforest(coxph( Surv(time_to_event, censoring) ~  CPS_score,data = traits))
+x<- coxph( Surv(time_to_event, censoring) ~  CPS_score,data = traits)
+summary(x)
+
+(p_CPS <- summary(x)$coefficients[, "Pr(>|z|)"])
+(HR_CPS <- summary(x)$coefficients[, "exp(coef)"])
+```
+
+TPS > 1% has a HR of `r round(HR_TPS, digits = 2)` and a p value of `r round(p_TPS, digits = 2)` and CPS has a HR of `r round(HR_CPS, digits = 2)` and a p value of `r round(p_CPS, digits = 2)`
+
+# survival for TMB
+```{r}
+ggforest(coxph( Surv(time_to_event, censoring) ~  TMB_score ,data = traits))
+x<- coxph( Surv(time_to_event, censoring) ~  TMB_score* LUAD_vs_LUSC,data = traits)
+summary(x)
+
+(p <- summary(x)$coefficients[, "Pr(>|z|)"])
+(HR <- summary(x)$coefficients[, "exp(coef)"])
+```
+
+TMB > 10 mut/MB has a HR of `r round(HR, digits = 2)` and a p value of `r round(p, digits = 2)` 
+
+# survival for smoking
+```{r}
+cur_traits <- traits
+cur_traits$smoking_status <- factor(cur_traits$smoking_status,levels = c("Non-smoker" ,"Ex-smoker", "Current smoker"))
+ggforest(coxph( Surv(time_to_event, censoring) ~  smoking_status,data = cur_traits))
+x<- coxph( Surv(time_to_event, censoring) ~  smoking_status,data = cur_traits)
+summary(x)
+
+(p <- summary(x)$coefficients[, "Pr(>|z|)"])
+(HR <- summary(x)$coefficients[, "exp(coef)"])
+```
+
+# association of smoking with TP53 mutation
+```{r}
+table(traits$smoking_status,traits$TP53)
+cur_traits <- traits
+cur_traits <- cur_traits %>%
+  mutate(smoking_status = ifelse(smoking_status == "Ex-smoker", "smoker",smoking_status),
+         smoking_status = ifelse(smoking_status == "Current smoker", "smoker",smoking_status))
+table(cur_traits$smoking_status, cur_traits$TP53)
+fisher.test(cur_traits$smoking_status, cur_traits$TP53)
+
+cur_traits <- traits[which(traits$smoking_status %in% c("Current smoker", "Non-smoker")),]
+fisher.test(cur_traits$smoking_status,cur_traits$TP53)
+
+cur_traits <- traits[which(traits$smoking_status %in% c("Ex-smoker", "Non-smoker")),]
+fisher.test(cur_traits$smoking_status,cur_traits$TP53)
+```
+
+
+# TMB and TPS
+```{r}
+res <- fisher.test(traits$TMB_score,traits$TPS_score)
+res$p.value
+```
+
+TMB and TPS are not asociated in fisher test `r round(res$p.value, digits = 2)`
+
+# p53 mutaion
+```{r}
+ggforest(coxph( Surv(time_to_event, censoring) ~  TP53,data = traits %>% filter(simple_histology == "Adenocarcinoma")))
+ggforest(coxph( Surv(time_to_event, censoring) ~  TP53,data = traits))
+ggforest(coxph( Surv(time_to_event, censoring) ~  TP53,data = traits %>% filter(simple_histology == "Squamous cell carcinoma")))
+x<- coxph( Surv(time_to_event, censoring) ~  TP53,data =  traits %>% filter(simple_histology == "Adenocarcinoma"))
+
+(p_LUAD <- summary(x)$coefficients[, "Pr(>|z|)"])
+(HR_LUAD <- summary(x)$coefficients[, "exp(coef)"])
+
+y <- coxph( Surv(time_to_event, censoring) ~  TP53,data =  traits %>% filter(simple_histology == "Squamous cell carcinoma"))
+(p_LUSC <- summary(y)$coefficients[, "Pr(>|z|)"])
+(HR_LUSC <- summary(y)$coefficients[, "exp(coef)"])
+```
+
+
+
+TP53 has a HR of `r round(HR_LUAD, digits = 2)` and a p value of `r round(p_LUAD, digits = 2)` and CPS has a HR of `r round(HR_LUSC, digits = 2)` and a p value of `r round(p_LUSC, digits = 2)`
+
+# percent of TPS > 1 % patients
+```{r}
+table(traits$TPS_score)/nrow(traits)
+```
+
+```{r}
+cur_traits <- traits %>%
+  filter(simple_histology == "Adenocarcinoma")
+table(cur_traits$smoking_status, cur_traits$TPS_score)
+```
+
+
+# check stuff - to be removed eventually
+
+```{r, fig.height=20}
+dat <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/cell-pair_interactions_celltypes_minor_directional_P1.csv")
+dat <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/cell-pair_interactions_celltypes_directional_P1.csv")
+dat <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/cell-cell-pair_interactions_directional_IF1.csv")
+dat <- dat %>%
+  select(immucan_id, contains("MacCD163"))
+
+p.list <- list()
+for (i in colnames(dat[,-1]) ) {
+  cur_dat <- dat %>%
+    select(immucan_id,all_of(i)) %>%
+    mutate(test = as.factor(ntile(.data[[i]],2))) %>%
+    left_join(traits, "immucan_id")
+  surv_ob <- Surv(cur_dat$time_to_event,cur_dat$censoring)
+ p.list[[i]] <- coxph( as.formula(paste0("surv_ob ~ + test")),data = cur_dat)
+}
+
+df <- data.frame(HR =      unlist(lapply(p.list, function(x){summary(x)$coefficients[,"exp(coef)"]})),
+                 p.value = unlist(lapply(p.list, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 lower_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "lower .95"]})),
+                 upper_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "upper .95"]}))) 
+df %>%
+  mutate(name = rownames(df)) %>%
+  filter(grepl("Tumor", name)) %>%
+  arrange(HR)
+
+dat %>%
+  select(contains("MacCD163.Tumor"))
+
+
+cur_dat <- dat %>%
+    select(immucan_id,all_of("MacCD163_PDL1.Tumor_CD15_Ki67")) %>%
+    mutate(test = as.factor(ntile(MacCD163_PDL1.Tumor_CD15_Ki67,2))) %>%
+    left_join(traits, "immucan_id")
+ggforest(coxph( Surv(time_to_event, censoring) ~  test,data = cur_dat ))
+
+surv_fit <- survfit(Surv(time_to_event, censoring) ~ test, data = cur_dat)
+
+ggsurv <- ggsurvplot(surv_fit, data = cur_dat, risk.table = TRUE, pval = TRUE)
+p <- ggsurv$plot
+p
+table(cur_dat$censoring,cur_dat$test)
+
+
+# PDGFRb analysis
+
+# mean exp
+exp <- read.csv("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/Figures/scores_for_sharing/mean_marker_expr_per_celltype_p2.csv")
+cur_dat <- exp %>%
+  filter(celltypes == "Vasculature",name == "CD31_p2") %>%
+  mutate(test = as.factor(ntile(mean_exp,2))) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(simple_histology == "Adenocarcinoma")
+surv_fit <- survfit(Surv(time_to_event, censoring) ~ test, data = cur_dat)
+
+ggsurv <- ggsurvplot(surv_fit, data = cur_dat, risk.table = TRUE, pval = TRUE)
+ggsurv$plot
+
+cur_dat <- exp %>%
+  filter(name == "CD31_p2") %>%
+  group_by(immucan_id) %>%
+  summarise(mean_exp = mean(mean_exp)) %>%
+  ungroup() %>%
+  mutate(test = as.factor(ntile(mean_exp,2))) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(simple_histology == "Squamous cell carcinoma")
+surv_fit <- survfit(Surv(time_to_event, censoring) ~ test, data = cur_dat)
+
+ggsurv <- ggsurvplot(surv_fit, data = cur_dat, risk.table = TRUE, pval = TRUE)
+ggsurv$plot
+
+cur_dat <- exp %>%
+  filter(name == "PDGFRb_p1")  %>%
+  pivot_wider(id_cols = c(immucan_id),values_from =mean_exp, names_from = celltypes) %>%
+  select(-immucan_id)
+pheatmap::pheatmap(cur_dat)
+
+cur_dat <- exp %>%
+  filter(celltypes == "Mural",name == "PDGFRb_p1") %>%
+  left_join(dens_dat, "immucan_id") %>%
+  select(-immucan_id,-celltypes, -name)
+  
+plot_dat <- data.frame(cors = apply(cur_dat[,-1], 2, function(x) cor(x,cur_dat$mean_exp,use = "complete")))
+rownames(plot_dat) <- names(apply(cur_dat[,-1], 2, function(x) cor(x,cur_dat$mean_exp,use = "complete")))
+pheatmap::pheatmap(plot_dat, cluster_cols = FALSE)
+
+# correlation with Treg_density! I checked and the Treg_density is not prognostic.
+cur_dat <- dens_dat %>%
+  select(Treg_density__IMC1, immucan_id) %>%
+  left_join(traits, "immucan_id") %>%
+  mutate(test = as.factor(ntile(Treg_density__IMC1, 2)))
+surv_fit <- survfit(Surv(time_to_event, censoring) ~ test, data = cur_dat)
+
+ggsurv <- ggsurvplot(surv_fit, data = cur_dat, risk.table = TRUE, pval = TRUE)
+ggsurv$plot
+
+```
+
+

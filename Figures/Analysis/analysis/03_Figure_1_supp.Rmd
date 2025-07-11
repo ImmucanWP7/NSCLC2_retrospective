@@ -214,6 +214,7 @@ dat_long <- dat_long %>%
    mutate(cell_types_IMC = gsub("_density","",cell_types_IMC),
           cell_types_mIF = gsub("_density","",cell_types_mIF))
 
+
 p <-  dat_long %>%
    filter(abs(correlation) > cor_filter) %>%
    ggplot(aes(x=factor(cell_types_IMC, levels=sort(unique(dat_long$cell_types_IMC))),y = factor(cell_types_mIF, levels=sort(unique(dat_long$cell_types_mIF))),col = correlation, size= -log10(p_adj)))+
@@ -245,3 +246,185 @@ ggsave(plot = p, paste0(out_folder,"S1C_IMC_mIF_cell_type_correlation.pdf"),
        width = 6.5)
 ```
 
+
+# mean correlation of matche cell types
+```{r, fig.height=18, fig.width=16}
+celltype_dens_dat <- dens_dat %>%
+  pivot_longer(-immucan_id) %>%
+  mutate(celltype = str_split_i(name,"_",1),
+         tech = str_split_i(name,"__",2)) %>%
+  group_by(immucan_id,celltype, tech) %>%
+  summarise(count = sum(value)) %>%
+  pivot_wider(id_cols = immucan_id,values_from = (count),names_from = c(celltype,tech),names_sep = "__") %>%
+  ungroup()
+
+
+# correlation
+cor <- psych::corr.test(celltype_dens_dat[,grepl("_IMC",colnames(celltype_dens_dat))],celltype_dens_dat[,grepl("__IF",colnames(celltype_dens_dat))],  method = "pearson",adjust = "BH")
+
+# format correlation matrix
+cur_dat <- as.data.frame(cor$r)
+cur_dat$variable <- rownames(cur_dat)
+dat_long <- reshape2::melt(cur_dat,id.vars="variable")
+colnames(dat_long) <- c("cell_types_IMC","cell_types_mIF","correlation")
+
+#get p-value matrix
+p_dat <- as_tibble(cor$p)
+p_dat$variable <- rownames(cur_dat)
+pdat_long <- reshape2::melt(p_dat,id.vars="variable")
+colnames(pdat_long) <- c("cell_types_IMC","cell_types_mIF","p_adj")
+
+dat_long$p_adj <- pdat_long$p_adj
+
+dat_long <- dat_long %>%
+  mutate(sig = ifelse(p_adj <= 0.001 & p_adj > 0.0001,0.001,p_adj))
+
+dat_long <- dat_long %>%
+  mutate(sig = case_when(p_adj <= 0.0001 ~ "< 0.0001",
+                         p_adj <= 0.001 & p_adj > 0.0001 ~ "< 0.001",
+                         p_adj <= 0.01 & p_adj > 0.001 ~ "< 0.01",
+                         p_adj <= 0.1 & p_adj > 0.01 ~ "< 0.1",
+                         p_adj >0.1 ~ "ns"))
+
+
+# plot
+cor_filter <- 0.4
+dat_long <- dat_long %>%
+   mutate(cell_types_IMC = gsub("_density","",cell_types_IMC),
+          cell_types_mIF = gsub("_density","",cell_types_mIF))
+
+
+dat_long %>%
+  mutate(IMC = str_split_i(cell_types_IMC,"_",1),
+         IF = str_split_i(cell_types_mIF,"_",1),
+          match = IMC == IF) %>%
+  filter(match == TRUE) %>% arrange(correlation)
+  summarise(mean_cor = mean(abs(correlation)))
+
+```
+
+# S1D cellohood clusters heatmap panel 2
+excluding TLS images
+```{r, fig.height=10, fig.width=14}
+library(ComplexHeatmap)
+library(viridis)
+library(circlize)
+
+sce2 <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/sce.rds"))
+
+# fraction data
+cur_dat <- as.data.frame(colData(sce2))
+
+frac_dat <- cur_dat %>%
+  group_by(cellohood,.drop = FALSE) %>%
+  dplyr::count(celltypes) %>%
+  mutate(total_cells = sum(n),
+         CN_freq = round(n/total_cells, digits = 2)*100) %>%
+  pivot_wider(id_cols = cellohood,names_from = celltypes, values_from = CN_freq, values_fill = 0) %>%
+  ungroup() %>%
+  as.data.frame()
+
+# generate data to merge with expression data which we can filter exp on later
+merge_info <- frac_dat %>%
+  pivot_longer(cols = -cellohood,names_to = "celltypes")
+
+# generate matrix for heatmap
+rownames(frac_dat) <- frac_dat$cellohood
+frac_dat <- t(frac_dat[,-1])
+
+
+# expression data
+cur_dat <- as.data.frame(t(assay(sce2, "exprs")))
+cur_dat$cellohood <- sce2$cellohood
+cur_dat$celltypes <- sce2$celltypes
+head(cur_dat)
+
+cur_dat <- cur_dat %>%
+  pivot_longer(-c(celltypes,cellohood)) %>%
+  group_by(celltypes, cellohood,name,.drop = FALSE) %>%
+  summarise(mean_exp = mean(value))
+
+# merge with fraction data and filter only those expression that the respective cell type is present with at least 2% in the cluster
+cur_dat <- cur_dat %>%
+  left_join(merge_info,by = c("cellohood", "celltypes")) %>%
+  filter(value > 2)
+
+
+# fractions to merge
+exp_dat <- cur_dat %>%
+  mutate(type = paste0(celltypes,": ", name)) %>%
+  filter(type %in% c("CD4: Tim3", "CD4: PD1","CD4: GITR", "CD8: PD1","CD8: Tim3", "CD8: CXCL13", "CD8: EOMES", "CD8: NKG2A","MacCD204: Arg1","MacCD204: CD11c","Treg: CD137","PMN_MDSC: MMP9","Tumor: p53","Tumor: EGFR","Tumor: Ki67","Tumor: CD56","Tumor: CD155","Tumor: BCL2", "Tumor: CD10","Tumor: CD73","Tumor: IgG", "Tumor: Podoplanin", "Fibro: Podoplanin", "Fibro: CD10" )) %>%
+  pivot_wider(id_cols = cellohood,names_from = type, values_from = mean_exp) %>%
+  as.data.frame()
+rownames(exp_dat) <- exp_dat$cellohood
+exp_dat <- exp_dat[,-1]
+exp_dat_scaled <- t(scale(exp_dat))
+
+# match column names of both matrices
+exp_dat_scaled <- exp_dat_scaled[,colnames(frac_dat)]
+# generate complex heatmap
+
+#color functions
+expression_col_fun <- colorRamp2(
+  c(-3, 0, 3), 
+  c("blue", "white", "red")
+)
+fraction_col_fun <- colorRamp2(seq(0, 50, length.out = 50), viridis(50))
+
+# clustering 
+col_clustering <- hclust(dist(t(frac_dat)))
+
+ht1 <- Heatmap(
+  frac_dat,
+  name = "Fraction",
+  col = fraction_col_fun,
+  cluster_rows = TRUE,
+  cluster_columns = col_clustering,
+  show_row_names = TRUE,
+  show_column_names = TRUE,
+  rect_gp = gpar(col = "white", lwd = 1),
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    value <- frac_dat[i, j]
+    fill_col <- fraction_col_fun(value)  # get fill color from scale
+    rgb_col <- col2rgb(fill_col) / 255   # normalize RGB
+    lum <- 0.299 * rgb_col[1] + 0.587 * rgb_col[2] + 0.114 * rgb_col[3]  # luminance
+
+    text_col <- if (lum < 0.5) "white" else "black"
+
+    grid.text(
+      label = round(value),
+      x = x, y = y,
+      gp = gpar(fontsize = 8, col = text_col)
+    )
+  }
+)
+
+
+ht2 <- Heatmap(
+  exp_dat_scaled,
+  name = "Z-scored\nExpression",
+  rect_gp = gpar(col = "white", lwd = 1),
+  col = expression_col_fun,
+  
+  cluster_rows = FALSE,  # Already clustered by ht1
+  cluster_columns = col_clustering,
+  show_row_names = TRUE,  # Avoid duplication
+  show_column_names = TRUE,
+  heatmap_legend_param = list(
+    at = c(-3,-2,-1, 0, 1,2,3),  # control tick marks
+    color_bar = "continuous"
+  )
+)
+
+ht2 %v% ht1
+
+pdf(paste0(out_folder,"S1D_cellohood_heatmap_panel_2.pdf"),
+    width = 15,
+    height = 10)
+ht2 %v% ht1
+dev.off()
+
+cur_sce <- sce2[,sce2$celltypes %in% c("Fibro", "Tumor")]
+plot_sce <- cur_sce[,sample(colnames(cur_sce),size = 10000,replace = FALSE)]
+dittoSeq::dittoScatterPlot(plot_sce,x.var = "CD10", y.var = "Ecad",assay.x = "exprs", assay.y = "exprs", color.var = "immucan_id", legend.show = FALSE)
+```

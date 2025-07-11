@@ -675,7 +675,7 @@ ggsave(filename = paste0(out_folder,"S3I_Patches_stage.pdf"),
 ```
 
 
-# S3G B cell and Patch density survival
+# S3J B cell and Patch density survival
 
 
 ```{r}
