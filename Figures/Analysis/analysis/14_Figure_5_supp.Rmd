@@ -217,7 +217,7 @@ ht <- Heatmap(
   column_names_rot = 0
 )
 pdf(paste0(out_path,"/5A_GSEA_GOBP_C5_heatmap.pdf"), height = 14, width = 10)
-draw(ht, heatmap_legend_side = "left")
+draw(ht, heatmap_legend_side = "left", padding = unit(c(1, 1,1, 11), "cm"))
 dev.off()
 ```
 
@@ -274,17 +274,24 @@ gg <- ggplot(temp, aes(x = hist_group, y = Factor5, fill = hist_group)) +
   scale_shape_manual(values = shape_values, name = "Histology") +
   scale_fill_manual(values = c("Highlighted" = "firebrick", "Other" = "grey70"), guide = "none") +
   scale_x_discrete(labels = c("Highlighted" = "LCNEC + Other", "Other" = "Rest")) +  # relabel x-axis
-  stat_compare_means(method = "wilcox.test") +
+  stat_compare_means(method = "wilcox.test",label.y = 4.5,size = 5) +
   theme_minimal() +
   theme(
     plot.title = element_blank(),
     axis.title.x = element_blank(),
-    axis.text.x = element_text(size = 9),
-    axis.ticks.x = element_blank()
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    axis.ticks.x = element_blank(),
+    legend.text = element_text(size = 14),
+    
+    #legend.position = "bottom"
   ) +
-  labs(y = "Factor5")
+  labs(y = "Factor5")+
+  coord_cartesian(ylim = c(-4,5))
+gg
 
-ggsave(paste0(out_path,"/5B_Factor5_LCNEC_OTHER.pdf"), plot = gg)
+ggsave(paste0(out_path,"/5B_Factor5_LCNEC_OTHER.pdf"), plot = gg,device = "pdf",width = 7,height = 4)
 ```
 
 # 5C supp: Factor1 Survival analysis
@@ -374,7 +381,7 @@ plot_df <- bind_rows(
 # ------------------------------------------------------------------
 # 2.  Forest plot on a log scale
 # ------------------------------------------------------------------
-p1 <- ggplot(plot_df, aes(y = Cohort, x = HR)) +
+p1 <- ggplot(plot_df, aes(y = Cohort, x = HR, col = Cohort)) +
   geom_point(size = 3) +
   geom_errorbarh(aes(xmin = lower_conf, xmax = upper_conf), height = 0.25) +
   geom_vline(xintercept = 1, linetype = "dashed") +
@@ -389,9 +396,11 @@ p1 <- ggplot(plot_df, aes(y = Cohort, x = HR)) +
       plot_df$p.value[plot_df$Cohort == "LUSC"]
     )
   ) +
-  theme_minimal(base_size = 11)
+  theme_minimal(base_size = 11)+
+  scale_color_manual(values = c("LUAD" = "blue", "LUSC" = "orange"))
 
 print(plot_df)
 
-ggsave(paste0(out_path,"/5C_Factor1_LUAD_LUSC.pdf"), plot = p1)
+p1
+ggsave(paste0(out_path,"/5C_Factor1_LUAD_LUSC.pdf"), plot = p1, device = "pdf", width = 4, height = 3)
 ```

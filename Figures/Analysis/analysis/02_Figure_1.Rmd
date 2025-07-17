@@ -36,18 +36,6 @@ if (!dir.exists(out_folder)) {
 ```
 
 
-# helper function
-```{r}
-catHeader <- function(text = "", level = 2) {
-    cat(paste0("\n\n", 
-               paste(rep("#", level), collapse = ""), 
-               " ", text, "\n"))
-}
-
-```
-
-
-
 
 # datapoints per modality
 

@@ -48,6 +48,7 @@ cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds
 clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
 traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
 
+
 # variables
 data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2))
 ```
@@ -219,6 +220,10 @@ cur_dat <- cur_dat %>%
   filter(celltypes %in% to_show) %>%
   mutate(celltypes = gsub("_abundance","",celltypes))
 
+## spatial cluster renaming
+cur_dat <- cur_dat %>%
+  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
+
 # get max and min fold change values
 max_up <- max(cur_dat$logFC)+1
 min_down <- min(cur_dat$logFC)-1
@@ -257,430 +262,11 @@ ggsave(filename = paste0(out_folder,"3C_diff_abundance_TPS_LUSC_LUAD_bubble_plot
        device = "pdf",
        width = 7.5,
        height = 19)
-
-```
-
-# plots not in the paper
-
-```{r, fig.height=10, fig.width=13}
-condition <- c("negative","negative")
-names(condition) <- c("TPS_score","CPS_score")
-
-# loop over conditions and do two way abundance difference tests
-l.list <- list()
-for (i in c(data_type,"cello1","cello2")) {
-  p.list <- list()
-  for (j in names(condition)) {
-    
-    if(grepl("cello",i)){
-      abundances <- cello_dat %>%
-        select(contains(i))
-      abundances <- t(abundances)
-      colnames(abundances) <- cello_dat$immucan_id
-    } else {
-      abundances <- dat %>%
-        select(contains(i))
-      abundances <- t(abundances)
-      colnames(abundances) <- dat$immucan_id
-    }
-    
-    anno <- traits %>%
-      filter(!is.na(.data[[j]]))
-
-    abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
-    
-    meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-    Size <- factor(meta[,j])
-    meta$Size <- relevel(Size,ref =condition[j])
-    
-    y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-    design <- model.matrix(~Size,data = y.ab$samples)
-    
-    # we do not fit a trend 
-    y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-    y.ab$common.dispersion
-    
-    #plotBCV(y.ab,pch = 5)
-    
-    
-    fit.ab <- glmQLFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-    #plotQLDisp(fit.ab, pch = 5)
-    
-    res <- glmQLFTest(fit.ab)
-    
-    sig_dat <- res$table
-    sig_dat$celltypes <- rownames(sig_dat)
-    sig_dat$cond <- j
-    sig_dat$comparison <- gsub("Size","",res$comparison)
-    p.list[[j]] <- sig_dat
-    
-    
-  }
-  l.list[[i]] <- do.call(rbind,p.list)
-}
-
-cur_dat <- do.call(rbind,l.list)
-cutoff <- 1
-
-cur_dat <- cur_dat %>%
-  # we only look at TPS
-  filter(!grepl("CPS",cond))%>%
-  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2))) %>%
-  group_by(tech) %>%
-  mutate(cond = paste0(cond,"_comparison: ",comparison),
-         FDR = p.adjust(PValue,method = "BH"),
-         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         sig = ifelse(FDR < 0.1  & abs(logFC) > cutoff,TRUE,FALSE),
-         direction = ifelse(logFC > 0 ,"up", "down"),
-         ct_name = gsub("_abundance","",str_split_i(celltypes,"__",1)))
-  
-p <- cur_dat %>%
-  ggplot(aes(x = logFC,y = -log10(PValue), color = tech))+
-  geom_point()+
-  geom_label_repel(data = cur_dat %>% filter(sig == TRUE),
-                  aes(x = logFC, y = -log10(PValue),label = ct_name),
-                  max.overlaps = 40,
-                  min.segment.length = 0,
-                  nudge_x = 0.5,nudge_y = 1,
-                  size= 4)+
-  scale_color_manual(values = c("IF1" = "blue", "IF2" = "deepskyblue","IF3" = "steelblue","IMC1" ="red", "IMC2" ="darkorange","cello1" = "green4", "cello2" = "magenta3"))+
-    theme_bw()+
-  coord_cartesian(xlim = c(-1.5,7.5),ylim = c(0,25))+
-  geom_vline(xintercept = c(-cutoff, cutoff), lwd = 0.7, col = "gray", linetype = "dashed")
-  
-p
-# ggsave(filename = paste0(out_folder,"3C_diff_abundance_TPS.pdf"),
-#        plot = p,
-#        device = "pdf",
-#        width = 10,
-#        height = 8)
 ```
 
 
 
-
-## TPS differential interactions for TPS
-
-Note: the code below was also run for LUSC and we found no differences!
-```{r}
-TPSpos_pats <- traits %>%
-  filter(TPS_score == "positive") %>%
-  pull(immucan_id)
-TPSneg_pats <- traits %>%
-  filter(TPS_score == "negative") %>%
-  pull(immucan_id)
-```
-
-### test differences
-
-```{r, fig.height=20, fig.width=30}
-out_dat <- lapply(colnames(int_dat)[-1], function(x){
-  pred <- int_dat %>% select(all_of(c("immucan_id",x)))
-  pred <- pred %>% filter(.data[[x]] != 0,
-                          !is.na(.data[[x]]))
-  
-  TPSpos <- pred %>% filter(immucan_id %in% TPSpos_pats)
-  TPSneg <- pred %>% filter(immucan_id %in% TPSneg_pats)
-  if(length(TPSpos$immucan_id) > 5 & length(TPSneg$immucan_id) > 5) {
-    res <- wilcox.test(TPSpos[,2],TPSneg[,2])
-    out <- data.frame(feature = x,
-                      p_value = res$p.value,
-                      TPSpos_mean = mean(TPSpos[,2]),
-                      TPSneg_mean = mean(TPSneg[,2]),
-                      TPSpos_median = median(TPSpos[,2]),
-                      TPSneg_median = median(TPSneg[,2]),
-                      TPSpos_cases = length(TPSpos$immucan_id),
-                      TPSneg_cases = length(TPSneg$immucan_id))
-    
-    return(out)
-    
-  }
-  
-})
-
-out <- do.call(rbind,out_dat)
-out %>%
-  dplyr::arrange(p_value)
-out <- out %>% 
-  mutate(tech = str_split_i(feature,"__",2)) %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(p_value,method = "BH"),
-         logFC = log2(TPSpos_mean/TPSneg_mean),
-         show = ifelse(FDR < 0.1 & abs(logFC) > 0.5,TRUE, FALSE)) %>%
-  ungroup()
-
-out <- out %>%
-  filter(!tech %in% c("cello1","cello2"))
-
-out %>%
-  filter(show == TRUE)
-out %>% 
-  arrange(p_value)
-
-p2 <- out %>%
-  filter(!grepl("__IF2_int", feature)) %>%
-  ggplot(aes(x = logFC,y = -log10(FDR), color = tech))+
-  geom_point()+
-  geom_label_repel(data = out %>% filter(show == TRUE, !grepl("__IF2_int", feature)),
-                  aes(x = logFC, y = -log10(FDR),label = feature),
-                  max.overlaps = 50,
-                  min.segment.length = 0,
-                  nudge_x = 0.5,nudge_y = 0.05)+
-    theme_bw()+
-  coord_cartesian(xlim = c(-3,4),ylim = c(0,5))+
-  scale_color_manual(values = c("IF1_int" = "blue", "IF2_int" = "deepskyblue","IF3_int" = "steelblue","IMC1_int" ="red", "IMC2_int" ="darkorange"))
-
-p2
-```
-
-### differential graph
-```{r, fig.height=30, fig.width=30}
-diff_graph <- out %>%
-  filter(show == TRUE,
-         !grepl("cello",feature)) %>%
-  select(feature,logFC,p_value) %>%
-  mutate(tech = str_split_i(feature, "__",2),
-         A = str_split_i(feature,"\\.",1),
-         B = gsub("__.*","",str_split_i(feature,"\\.",2)),
-         A = paste0(A,"__", tech),
-         B = paste0(B,"__", tech)) %>%
-  select(A,B,logFC) %>%
-  mutate(direction = ifelse(logFC < 0, "down-regulated","up-regulated"),
-         logFC = abs(logFC))
-
-node_dat <- data.frame(nodes = c(diff_graph$A, diff_graph$B))
-node_dat <- node_dat %>%
-  mutate(tech = str_split_i(nodes,"__",2)) %>%
-  distinct()
-
-
-cur_graph <- graph_from_data_frame(diff_graph,directed = FALSE,vertices = node_dat)
-E(cur_graph)$weight <- diff_graph$logFC
-E(cur_graph)$weight_category <- as.factor(diff_graph$direction)
-
-set.seed(1254)
-ggraph(cur_graph, layout = 'fr') +  # 'fr' is the Fruchterman-Reingold layout
-  geom_edge_link(aes(width = weight, color = weight_category)) +  # Edge width is based on weight
-  geom_node_point(aes(fill = tech), size = 8, shape = 21) +              # Customize node appearance
-  geom_node_text(aes(label = name), vjust = "inward", hjust = "inward") +
-  scale_fill_manual(values = c("IF1_int" = "blue", "IF2_int" = "deepskyblue","IF3_int" = "steelblue","IMC1_int" ="red", "IMC2_int" ="darkorange")) +# Add labels for nodes
-  theme_void() +    
-  #scale_edge_width(range = c(0.1, 5)) +
-  ggtitle("mutated over wild type")
-```
-
-
-
-## Infiltration in TPS
-this is a score derived some year ago by Ruben Casanova and used now by a number of people in the bodenmiller lab. CD8 T cells are classified into three categroies based on their number of interactions with Tumor cells.
-1. no tumor neighbors: 'ignored' 
-2. 1-2 tumor neighbors: 'bystanding'
-3. >2 tumor neighbors: 'infiltrating'
-
-## old - to be removed
-```{r, fig.height=20, fig.width=20}
-#sce <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IMC/Rout/data/sce.rds")
-sce <- sce[,sce$ROI != 4]
-sce <- aggregateNeighbors(sce, 
-                          colPairName = "neighborhood", # select appropriate spatial graph
-                          aggregate_by = "metadata", 
-                          count_by = "celltypes", # cell type level
-                          proportions = FALSE, 
-                          name = "count_neighbors")
-
-cur_dat <- sce$count_neighbors %>% as.data.frame
-rownames(cur_dat) <- sce$cell_id
-cur_dat$celltypes <- sce$celltypes
-cur_dat$immucan_id <- sce$immucan_id
-
-# Define CD8+ T cells as infiltrating, bystanding, ignored
-cur_dat <- cur_dat %>% filter(celltypes == "CD8") %>% 
-  mutate(CD8Tcell_type = ifelse(Tumor >= 3, "infiltrating", 
-                                ifelse(Tumor < 3 & Tumor > 0, "bystanding", "ignored")))
-
-sce$CD8Tcell_type <- cur_dat$CD8Tcell_type[match(sce$cell_id, rownames(cur_dat))]
-
-cur_sce <- sce[,sce$sample_id %in% unique(sce$sample_id)[c(10,50,100,130,180, 220, 300,400)]]
-
-plotSpatial(
-  object = cur_sce[,cur_sce$celltypes %in% c("Tumor", "CD8")], 
-  img_id = "sample_id", 
-  node_color_by = "CD8Tcell_type", 
-  node_shape_by = "celltypes", 
-  colPairName = "neighborhood", 
-  coords = c("Pos_X", "Pos_Y"),
-  draw_edges = TRUE, 
-  nodes_first = FALSE, 
-  directed = FALSE)+
-  scale_color_manual(values = c("navy", "steelblue1", "firebrick"))
-
-```
-
-## CD8 spatial phenotype per patient
-We will now derive a per patient score based on the CD8 T cell phenotypes
-
-```{r, fig.height=10, fig.width=8}
-# calculate image/tissue area
-im_size <- data.frame(immucan_id = sce$immucan_id,
-                      sample_id = sce$sample_id,
-                      im_size = sce$width_px*sce$height_px/10^6) %>%
-  distinct() %>%
-  group_by(immucan_id) %>%
-  summarise(im_size = sum(im_size))
-
-# generate spatial score and normalize by image/tissue area
-out <- cur_dat %>% group_by(immucan_id, CD8Tcell_type) %>% dplyr::count() %>% 
-  pivot_wider(id_cols = immucan_id, values_from = n, names_from = CD8Tcell_type, values_fill = 0) %>% 
-  left_join(im_size,by = "immucan_id") %>%
-  mutate(bystanding = round(bystanding/im_size),
-         ignored = round(ignored/im_size),
-         infiltrating = round(infiltrating/im_size),
-         ratio_inf_ex = bystanding / infiltrating, number_inf_ex = bystanding + infiltrating,
-         ratio_inf_ex = ifelse(is.infinite(ratio_inf_ex),max(out$ratio_inf_ex[!is.infinite(out$ratio_inf_ex)]),ratio_inf_ex))
-
-# generate score. NOTE: we will not used the score. it is
-out <- out %>%
-  mutate(spatial_CD8_phenotype = ifelse(ratio_inf_ex >= 4 | infiltrating <= 20, "excluded", "inflamed")) %>% 
-  mutate(spatial_CD8_phenotype = ifelse(number_inf_ex <= 60 | is.na(number_inf_ex), "cold", spatial_CD8_phenotype))
-table(out$spatial_CD8_phenotype)
-res <- left_join(out, traits,"immucan_id")
-ggforest(coxph( Surv(time_to_event, censoring) ~  simple_stage + spatial_CD8_phenotype,data = as.data.frame(res)))
-
-
-# generate general interaction score based solely on CD8 T cells with or without tumor neighbors
-out <- out %>%
-  ungroup() %>%
-  mutate(int_over_bystander = (bystanding+infiltrating)/ignored,
-         int_over_bystander_dicho = as.factor(ntile(int_over_bystander,2)),
-         int_over_bystander_mean_split = int_over_bystander>mean(out$int_over_bystander),
-         int_over_bystander_mean_split = ifelse(int_over_bystander_mean_split == TRUE, "high", "low"),
-         int_over_bystander_dicho = ifelse(int_over_bystander_dicho == 2, "high", "low"))
-
-out <- out %>%
-  mutate(int_over_bystander_mean_split = ifelse(number_inf_ex < 50, "cold", int_over_bystander_mean_split))
-res <- left_join(out, traits,"immucan_id")
-
-# Survival in LUAD and LUSC 
-p1 <- ggforest(coxph( Surv(time_to_event, censoring) ~  int_over_bystander_dicho ,data = as.data.frame(res) %>% filter(simple_histology == "Squamous cell carcinoma")))
-p2 <- ggforest(coxph( Surv(time_to_event, censoring) ~ int_over_bystander_dicho,data = as.data.frame(res) %>% filter(simple_histology == "Adenocarcinoma")))
-p <- plot_grid(p1, p2,ncol = 1)
-p
-
-ggsave(filename = paste0(out_folder,"survival_by_infiltration.pdf"),
-       plot = p,
-       device = "pdf",
-       width = 8,
-       height = 5)
-
-# surv_fit <- survfit(Surv(time_to_event, censoring) ~ int_over_bystander_mean_split, data = as.data.frame(res))
-# 
-# ggsurv <- ggsurvplot(surv_fit, data = as.data.frame(res), risk.table = TRUE, pval = TRUE)
-# ggsurv$plot <- ggsurv$plot + 
-# theme(legend.position = "none")
-# ggsurv
-
-# enrichment of TPS and infiltration
-table(res[res$simple_histology=="Adenocarcinoma",]$int_over_bystander_dicho,
-      res[res$simple_histology=="Adenocarcinoma",]$TPS_score)
-table(res[res$simple_histology=="Squamous cell carcinoma",]$int_over_bystander_dicho,
-      res[res$simple_histology=="Squamous cell carcinoma",]$TPS_score)
-ftest <- fisher.test(res[res$simple_histology=="Squamous cell carcinoma",]$int_over_bystander_dicho,res[res$simple_histology=="Squamous cell carcinoma",]$TPS_score)
-p <- res %>%
-  filter(simple_histology == "Squamous cell carcinoma") %>%
-  ggplot()+
-  geom_bar(aes(x = int_over_bystander_dicho, fill=TPS_score))+
-  theme_bw()+
-  scale_fill_manual(values = c("negative" = "blue", "positive" = "red"))+
-  ggtitle(paste0("Fisher's exact test: ",round(ftest$p.value,3)))
-p
-
-ftest <- fisher.test(res[res$simple_histology=="Adenocarcinoma",]$int_over_bystander_dicho,res[res$simple_histology=="Adenocarcinoma",]$TPS_score)
-p <- res %>%
-  filter(simple_histology == "Adenocarcinoma") %>%
-  ggplot()+
-  geom_bar(aes(x = int_over_bystander_dicho, fill=TPS_score))+
-  theme_bw()+
-  scale_fill_manual(values = c("negative" = "blue", "positive" = "red"))+
-  ggtitle(paste0("Fisher's exact test: ",round(ftest$p.value,3)))
-p
-
-# 
-cur_sce <- sce[,!is.na(sce$CD8Tcell_type)]
-hist_vec <- clin_dat$LUAD_vs_LUSC
-names(hist_vec) <- clin_dat$immucan_id
-cur_sce$LUAD_vs_LUSC <- hist_vec[cur_sce$immucan_id]
-cur_sce <- cur_sce[,!is.na(cur_sce$LUAD_vs_LUSC)]
-mean_sce <- scater::aggregateAcrossCells(cur_sce,ids = DataFrame(CD8Tcell_type = cur_sce$CD8Tcell_type,
-                                                                 histology = cur_sce$LUAD_vs_LUSC),
-                                         statistics = "mean")
-assay(mean_sce,"exprs") <- asinh(counts(mean_sce))
-colnames(mean_sce) <- paste0(mean_sce$CD8Tcell_type,"_", mean_sce$histology)
-dittoSeq::dittoHeatmap(mean_sce,genes = rownames(mean_sce)[grepl("CD7|CD8|PD1|LAG3|PDL1|Ido1|CD45RO|CD45RA|ICOS|GrzB|VISTA|Ki67|Ecad", rownames(mean_sce))],annot.by = c("CD8Tcell_type","histology"), main= "CD8Tcell_type", heatmap.colors = colorRampPalette(c("dark blue", "white", "dark red"))(100),breaks = seq(-2, 2, length.out = 101), cluster_rows =TRUE)
-
-```
-
-
-# 3G nfiltration ratio and cox model
-T
-```{r}
-inf_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/infiltration_harmonized.rds"))
-
-# compare densities of infiltrating, bystanding and ignored from IMC1, IMC2 and mIF
-inf_dat <- inf_dat %>%
-  group_by(immucan_id,tech) %>%
-  mutate(total_CD8 = sum(bystanding,ignored,infiltrating,na.rm = TRUE)/im_size,
-         bystanding = round(bystanding/im_size),
-         ignored = round(ignored/im_size),
-         infiltrating = round(infiltrating/im_size)) %>%
-  ungroup()
-
-
-p1 <- inf_dat %>%
-  ggplot()+
-  geom_density(aes(x = bystanding, col = tech), lwd = 1)+
-  ggtitle("bystanding")
-p2 <- inf_dat %>%
-  ggplot()+
-  geom_density(aes(x = ignored, col = tech), lwd = 1)+
-  ggtitle("ignored")
-p3 <- inf_dat %>%
-  ggplot()+
-  geom_density(aes(x = infiltrating, col = tech), lwd = 1)+
-  ggtitle("infiltrating")
-
-plot_grid(p1, p2,p3)
-
-# define interactor over bystander ratio
-inf_dat <- inf_dat %>%
-  group_by(immucan_id, tech) %>%
-  mutate(int_over_bystander = (infiltrating+bystanding)/ignored)
-  
-inf_dat %>%
-  ggplot()+
-  geom_density(aes(x = int_over_bystander, col = tech), lwd = 1)+
-  ggtitle("infiltrating")
-
-inf_dat[(is.infinite(inf_dat$int_over_bystander)),]$int_over_bystander <- NA
-
-# we will average the ratios across technologies
-inf_dat <- inf_dat %>%
-  group_by(immucan_id) %>%
-  mutate(mean_inf_ratio = mean(int_over_bystander,na.rm = TRUE)) %>%
-  ungroup() %>%
-  mutate(mean_inf_ratio_dicho = ntile(mean_inf_ratio,2),
-         mean_inf_ratio_dicho = ifelse(mean_inf_ratio_dicho == 2, "high", "low"))
-
-res <- left_join(inf_dat %>% select(immucan_id,mean_inf_ratio_dicho) %>% distinct(), traits,"immucan_id")
-p1 <- ggforest(coxph( Surv(time_to_event, censoring) ~  mean_inf_ratio_dicho ,data = as.data.frame(res) %>% filter(simple_histology == "Squamous cell carcinoma")),refLabel = "")
-p2 <- ggforest(coxph( Surv(time_to_event, censoring) ~ mean_inf_ratio_dicho,data = as.data.frame(res) %>% filter(simple_histology == "Adenocarcinoma")),refLabel = "")
-p <- plot_grid(p1, p2,ncol = 1)
-p
-
-
-
-```
-
-# new figure 3G
+# 3G - Cox model for infiltration
 
 ```{r}
 inf_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/infiltration_harmonized.rds"))
@@ -1183,6 +769,10 @@ cur_dat <- cur_dat %>%
   filter(celltypes %in% to_show) %>%
   mutate(celltypes = gsub("_abundance","",celltypes))
 
+## spatial cluster renaming
+cur_dat <- cur_dat %>%
+  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
+
 # get max and min fold change values
 max_up <- max(cur_dat$logFC)+1
 min_down <- min(cur_dat$logFC)-1
@@ -1230,7 +820,7 @@ ggsave(filename = paste0(out_folder,"3J_diff_abundance_TMB_LUSC_LUAD_bubble_plot
 ```
 
 
-# S2K inflammation signature for TMB
+# 3K inflammation signature for TMB
 
 ```{r}
 cur_dat <- read.table(paste0(mount_path,"data/RNASeq/CURIE/inflammation_quantification_NSCLC2/outputs/pathwayActivity/PathwayActivity_NSCLC2_mlm"))

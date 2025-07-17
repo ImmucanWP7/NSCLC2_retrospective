@@ -146,6 +146,10 @@ cur_dat <- cur_dat %>%
   filter(ct_name %in% to_show) %>%
   mutate(celltypes = gsub("_abundance","",celltypes))
 
+## spatial cluster renaming
+cur_dat <- cur_dat %>%
+  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
+
 # get max and min fold change values
 max_up <- max(cur_dat$logFC)+1
 min_down <- min(cur_dat$logFC)-1
@@ -431,6 +435,10 @@ to_show <- cur_dat %>%
 cur_dat <- cur_dat %>%
   filter(celltypes %in% to_show) %>%
   mutate(celltypes = gsub("_abundance","",celltypes))
+
+## spatial cluster renaming
+cur_dat <- cur_dat %>%
+  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
 
 # get max and min fold change values
 max_up <- max(cur_dat$logFC)+1

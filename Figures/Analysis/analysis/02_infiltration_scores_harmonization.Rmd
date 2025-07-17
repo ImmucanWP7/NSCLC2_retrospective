@@ -123,12 +123,8 @@ im_size <- data.frame(immucan_id = sce$immucan_id,
 out_P1 <- cur_dat %>% group_by(immucan_id, CD8Tcell_type) %>% dplyr::count() %>% 
   pivot_wider(id_cols = immucan_id, values_from = n, names_from = CD8Tcell_type, values_fill = 0) %>% 
   left_join(im_size,by = "immucan_id") %>%
-  mutate(bystanding = round(bystanding/im_size),
-         ignored = round(ignored/im_size),
-         infiltrating = round(infiltrating/im_size)) %>%
   ungroup()
 
-rm(sce)
 gc()
 ```
 
@@ -169,9 +165,6 @@ im_size <- data.frame(immucan_id = sce$immucan_id,
 out_P2 <- cur_dat %>% group_by(immucan_id, CD8Tcell_type) %>% dplyr::count() %>% 
   pivot_wider(id_cols = immucan_id, values_from = n, names_from = CD8Tcell_type, values_fill = 0) %>% 
   left_join(im_size,by = "immucan_id") %>%
-  mutate(bystanding = round(bystanding/im_size),
-         ignored = round(ignored/im_size),
-         infiltrating = round(infiltrating/im_size)) %>%
   ungroup()
 ```
 

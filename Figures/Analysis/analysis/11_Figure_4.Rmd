@@ -88,7 +88,7 @@ for (i in c(data_type,"cello1","cello2")) {
     
     # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
     y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-    design <- model.matrix(~group,data = y.ab$samples)
+    design <- model.matrix(~0+group,data = y.ab$samples)
     colnames(design) <- levels(y.ab$samples$group)
     # we do not fit a trend 
     y.ab <- estimateDisp(y.ab, design, trend.method = "none")
@@ -137,6 +137,11 @@ to_show_LUAD <- cur_dat %>%
 cur_dat <- cur_dat %>%
   filter(celltypes %in% to_show_LUAD) %>%
   mutate(celltypes = gsub("_abundance","",celltypes))
+
+
+# spatial cluster renaming
+cur_dat <- cur_dat %>%
+  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
 
 # get max and min fold change values
 max_up <- max(cur_dat$logFC)+1
@@ -244,75 +249,75 @@ coord_flip()
 ```
 
 to be deleted. here we test if the results are the same if we estimate the dispersion only for LUAD samples
-```{r, fig.height=10}
+```{r, fig.height=15, fig.width=20}
 condition <- c(FALSE,FALSE,FALSE, FALSE)
 names(condition) <- c("KRAS","EGFR","STK11", "TP53")
 
 # loop over conditions and do two way abundance difference tests
 p.list <- list()
-i <- "IMC1"
-j <- "EGFR"
+for (i in c(data_type,"cello1","cello2")) {
+  for (j in names(condition)) {
+    
+    if(grepl("cello",i)){
+      abundances <- cello_dat %>%
+        select(contains(i))
+      abundances <- t(abundances)
+      colnames(abundances) <- cello_dat$immucan_id
+    } else {
+      abundances <- dat %>%
+        select(contains(i)) %>%
+        filter(complete.cases(.))
+      abundances <- t(abundances)
+      colnames(abundances) <-dat %>%
+        select(contains(i),immucan_id) %>%
+        filter(complete.cases(.)) %>%
+        pull(immucan_id)
+    }
+    anno <- traits
+    
+    meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
+    meta$histology_cond <- paste0(meta$simple_histology,"_",meta[,j])
+    Size <- factor(meta[,"histology_cond"])
+    meta$Size <- Size
+    
+    ####### test if the results are different if only use the adenocarcinoma and EGFR samples
+    meta <- meta[meta$histology_cond %in% c("Adenocarcinoma_FALSE","Adenocarcinoma_TRUE"),]
+    abundances <- abundances[,colnames(abundances) %in% meta$immucan_id]
+    
+    # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
+    y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
+    design <- model.matrix(~0+group,data = y.ab$samples)
+    colnames(design) <- levels(y.ab$samples$group)
+    # we do not fit a trend 
+    y.ab <- estimateDisp(y.ab, design, trend.method = "none")
+    y.ab$common.dispersion
+    #plotBCV(y.ab,pch = 5)
+    
+    # subset design matrix for Adenocarcinoma
+    design <- design[,c("Adenocarcinoma_FALSE","Adenocarcinoma_TRUE")]
+    
+    fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
+    fit_LUAD <- glmLRT(glmfit = fit.ab,contrast = c(-1,1))
 
-if(grepl("cello",i)){
-  abundances <- cello_dat %>%
-    select(contains(i))
-  abundances <- t(abundances)
-  colnames(abundances) <- cello_dat$immucan_id
-} else {
-  abundances <- dat %>%
-    select(contains(i)) %>%
-    filter(complete.cases(.))
-  abundances <- t(abundances)
-  colnames(abundances) <-dat %>%
-    select(contains(i),immucan_id) %>%
-    filter(complete.cases(.)) %>%
-    pull(immucan_id)
+    res_list <-list(fit_LUAD)
+    cur_list <- lapply(as.list(res_list),function(x){
+      sig_dat <- x$table
+      sig_dat$celltypes <- rownames(sig_dat)
+      sig_dat$cond <- j
+      sig_dat$comparison <- grep("Adeno|Squamous",x$comparison,value = TRUE)
+      return(sig_dat)
+    })
+
+    p.list[[paste0(i,"_",j)]] <- do.call(rbind,cur_list)
+    
+  }
 }
-anno <- traits
 
-meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-meta$histology_cond <- paste0(meta$simple_histology,"_",meta[,j])
-Size <- factor(meta[,"histology_cond"])
-meta$Size <- Size
+# define fold change cutoff for plotting
+cutoff <- 0
 
-####### test if the results are different if only use the adenocarcinoma and EGFR samples
-meta <- meta[meta$histology_cond %in% c("Adenocarcinoma_FALSE","Adenocarcinoma_TRUE"),]
-abundances <- abundances[,colnames(abundances) %in% meta$immucan_id]
-
-y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-design <- model.matrix(~0+group,data = y.ab$samples)
-colnames(design) <- levels(y.ab$samples$group)
-# we do not fit a trend 
-y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-y.ab$common.dispersion
-#plotBCV(y.ab,pch = 5)
-
-cur_mat <- cpm(abundances,prior.count = 1,log = TRUE)
-
-library(ComplexHeatmap)
-Heatmap(cur_mat, 
-        col = viridis::viridis(100),
-        column_split = meta$histology_cond)%v%
-  columnAnnotation(histology_cond = anno_simple(meta$histology_cond))
-
-# subset design matrix for Adenocarcinoma
-design <- design[,c("Adenocarcinoma_FALSE","Adenocarcinoma_TRUE")]
-
-fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-fit_LUAD <- glmLRT(glmfit = fit.ab,contrast = c(-1,1))
-
-res_list <-list(fit_LUAD)
-cur_list <- lapply(as.list(res_list),function(x){
-  sig_dat <- x$table
-  sig_dat$celltypes <- rownames(sig_dat)
-  sig_dat$cond <- j
-  sig_dat$comparison <- grep("Adeno|Squamous",x$comparison,value = TRUE)
-  return(sig_dat)
-})
-
-
-cur_list
-cur_dat <- cur_list[[1]] %>%
+cur_dat <- do.call(rbind,p.list)
+cur_dat <- cur_dat %>%
   mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
          cond = paste0(cond, "_mut")) %>%
   group_by(tech, cond) %>%
@@ -330,6 +335,11 @@ to_show_LUAD <- cur_dat %>%
 cur_dat <- cur_dat %>%
   filter(celltypes %in% to_show_LUAD) %>%
   mutate(celltypes = gsub("_abundance","",celltypes))
+
+
+# spatial cluster renaming
+cur_dat <- cur_dat %>%
+  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
 
 # get max and min fold change values
 max_up <- max(cur_dat$logFC)+1
@@ -364,6 +374,7 @@ p <- cur_dat %>%
   #theme(plot.margin = unit(c(5, 2.5, 2.5, 2.5), "cm"))
 p
 ```
+
 
 
 # Driver mutations LUSC
@@ -453,6 +464,11 @@ cur_dat <- cur_dat %>%
   filter(celltypes %in% to_show_LUSC) %>%
   mutate(celltypes = gsub("_abundance","",celltypes))
 
+
+# spatial cluster renaming
+cur_dat <- cur_dat %>%
+  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
+
 # get max and min fold change values
 max_up <- max(cur_dat$logFC)+1
 min_down <- min(cur_dat$logFC)-1
@@ -501,6 +517,11 @@ cur_dat <- rbind(cur_dat_LUAD,cur_dat_LUSC)
 cur_dat <- cur_dat %>%
   filter(celltypes %in% c(to_show_LUAD,to_show_LUSC)) %>%
   mutate(celltypes = gsub("_abundance","",celltypes))
+
+
+# spatial cluster renaming
+cur_dat <- cur_dat %>%
+  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
 
 max_up <- max(cur_dat$logFC)+1
 min_down <- min(cur_dat$logFC)-1

@@ -203,6 +203,10 @@ cur_dat <- cur_dat %>%
          direction = ifelse(logFC > 0 ,"up", "down"),
          ct_name = gsub("_abundance","",str_split_i(celltypes,"__",1)))
   
+
+cur_dat <- cur_dat %>%
+  mutate(tech = gsub(pattern = "cello",replacement = "IMC",x = tech))
+
 p <- cur_dat %>%
   ggplot(aes(x = logFC,y = -log10(PValue), color = tech))+
   geom_point()+
@@ -214,7 +218,7 @@ p <- cur_dat %>%
     scale_color_manual(values = c("IF1" = "blue", "IF2" = "deepskyblue","IF3" = "steelblue","IMC1" ="red", "IMC2" ="darkorange"))+
     theme_bw()+
   coord_cartesian(xlim = c(-2.5,5),ylim = c(0,12.5))+
-  scale_color_manual(values = c("cello1" = "green4", "cello2" = "magenta3"))+
+  scale_color_manual(values = c("IMC1" = "green4", "IMC2" = "magenta3"))+
   geom_vline(xintercept = c(-cutoff, cutoff), lwd = 0.7, col = "gray", linetype = "dashed")+
   ggtitle("Cellohood cluster enrichment for histology")+
   theme(axis.text.x = element_text(size = 12),

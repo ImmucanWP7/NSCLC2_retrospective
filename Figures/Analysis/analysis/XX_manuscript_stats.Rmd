@@ -294,4 +294,21 @@ ggsurv$plot
 
 ```
 
+# survival for neo-adjuvant and adjuvant treatment
+```{r}
+cur_traits <- traits %>%
+  mutate(TP53_TPS = paste0(TP53,"__",TPS_score)) %>%
+  filter(TP53_TPS %in% c("FALSE__negative", "FALSE__positive","TRUE__negative","TRUE__positive"))
+ggforest(coxph( Surv(time_to_event, censoring) ~  TP53_TPS,data = cur_traits %>% filter(simple_histology == "Adenocarcinoma")))
 
+cur_traits <- traits %>%
+  mutate(TP53_TPS = paste0(TP53,"__",TPS_score)) %>%
+  filter(TP53_TPS %in% c("TRUE__negative","TRUE__positive"))
+ggforest(coxph( Surv(time_to_event, censoring) ~  TP53_TPS,data = cur_traits %>% filter(simple_histology == "Adenocarcinoma")))
+
+
+x<- coxph( Surv(time_to_event, censoring) ~  neo_adjuvant_treatment,data = traits)
+
+(p <- summary(x)$coefficients[, "Pr(>|z|)"])
+(HR <- summary(x)$coefficients[, "exp(coef)"])
+```
