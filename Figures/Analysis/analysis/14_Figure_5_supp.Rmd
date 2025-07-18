@@ -280,7 +280,7 @@ gg <- ggplot(temp, aes(x = hist_group, y = Factor5, fill = hist_group)) +
     plot.title = element_blank(),
     axis.title.x = element_blank(),
     axis.title.y = element_text(size = 14),
-    axis.text.x = element_text(size = 14),
+    axis.text.x = element_text(size = 14, angle = 45, hjust = 1),
     axis.text.y = element_text(size = 14),
     axis.ticks.x = element_blank(),
     legend.text = element_text(size = 14),
@@ -291,7 +291,7 @@ gg <- ggplot(temp, aes(x = hist_group, y = Factor5, fill = hist_group)) +
   coord_cartesian(ylim = c(-4,5))
 gg
 
-ggsave(paste0(out_path,"/5B_Factor5_LCNEC_OTHER.pdf"), plot = gg,device = "pdf",width = 7,height = 4)
+ggsave(paste0(out_path,"/5B_Factor5_LCNEC_OTHER.pdf"), plot = gg,device = "pdf",width = 7,height = 4.5)
 ```
 
 # 5C supp: Factor1 Survival analysis

@@ -48,6 +48,10 @@ traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"
 
 # variables
 data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2))
+
+# colors
+hist_col_2 = setNames(c("blue","orange"),c("LUAD","LUSC"))
+hist_col_3 = setNames(c("blue","orange", "gray40"),c("LUAD","LUSC","Other"))
 ```
 
 # S4A
@@ -96,29 +100,18 @@ p1 <- df1 %>%
             inherit.aes = TRUE)+
   scale_color_manual(values = c("Adenocarcinoma" = "blue", "Squamous cell carcinoma" = "orange"))
 
-df2 <- df %>% 
-  mutate(hist = str_split_i(rownames(df),"_",1),
-         cond = str_split_i(rownames(df),"\\.",2),
-         cond = gsub("TRUE","mut", cond)) %>%
-  filter((hist=="Adenocarcinoma" & cond == "EGFRmut"))
+# Kaplan Meier plot for EGFR since no patients die
+surv_fit <- survfit(Surv(time_to_event, censoring) ~ EGFR, data = traits)
 
-p2 <- df2 %>%
-  mutate(cond = paste0(hist,"_",cond)) %>%
-  ggplot(aes(x = HR,y = cond, col = hist))+
-  geom_point(size = 2)+
-  geom_errorbar(aes(xmin=lower_conf, xmax = upper_conf),lwd =1,width = 0.3)+
-  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust= 1))+
-  scale_y_discrete(labels = function(x) str_split_i(x,"_",2))+
-  scale_x_log10()+
-  theme_bw()+
-  geom_vline(xintercept = 1,linetype = "dashed")+
-  geom_text(aes(label = paste0("p : ",round(p.value,digits = 3))),
-            col = "black",
-            vjust = -1,
-            inherit.aes = TRUE)+
-  scale_color_manual(values = c("Adenocarcinoma" = "blue", "Squamous cell carcinoma" = "orange"))
+p2 <- ggsurvplot(surv_fit, data = traits %>% filter(simple_histology == "Adenocarcinoma"), risk.table = TRUE, pval = TRUE,palette = c("red","blue"))+
+  ylab("OS probability")+
+  xlab("Time (days)")
+
+p2 <- plot_grid(p2$plot,ncol = 1, rel_heights = c(1,0.5))
 p2
-p <- plot_grid(p1,p2,ncol = 1,rel_heights = c(2,1))
+
+p <- plot_grid(p1,p2,ncol = 1,rel_heights = c(1,1))
+p
 ggsave(filename = paste0(out_folder,"S4A_hazard_for_driver_mutations.pdf"),
        plot = p,
        device = "pdf",
@@ -544,7 +537,7 @@ dat <- dat %>%
   group_by(celltypes, condition) %>%
   mutate(p_adjust =p.adjust(p = p,method = "BH"),
          FCcutoff = ifelse(abs(logFC)>0.33,TRUE,FALSE),
-         show =  p_adjust < 0.101 & FCcutoff == TRUE)
+         show =  p_adjust < 0.1 & FCcutoff == TRUE)
 dat %>%
   filter(celltypes == "Treg",
          condition == "LUSC_PIK3CA")
@@ -553,8 +546,9 @@ library(ggrepel)
 sce1 <- readRDS(paste0(mount_path,"data/IMC/Panel_1/Rout/sce.rds"))
 sce2 <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/sce.rds"))
 
-col_vec <- c(col_vec1,col_vec2)
+col_vec <- c(metadata(sce1)$colour_vectors$celltypes,metadata(sce2)$colour_vectors$cell_types)
 col_vec <- col_vec[!duplicated(names(col_vec))]
+
 
 
 p <- dat %>%
@@ -564,7 +558,11 @@ p <- dat %>%
   scale_color_manual(values = col_vec)+
   theme_bw()+
   theme(legend.position = "bottom",
-        legend.text = element_text(size = 10))
+        legend.text = element_text(size = 12),
+        axis.text.x = element_text(size =12),
+        axis.text.y = element_text(size =12),
+        axis.title.x = element_text(size =12),
+        axis.title.y = element_text(size =12))
 
 p
 
@@ -611,12 +609,22 @@ counts_EGFRneg <- counts %>%
          simple_histology == "Adenocarcinoma",
          EGFR == FALSE)
 
+library(mclust)
+
+fit2 <- mixtools::normalmixEM(counts_EGFRneg$HLADR,k = 2)
+# get cut point
+post <- fit2$posterior[, 1]
+# Approximate cut point: where posteriors are equal (0.5)
+idx <- which.min(abs(post - 0.5))
+cut_point_HLADR <- counts_EGFRneg$HLADR[idx]
+cut_point_HLADR
+
 png(filename = paste0(out_folder,"S4D_HLADR_tumor_cell_EGFRmutated.png"),width = 1000, height = 500,units = "px")
 par(mfrow = c(1,2))
 LSD::heatscatter(x = counts_EGFR$Ecad, y = counts_EGFR$HLADR,main = "EGFR mutated")
-abline(h = 2, lty = 2, lwd = 5)
+abline(h = cut_point_HLADR, lty = 2, lwd = 5)
 LSD::heatscatter(x = counts_EGFRneg$Ecad, y = counts_EGFRneg$HLADR, main = "EGFR wild type")
-abline(h = 2, lty = 2, lwd = 5)
+abline(h = cut_point_HLADR, lty = 2, lwd = 5)
 dev.off()
 ```
 

@@ -48,9 +48,15 @@ cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds
 clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
 traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
 
-
 # variables
 data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2))
+
+# colors
+stage_col = setNames(c("palevioletred3","darkseagreen3","dodgerblue"),c("I","II","III"))
+stage_col_num = setNames(c("palevioletred3","darkseagreen3","dodgerblue"),c("1","2","3"))
+hist_col_2 = setNames(c("blue","orange"),c("LUAD","LUSC"))
+hist_col_3 = setNames(c("blue","orange", "gray40"),c("LUAD","LUSC","Other"))
+
 ```
 
 # 3B enrichment in clinical traits
@@ -479,7 +485,7 @@ p1 <- cur_traits %>%
         axis.title.y = element_text(size = 14),
         legend.text = element_text(size = 15),
         legend.title = element_text(size = 15))+
-  scale_colour_manual(values = c("LUAD" = "blue", "LUSC" = "forestgreen","other" = "black"))+
+  scale_colour_manual(values = hist_col_3)+
   labs(y = expression("Log2 CD8 density [mm"^2*"]"),color = "Histology")+
   coord_cartesian(ylim = c(4,13))+
   guides(color = guide_legend(override.aes = list(size = 5)))
@@ -548,7 +554,7 @@ p1 <- cur_traits %>%
         axis.title.y = element_text(size = 14),
         legend.text = element_text(size = 15),
         legend.title = element_text(size = 15))+
-  scale_colour_manual(values = c("LUAD" = "blue", "LUSC" = "forestgreen","other" = "black"))+
+  scale_colour_manual(values = hist_col_3)+
   labs(y = "Log2 Infiltration ratio",color = "Histology")+
   guides(color = guide_legend(override.aes = list(size = 5)))
 

@@ -210,11 +210,12 @@ sigs <- dens_dat %>%
   mutate(tech = str_split_i(name,"__",2)) %>%
   group_by(tech) %>%
   mutate(FDR = p.adjust(p = p.value,method = "BH"),
-         sig = ifelse(FDR < 0.1,TRUE, FALSE))
+         sig = ifelse(FDR < 0.2,TRUE, FALSE))
 
 summary_dat <- sigs %>%
-  filter(grepl("CD8_GATA3_BCL2|^CD8_density|CD8_Ki67_density|CD8_TCF7_density|Tumor_IDO1",name)) %>%
-  mutate(y_position = 1000,
+  filter(sig == TRUE) %>%
+  #filter(grepl("CD8_GATA3_BCL2|^CD8_density|CD8_Ki67_density|CD8_TCF7_density|Tumor_IDO1",name)) %>%
+  mutate(y_position = 1750,
          name = gsub(pattern = "density_",replacement = "",x = name)) %>%
   ungroup() %>%
   as.data.frame()
@@ -240,10 +241,11 @@ p1 <- dens_dat %>%
   theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust =1),
         axis.title = element_blank())+
   geom_text(data = summary_dat, aes(x = name,y=y_position,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE)+
-  coord_cartesian(ylim = c(0,1000))+
+  coord_cartesian(ylim = c(0,1750))+
   scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
   ggtitle(label = "LUSC")
-  
+p1  
+
 sigs <- dens_dat %>%
   pivot_longer(-immucan_id) %>%
     left_join(clin_dat,"immucan_id") %>%
@@ -265,10 +267,11 @@ sigs <- dens_dat %>%
   mutate(tech = str_split_i(name,"__",2)) %>%
   group_by(tech) %>%
   mutate(FDR = p.adjust(p = p.value,method = "BH"),
-         sig = ifelse(FDR < 0.1,TRUE, FALSE))
+         sig = ifelse(FDR < 0.2,TRUE, FALSE))
 
 summary_dat <- sigs %>%
-  filter(grepl("CD8_GATA3_BCL2|^CD8_density|CD8_Ki67_density|CD8_TCF7_density|Tumor_IDO1",name)) %>%
+  filter(sig == TRUE) %>%
+  #filter(grepl("CD8_GATA3_BCL2|^CD8_density|CD8_Ki67_density|CD8_TCF7_density|Tumor_IDO1",name)) %>%
   mutate(y_position = 1000,
          name = gsub(pattern = "density_",replacement = "",x = name)) %>%
   ungroup() %>%
@@ -299,7 +302,7 @@ p2 <- dens_dat %>%
   scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
   ggtitle(label = "LUAD")
 
-plot_grid(p1,p2,nrow = 1)
+plot_grid(p1,p2,nrow = 1, rel_widths = c(2,1.5))
 ggsave(filename = paste0(out_folder,"S2C_linear_model_CD8_CD4_across_stages_split_by_histology.pdf"),
        plot = last_plot(),
        device = "pdf",
@@ -345,6 +348,9 @@ res <- tcga %>%
   mutate(FDR = p.adjust(p = p.value,method = "BH")) %>%
   filter(FDR < 0.1)
 
+res <- res %>%
+  mutate(p.plot = ifelse(p.value < 0.001,"***",ifelse(p.value < 0.01, "**","*")))
+
 p <- tcga %>%
   pivot_longer(-c(PATIENT_ID, stage)) %>%
   mutate(stage = as.numeric(as.factor(stage))) %>%
@@ -352,6 +358,7 @@ p <- tcga %>%
   filter(name %in% res$name) %>%
   ggplot(aes(x = name, y = value,fill=as.factor(stage)))+
   geom_boxplot()+
+  geom_text(data = res, aes(x = name,y=0.8,label = p.plot), inherit.aes = FALSE,size = 8)+
   theme_bw()+
   theme(axis.text.x = element_text(angle = 90, vjust =0.5,hjust = 1, size = 10))+
   scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
@@ -362,7 +369,7 @@ p
 ggsave(filename = paste0(out_folder,"S2D_Xcell_across_TCGA_stages_within_LUAD.pdf"),
        plot = p,
        device = "pdf",
-       width = 8,
+       width = 10,
        height = 6)
 ```
 

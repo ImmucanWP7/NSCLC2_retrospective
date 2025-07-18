@@ -48,6 +48,12 @@ traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"
 
 # variables
 data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2))
+
+# colors
+stage_col = setNames(c("palevioletred3","darkseagreen3","dodgerblue"),c("I","II","III"))
+stage_col_num = setNames(c("palevioletred3","darkseagreen3","dodgerblue"),c("1","2","3"))
+hist_col_2 = setNames(c("blue","orange"),c("LUAD","LUSC"))
+hist_col_3 = setNames(c("blue","orange", "gray40"),c("LUAD","LUSC","Other"))
 ```
 
 
@@ -230,8 +236,14 @@ p <- imcRtools::plotSpatial(cur_sce_2,img_id = "sample_id",coords = c("nucleus.x
 #p2 <- imcRtools::plotSpatial(cur_sce_2,img_id = "sample_id",coords = c("nucleus.x","nucleus.y"),node_color_by = "celltype",node_size_fix = 0.2)+
 #  scale_colour_manual(values = col_vec)
 
-p
+p <- p +
+  theme(axis.text.x = element_text(size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15))+
+  guides(color = guide_legend(override.aes = list(size = 5)))
 #p2
+p
 ggsave(filename = paste0(out_folder,"S3A_TLS_example.png"),
        plot = p,
        device = "png",
@@ -323,7 +335,7 @@ dist_dat %>%
   theme(legend.position = "none")+
   stat_compare_means()
 
-# cound the number of TLS in each compartment
+# count the number of TLS in each compartment
 TLS_dat <- TLS_summary %>%
   as.data.frame() %>%
   mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
@@ -478,9 +490,9 @@ p <- cur_dat %>%
   ggplot(aes(x = LUAD_vs_LUSC,y = (patch_density), fill = LUAD_vs_LUSC))+
   geom_boxplot(outliers = FALSE)+
   geom_jitter(aes(color = LUAD_vs_LUSC),position = position_jitterdodge(jitter.width = 0.2), size= 0.8)+
-  scale_fill_manual(values = alpha(c("LUAD" ="orange","LUSC"= "darkgreen","Other"= "gray40"),alpha = 0.6))+
-  scale_color_manual(values = c("orange", "darkgreen", "gray40"))+
-  stat_compare_means(comparisons = my_comp,label = "p.signif")+
+  scale_fill_manual(values = alpha(hist_col_3,alpha = 0.6))+
+  scale_color_manual(values =hist_col_3)+
+  stat_compare_means(comparisons = my_comp,label = "p.signif",method = "wilcox.test")+
   theme_bw()+
   theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust = 1, size = 14),
         axis.text.y = element_text(size = 14),
@@ -504,7 +516,7 @@ ggsave(filename = paste0(out_folder,"S3F_Patch_density_for_histology.pdf"),
 
 # S3G heatmap of correlations
 ```{r, fig.height=4, fig.width=8}
-# cound the number of TLS in each compartment
+# count the number of TLS in each compartment
 TLS_dat <- TLS_summary %>%
   as.data.frame() %>%
   mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
@@ -611,7 +623,7 @@ p1 <- cur_dat %>%
         axis.text.y = element_text(size = 10),
          axis.title.x =  element_text(size = 10),
         axis.title.y = element_text(size = 10))+
-  scale_colour_manual(values = c("LUAD" = "blue", "LUSC" = "forestgreen","Other" = "gray40"))+
+  scale_colour_manual(values = hist_col_3)+
   labs(y = expression("Log2 B cell patch density [mm"^2*"]"),color = "Histology")+
   coord_cartesian(ylim = c(-7.5,2.5))
 
@@ -636,7 +648,7 @@ p2 <- cur_dat %>%
         axis.text.y = element_text(size = 10),
          axis.title.x =  element_text(size = 10),
         axis.title.y = element_text(size = 10))+
-  scale_colour_manual(values = c("LUAD" = "blue", "LUSC" = "forestgreen","Other" = "gray40"))+
+  scale_colour_manual(values = hist_col_3)+
   labs(y = expression("Log2 B cell patch density [mm"^2*"]"),color = "Histology", y = "Log2 TMB")+
   coord_cartesian(ylim = c(-7.5,2.5))
 p2
@@ -662,8 +674,8 @@ p <- cur_dat %>%
   filter(simple_stage != "IV") %>%
   ggplot(aes(y = patch_density,x = simple_stage, fill = simple_stage))+
   geom_boxplot()+
-  scale_fill_manual(values = c("I" = "palevioletred3", "II" = "darkseagreen3", "III" = "darkorange2"))+
-  stat_compare_means(comparisons =  my_comp,label = "p.signif")+
+  scale_fill_manual(values = stage_col)+
+  stat_compare_means(comparisons =  my_comp,label = "p.signif", method = "wilcox.test")+
   theme_bw()
 
 p
@@ -731,7 +743,7 @@ p <- df1 %>%
             col = "black",
             vjust = -1,
             inherit.aes = TRUE)+
-  scale_color_manual(values = c("LUAD" = "blue", "LUSC" = "forestgreen", "Other" = "gray40", "All" = "black"),name = "Histology")+
+  scale_color_manual(values = c("LUAD" = "blue", "LUSC" = "orange", "Other" = "gray40", "All" = "black"),name = "Histology")+
   theme(axis.text.x = element_text(size = 10),
         axis.text.y = element_text(size = 10),
         axis.title.x = element_text(size = 10),
