@@ -298,7 +298,7 @@ dat_long %>%
   mutate(IMC = str_split_i(cell_types_IMC,"_",1),
          IF = str_split_i(cell_types_mIF,"_",1),
           match = IMC == IF) %>%
-  filter(match == TRUE) %>% arrange(correlation)
+  filter(match == TRUE) %>% arrange(correlation) %>%
   summarise(mean_cor = mean(abs(correlation)))
 
 ```

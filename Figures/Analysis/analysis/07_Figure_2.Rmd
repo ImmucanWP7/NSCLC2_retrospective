@@ -146,6 +146,12 @@ ggsave(filename = paste0(out_folder,"2A_diff_abundance_histology.pdf"),
        height = 8)
 ```
 
+```{r}
+dens_dat %>%
+  left_join()
+colSums(cello_dat[,grepl("cello1",colnames(cello_dat))])/sum(cello_dat[,grepl("cello1",colnames(cello_dat))])
+```
+
 
 # 2B diff abundance cellohood for histology
 
@@ -805,10 +811,10 @@ ggsave(filename = paste0(out_folder,"2F_diff_abundance_smoking.pdf"),
 
 ```{r, fig.height=12, fig.width=16}
 # identify images with high amuounts of differentiall abundant cello clusters 18 from panel 1
-#cello_dat %>% 
-#  left_join(clin_dat,"immucan_id") %>%
-#  select(immucan_id,CN_18__cello1, smoking_status) %>%
-#  arrange(desc(CN_18__cello1))
+cello_dat %>% 
+  left_join(clin_dat,"immucan_id") %>%
+  select(immucan_id,CN_13__cello1,CN_17__cello1, smoking_status) %>%
+  arrange(desc(CN_13__cello1))
 
 #LUNG-NSCLC2-0644|0558 # 0644 is current and 0558 ex-smoker 
 
@@ -828,11 +834,11 @@ mcols(masks)$immucan_id <- cur_df[names(masks),"immucan_id"]
 mcols(images)$sample_id <- cur_df[names(images),"sample_id"]
 mcols(masks)$sample_id <- cur_df[names(masks),"sample_id"]
 
-cur_sce <- sce1[,grepl("0644|0558",sce1$immucan_id)]
-
-for(i in c("0644","0558")){
-  
-  plot_sce <- cur_sce[,cur_sce$ROI == 2 & grepl(i,cur_sce$immucan_id)]
+cur_sce <- sce1[,grepl("0688|0665|0671",sce1$immucan_id)]
+# 0688 is ex-smoker and 0680|0713 is current smoker and 0671 is a non-smoker
+for(i in c("0688","0665","0671")){
+  ROI <- 1
+  plot_sce <- cur_sce[,cur_sce$ROI == ROI & grepl(i,cur_sce$immucan_id)]
   im_sel <- unique(plot_sce$sample_id)
   
   cur_ims <- getImages(images, im_sel)
@@ -851,7 +857,8 @@ for(i in c("0644","0558")){
   
   
   plot_sce$CNs <- "other"
-  plot_sce[,plot_sce$cellohood %in% c("CN_18","CN_22")]$CNs <- "CN18_and_CN22"
+  plot_sce[,plot_sce$cellohood %in% c("CN_13","CN_17")]$CNs <- "CN13_and_CN17"
+  plot_sce[,plot_sce$cellohood %in% c("CN_13","CN_17")]$CNs <- plot_sce[,plot_sce$cellohood %in% c("CN_13","CN_17")]$cellohood
   
   plotCells(mask = cur_masks,
             object = plot_sce,
@@ -864,68 +871,72 @@ for(i in c("0644","0558")){
             scale_bar = list(length = 100,
                              label = expression("100 " ~ mu * "m"),
                              cex = 1.2,
-                             lwidth = 5),
-            save_plot = list(filename = paste0(out_folder,"LUNG-NSCLC2-",
-                                               i,"_smokers_ROI_02_celltypes.png")))
+                             lwidth = 5)
+            ,save_plot = list(filename = paste0(out_folder,"LUNG-NSCLC2-",i,"_ROI_",ROI,"_celltypes.png"))
+            )
   plotCells(mask = cur_masks,
             object = plot_sce,
             cell_id = "ObjectNumber",
             img_id = "sample_id",
             colour_by = "CNs",
-            colour = list(CNs = c(`CN18_and_CN22` = "red",
+            colour = list(CNs = c(CN_13 = "red",
+                                  CN_17 = "blue",
                                   other = "gray")),
             image_title = NULL,
             legend = list(colour_by.labels.cex = 0.7),
             scale_bar = list(length = 100,
                              label = expression("100 " ~ mu * "m"),
                              cex = 1.2,
-                             lwidth = 5),
-            save_plot = list(filename = paste0(out_folder,"LUNG-NSCLC2-",
-                                               i,"_smokers_ROI_02_CN_18_22.png")))
+                             lwidth = 5)
+            ,save_plot = list(filename = paste0(out_folder,"LUNG-NSCLC2-",i,"_ROI_",ROI,"_CN_13_17.png"))
+            )
   
-  if (i == "0644") {
+  if (i == "0688") {
     plotPixels(image = cur_images,
-             object = plot_sce[,plot_sce$CNs == "CN18_and_CN22"],
-             mask = cur_masks,
+             object = plot_sce[,plot_sce$CNs != "other"],
+             #mask = cur_masks,
              cell_id = "ObjectNumber",
              img_id = "sample_id",
-             colour_by = c("GrzB", "CD8a", "Ecad"),
-             outline_by = "CNs",
+             colour_by = c("CD38", "CD8a", "Ecad"),
+             #outline_by = "CNs",
              image_title = NULL,
-             colour = list(GrzB = c("black","red"),
-                           CD8a = c("black","blue"),
-                           Ecad = c("black","green")),
-             bcg = list(GrzB = c(0,2,1),
+             colour = list(CD38 = c("black","green"),
+                           CD8a = c("black","red"),
+                           Ecad = c("black","blue"),
+                           CNs = c(CN_13 = "white",
+                                   CN_17 = "yellow")),
+             bcg = list(CD38 = c(0,2,1),
                         Ecad = c(0,4,1),
                         CD8a = c(0,2,1)),
              scale_bar = list(length = 100,
                               label = expression("100 " ~ mu * "m"),
                               cex = 1.2,
-                              lwidth = 5),
-             save_plot = list(filename =
-                                paste0(out_folder,"LUNG-NSCLC2-",
-                                       i,"_smokers_ROI_02_GrzB_expr.png")))
+                              lwidth = 5)
+             ,save_plot = list(filename =paste0(out_folder,"LUNG-NSCLC2-",i,"_ROI_",ROI,"_CD38_expr.png"))
+             )
   } else {
     plotPixels(image = cur_images,
-             object = plot_sce[,plot_sce$CNs == "CN18_and_CN22"],
-             mask = cur_masks,
+             object = plot_sce[,plot_sce$CNs != "other"],
+             #mask = cur_masks,
              cell_id = "ObjectNumber",
              img_id = "sample_id",
-             colour_by = c("GrzB", "CD8a", "Ecad"),
-             outline_by = "CNs",
+             colour_by = c("CD38", "CD8a", "Ecad"),
+             #outline_by = "CNs",
              image_title = NULL,
-             colour = list(GrzB = c("black","red"),
-                           CD8a = c("black","blue"),
-                           Ecad = c("black","green")),
-             bcg = list(GrzB = c(0,2,1),
-                        CD8a = c(0,2,1)),
+             colour = list(CD38 = c("black","green"),
+                           CD8a = c("black","red"),
+                           Ecad = c("black","blue"),
+                           CNs = c(CN_13 = "white",
+                                   CN_17 = "yellow")),
+             bcg = list(CD38 = c(0,2,1),
+                        CD8a = c(0,2,1),
+                        Ecad = c(0,1,1)),
              scale_bar = list(length = 100,
                               label = expression("100 " ~ mu * "m"),
                               cex = 1.2,
-                              lwidth = 5),
-             save_plot = list(filename =
-                                paste0(out_folder,"LUNG-NSCLC2-",
-                                       i,"_smokers_ROI_02_GrzB_expr.png")))
+                              lwidth = 5)
+             ,save_plot = list(filename =paste0(out_folder,"LUNG-NSCLC2-",i,"_ROI_",ROI,"_CD38_expr.png"))
+             )
   }
   
 }

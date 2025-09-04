@@ -348,7 +348,7 @@ cur_dat <- cur_dat %>%
 # fractions to merge
 exp_dat <- cur_dat %>%
   mutate(type = paste0(celltypes,": ", name)) %>%
-  filter(type %in% c("B: CD40", "B: CD20","CD4: LAG3", "CD8: PD1","CD8: GRZB", "CD8: LAG3", "CD8: Ki67", "CD8: TCF7","MacCD163: Ido1","MacCD163: PDL1","MacCD163: CD14","MacCD163: CD68",
+  filter(type %in% c("B: CD40", "B: CD20","CD4: LAG3", "CD8: PD1","CD8: GrzB", "CD8: LAG3", "CD8: Ki67", "CD8: TCF7","MacCD163: Ido1","MacCD163: PDL1","MacCD163: CD14","MacCD163: CD68",
                      "MacCD163: CD206","Mura: SMA","Tumor: cleavedPARP","Tumor: Ecad","Tumor: HLADR","Tumor: CD15","Tumor: CarbonicAnhydrase",
                      "Tumor: PDL1","Tumor: Ki67","Tumor: B2M")) %>%
   pivot_wider(id_cols = cellohood,names_from = type, values_from = mean_exp) %>%

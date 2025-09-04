@@ -45,7 +45,8 @@ if (!dir.exists(out_path)){
 model <- readRDS(model_path)
 ```
 
-## Flip factor 1 in combined model for interpretablity (only has to be done once)
+## flip factors for explorations
+note, we are using the original rotations of the model
 ```{r, eval=FALSE}
 # ## flip factor values
 # model@expectations$Z$group1[,"Factor1"] <- -model@expectations$Z$group1[,"Factor1"]
@@ -58,7 +59,6 @@ model <- readRDS(model_path)
 # model@expectations$W$Interactions[,"Factor1"] <- -model@expectations$W$Interactions[,"Factor1"]
 # 
 # saveRDS(model, model_path)
-
 ```
 
 ## Overview
@@ -744,8 +744,6 @@ decorate_annotation("HR", {
 
 # Close the PDF device
 dev.off() 
-
-
 ```
 
 
@@ -1046,15 +1044,13 @@ ht <- Heatmap(
 
 draw(ht, padding = unit(c(10, 2, 20, 20), "mm"), heatmap_legend_side = "bottom")
 # Set PDF output
-CairoPDF(paste0(out_path, "/5E_Combined_Factor_survival_TCGA.pdf"), width = 8, height = 4)  # adjust width/height as needed
+CairoPDF(paste0(out_path, "/5E_Combined_Factor_survival_TCGA.pdf"), width = 7, height = 4)  # adjust width/height as needed
 
 # Draw the heatmap
 draw(ht, padding = unit(c(0,0,0,20), "mm"), heatmap_legend_side = "bottom")
 
 # Close the PDF device
 dev.off() 
-
-
 ```
 
 

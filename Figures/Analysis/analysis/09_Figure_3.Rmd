@@ -270,8 +270,6 @@ ggsave(filename = paste0(out_folder,"3C_diff_abundance_TPS_LUSC_LUAD_bubble_plot
        height = 19)
 ```
 
-
-
 # 3G - Cox model for infiltration
 
 ```{r}
@@ -826,6 +824,25 @@ ggsave(filename = paste0(out_folder,"3J_diff_abundance_TMB_LUSC_LUAD_bubble_plot
 ```
 
 
+sanity check
+```{r}
+cello_dat %>%
+  select(immucan_id,CN_1__cello2) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(simple_histology == "Squamous cell carcinoma")%>%
+  ggplot(aes(x = TMB_score,y = log10(CN_1__cello2)))+
+  geom_boxplot()+
+  stat_compare_means()
+
+cello_dat %>%
+  select(immucan_id,CN_9__cello2) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(simple_histology == "Squamous cell carcinoma")%>%
+  ggplot(aes(x = TMB_score,y = log10(CN_9__cello2)))+
+  geom_boxplot()+
+  stat_compare_means()
+```
+
 # 3K inflammation signature for TMB
 
 ```{r}
@@ -867,4 +884,256 @@ ggsave(filename = paste0(out_folder,"3K_inflammation_score_for_TMB.pdf"),
        device = "pdf",
        width = 4,
        height = 6)
+```
+
+not in figures.
+testing for TMB and TPS subgroups
+
+```{r, fig.height=6, fig.width=15}
+table(traits$TMB_score,traits$TPS_score)
+traits <- traits %>%
+  mutate(TMB_TPS = ifelse(TMB_score == "high" & TPS_score == "positive", "TMBhigh_TPShigh",ifelse(TMB_score == "low" & TPS_score == "positive", "TMBlow_TPShigh", NA)))
+condition <- c("TMBlow_TPShigh")
+names(condition) <- c("TMB_TPS")
+
+# loop over conditions and do two way abundance difference tests
+p.list <- list()
+for (i in c(data_type,"cello1","cello2")) {
+    
+    if(grepl("cello",i)){
+      abundances <- cello_dat %>%
+        select(contains(i))
+      abundances <- t(abundances)
+      colnames(abundances) <- cello_dat$immucan_id
+    } else {
+      abundances <- dat %>%
+        select(contains(i)) %>%
+        filter(complete.cases(.))
+      abundances <- t(abundances)
+      colnames(abundances) <- dat %>%
+        select(contains(i),immucan_id) %>%
+        filter(complete.cases(.)) %>%
+        pull(immucan_id)
+    }
+    anno <- traits %>%
+      filter(!is.na(.data[["TMB_TPS"]]))
+    
+    # remove patients without TMB info from the abundance data
+    abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
+    
+    # new from here
+    meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
+    Size <- factor(meta[,"TMB_TPS"])
+    meta$Size <- Size
+    
+    # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
+    y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
+    design <- model.matrix(~0+group,data = y.ab$samples)
+    colnames(design) <- levels(y.ab$samples$group)
+    # we do not fit a trend 
+    y.ab <- estimateDisp(y.ab, design, trend.method = "none")
+    y.ab$common.dispersion
+    #plotBCV(y.ab,pch = 5)
+    
+    # we only compare the diff abundance for Adeno vs Sqam.
+    fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
+    fit <- glmLRT(glmfit = fit.ab,contrast = c(1,-1))
+    #plotQLDisp(fit.ab, pch = 5)
+
+    sig_dat <- fit$table
+    sig_dat$celltypes <- rownames(sig_dat)
+
+    p.list[[i]] <- sig_dat
+    
+    
+}
+
+# define logFC cutoff
+cutoff <- 0.7
+cur_dat <- do.call(rbind,p.list)
+cur_dat <- cur_dat %>%
+  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
+         cond = "TMBhigh_TPShigh-over-TMBlow_TPShigh") %>%
+  group_by(tech) %>%
+  mutate(FDR = p.adjust(PValue,method = "BH"),
+         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
+         sig = ifelse(FDR < 0.1 & abs(logFC) > cutoff,TRUE,FALSE),
+         direction = ifelse(logFC > 0 ,"up", "down"),
+         ct_name = gsub("_abundance","",str_split_i(celltypes,"__",1)))
+  
+to_show <- cur_dat %>%
+  filter(sig == TRUE) %>%
+  pull(celltypes)
+
+cur_dat <- cur_dat %>%
+  filter(celltypes %in% to_show) %>%
+  mutate(celltypes = gsub("_abundance","",celltypes))
+
+## spatial cluster renaming
+cur_dat <- cur_dat %>%
+  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
+
+# get max and min fold change values
+max_up <- max(cur_dat$logFC)+1
+min_down <- min(cur_dat$logFC)-1
+
+# plot the data
+plot_dat <- cur_dat
+p <- plot_dat %>%
+  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
+  geom_point()+
+  theme_bw()+
+  scale_colour_gradientn(
+    colours = c("blue", "white", "red"), 
+    values = rescale(c(round(min_down), 0, round(max_up))),
+    limits = c(round(min_down), round(max_up)),
+    guide = guide_colorbar(
+      title = "logFC",                   
+      barwidth = 12,                     
+      barheight = 1.5,                   
+      title.theme = element_text(size = 16),
+      label.theme = element_text(size = 14)
+    )
+  )+
+  scale_size(range = c(1,8))+
+  new_scale_colour() +
+  geom_point(data = plot_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
+  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 14),
+        axis.text.y = element_text(size = 14),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5, size = 14))+
+  ggtitle("Differential abundance for TMB-high")
+  
+
+p
+```
+
+```{r, fig.height=6, fig.width=15}
+table(traits$TMB_score,traits$TPS_score)
+traits <- traits %>%
+  mutate(TMB_TPS = ifelse(TMB_score == "low" & TPS_score == "positive", "TMBlow_TPShigh",ifelse(TMB_score == "high" & TPS_score == "negative", "TMBhigh_TPSlow", NA))) 
+condition <- c("TMBhigh_TPSlow")
+names(condition) <- c("TMB_TPS")
+
+# loop over conditions and do two way abundance difference tests
+p.list <- list()
+for (i in c(data_type,"cello1","cello2")) {
+    
+    if(grepl("cello",i)){
+      abundances <- cello_dat %>%
+        select(contains(i))
+      abundances <- t(abundances)
+      colnames(abundances) <- cello_dat$immucan_id
+    } else {
+      abundances <- dat %>%
+        select(contains(i)) %>%
+        filter(complete.cases(.))
+      abundances <- t(abundances)
+      colnames(abundances) <- dat %>%
+        select(contains(i),immucan_id) %>%
+        filter(complete.cases(.)) %>%
+        pull(immucan_id)
+    }
+    anno <- traits %>%
+      filter(!is.na(.data[["TMB_TPS"]]),
+             simple_histology == "Squamous cell carcinoma")
+    
+    # remove patients without TMB info from the abundance data
+    abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
+    
+    # new from here
+    meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
+    Size <- factor(meta[,"TMB_TPS"])
+    meta$Size <- Size
+    
+    # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
+    y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
+    design <- model.matrix(~0+group,data = y.ab$samples)
+    colnames(design) <- levels(y.ab$samples$group)
+    # we do not fit a trend 
+    y.ab <- estimateDisp(y.ab, design, trend.method = "none")
+    y.ab$common.dispersion
+    #plotBCV(y.ab,pch = 5)
+    
+    # we only compare the diff abundance for Adeno vs Sqam.
+    fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
+    fit <- glmLRT(glmfit = fit.ab,contrast = c(1,-1))
+    #plotQLDisp(fit.ab, pch = 5)
+
+    sig_dat <- fit$table
+    sig_dat$celltypes <- rownames(sig_dat)
+
+    p.list[[i]] <- sig_dat
+    
+    
+}
+
+# define logFC cutoff
+cutoff <- 0.7
+cur_dat <- do.call(rbind,p.list)
+cur_dat <- cur_dat %>%
+  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
+         cond = "TMBhigh_TPSlow-over-TMBlow_TPShigh") %>%
+  group_by(tech) %>%
+  mutate(FDR = p.adjust(PValue,method = "BH"),
+         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
+         sig = ifelse(FDR < 0.1 & abs(logFC) > cutoff,TRUE,FALSE),
+         direction = ifelse(logFC > 0 ,"up", "down"),
+         ct_name = gsub("_abundance","",str_split_i(celltypes,"__",1)))
+  
+to_show <- cur_dat %>%
+  filter(sig == TRUE) %>%
+  pull(celltypes)
+
+cur_dat <- cur_dat %>%
+  filter(celltypes %in% to_show) %>%
+  mutate(celltypes = gsub("_abundance","",celltypes))
+
+## spatial cluster renaming
+cur_dat <- cur_dat %>%
+  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
+
+# get max and min fold change values
+max_up <- max(cur_dat$logFC)+1
+min_down <- min(cur_dat$logFC)-1
+
+# plot the data
+plot_dat <- cur_dat
+p <- plot_dat %>%
+  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
+  geom_point()+
+  theme_bw()+
+  scale_colour_gradientn(
+    colours = c("blue", "white", "red"), 
+    values = rescale(c(round(min_down), 0, round(max_up))),
+    limits = c(round(min_down), round(max_up)),
+    guide = guide_colorbar(
+      title = "logFC",                   
+      barwidth = 12,                     
+      barheight = 1.5,                   
+      title.theme = element_text(size = 16),
+      label.theme = element_text(size = 14)
+    )
+  )+
+  scale_size(range = c(1,8))+
+  new_scale_colour() +
+  geom_point(data = plot_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
+  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 14),
+        axis.text.y = element_text(size = 14),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5, size = 14))+
+  ggtitle("Differential abundance for TMB-high")
+  
+
+p
 ```
