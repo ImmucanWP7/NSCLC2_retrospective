@@ -1,0 +1,305 @@
+---
+title: "Tumor_HADR_investigation"
+author: "Daniel Schulz"
+date: "2025-09-04"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(ggpubr)
+library(SingleCellExperiment)
+library(scales)
+library(ggnewscale)
+library(edgeR)
+library(cowplot)
+library(igraph)
+library(ggraph)
+library(ggrepel)
+```
+
+```{r}
+mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_4/"
+
+if (!dir.exists(out_folder)) {
+  dir.create(out_folder)
+}
+```
+
+
+
+# load data
+we will load the data we generated at the beginning of figure 2
+```{r}
+dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/abundances_dat.rds"))
+dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
+cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
+clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+int_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/interaction_dat.rds"))
+traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
+
+# variables
+data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2))
+```
+
+```{r, fig.height=10, fig.width=6}
+condition <- c(FALSE)
+names(condition) <- c("EGFR")
+
+# loop over conditions and do two way abundance difference tests
+p.list <- list()
+for (i in c(data_type,"cello1","cello2")) {
+  for (j in names(condition)) {
+    
+    if(grepl("cello",i)){
+      abundances <- cello_dat %>%
+        select(contains(i))
+      abundances <- t(abundances)
+      colnames(abundances) <- cello_dat$immucan_id
+    } else {
+      abundances <- dat %>%
+        select(contains(i)) %>%
+        filter(complete.cases(.))
+      abundances <- t(abundances)
+      colnames(abundances) <-dat %>%
+        select(contains(i),immucan_id) %>%
+        filter(complete.cases(.)) %>%
+        pull(immucan_id)
+    }
+    anno <- traits
+    
+    # test: differences in abundances for EGFR
+    as.data.frame(t(abundances)) %>%
+  mutate(immucan_id = rownames(as.data.frame(t(abundances)))) %>%
+  select(immucan_id,Tumor_HLADR_abundance__IMC1) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(simple_histology == "Adenocarcinoma")%>%
+  ggplot(aes(x = EGFR,y = log10(Tumor_HLADR_abundance__IMC1)))+
+  geom_boxplot()+
+  stat_compare_means()
+    
+    #
+    cur_mat <- cpm(abundances,prior.count = 1,log = TRUE)
+    library(ComplexHeatmap)
+    ComplexHeatmap::Heatmap(cur_mat, 
+        col = viridis::viridis(100),
+        column_split = (meta$EGFR))
+    
+    
+    meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
+    meta$histology_cond <- paste0(meta$simple_histology,"_",meta[,j])
+    Size <- factor(meta[,"histology_cond"])
+    meta$Size <- Size
+    
+    ####### test if the results are different if only use the adenocarcinoma and EGFR samples
+    meta <- meta[meta$histology_cond %in% c("Adenocarcinoma_FALSE","Adenocarcinoma_TRUE"),]
+    abundances <- abundances[,colnames(abundances) %in% meta$immucan_id]
+    
+    # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
+    y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
+
+    
+    design <- model.matrix(~EGFR,data = y.ab$samples)
+    colnames(design) <- levels(y.ab$samples$group)
+    # we do not fit a trend 
+    y.ab <- estimateDisp(y.ab, design, trend.method = "none")
+    y.ab$common.dispersion
+    #plotBCV(y.ab,pch = 5)
+    
+    # subset design matrix for Adenocarcinoma
+    design <- design[,c("Adenocarcinoma_FALSE","Adenocarcinoma_TRUE")]
+    
+    fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
+    fit_LUAD <- glmLRT(glmfit = fit.ab,contrast = c(-1,1))
+
+    res_list <-list(fit_LUAD)
+    cur_list <- lapply(as.list(res_list),function(x){
+      sig_dat <- x$table
+      sig_dat$celltypes <- rownames(sig_dat)
+      sig_dat$cond <- j
+      sig_dat$comparison <- grep("Adeno|Squamous",x$comparison,value = TRUE)
+      return(sig_dat)
+    })
+
+    p.list[[paste0(i,"_",j)]] <- do.call(rbind,cur_list)
+    
+  }
+}
+
+# define fold change cutoff for plotting
+cutoff <- 0
+
+cur_dat <- do.call(rbind,p.list)
+cur_dat <- cur_dat %>%
+  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
+         cond = paste0(cond, "_mut")) %>%
+  group_by(tech, cond) %>%
+  mutate(FDR = p.adjust(PValue,method = "BH"),
+         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
+         sig = ifelse(FDR < 0.1 & abs(logFC) > cutoff,TRUE,FALSE),
+         direction = ifelse(logFC > 0 ,"up", "down"),
+         ct_name = gsub("_abundance","",str_split_i(celltypes,"__",1)))
+  
+cur_dat_LUAD <- cur_dat 
+to_show_LUAD <- cur_dat %>%
+  filter(sig == TRUE) %>%
+  pull(celltypes)
+
+cur_dat <- cur_dat %>%
+  filter(celltypes %in% to_show_LUAD) %>%
+  mutate(celltypes = gsub("_abundance","",celltypes))
+
+
+# spatial cluster renaming
+cur_dat <- cur_dat %>%
+  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
+
+# get max and min fold change values
+max_up <- max(cur_dat$logFC)+1
+min_down <- min(cur_dat$logFC)-1
+
+# plot the data
+p <- cur_dat %>%
+  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
+  #geom_tile(aes(fill = sig))+
+  #theme_bw()+
+  geom_point()+
+  theme_bw()+
+  scale_colour_gradientn(colours = c("blue","white","red"), 
+                         values = rescale(c(round(min_down),0,round(max_up))),
+                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
+  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+  #theme_bw()+
+  #scale_color_gradient(low = "white",   high = "red")+
+  scale_size(range = c(1,8))+
+  new_scale_colour() +
+  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
+  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 20),
+        xis.text.y = element_text(size = 20),
+        legend.text = element_text(size = 20),
+        legend.title = element_text(size = 20),
+        legend.location = "plot",
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())+
+  coord_flip()
+  #theme(plot.margin = unit(c(5, 2.5, 2.5, 2.5), "cm"))
+p
+```
+
+
+```{r}
+abundances <- dat %>%
+        select(contains("IMC1")) %>%
+        filter(complete.cases(.))
+abundances <- t(abundances)
+colnames(abundances) <-dat %>%
+  select(contains(i),immucan_id) %>%
+  filter(complete.cases(.)) %>%
+  pull(immucan_id)
+
+anno <- traits
+
+# annotation
+meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
+meta$histology_cond <- paste0(meta$simple_histology,"_",meta[,j])
+Size <- factor(meta[,"histology_cond"])
+meta$Size <- Size
+
+####### test if the results are different if only use the adenocarcinoma and EGFR samples
+meta <- meta[meta$histology_cond %in% c("Adenocarcinoma_FALSE","Adenocarcinoma_TRUE"),]
+abundances <- abundances[,colnames(abundances) %in% meta$immucan_id]
+meta$EGFR <- ifelse(meta$EGFR == TRUE,"mut", "wt")
+# here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
+y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
+
+
+design <- model.matrix(~meta$EGFR)
+colnames(design) <- c("intercept","wt")
+# we do not fit a trend 
+y.ab <- estimateDisp(y.ab, design, trend.method = "none")
+y.ab$common.dispersion
+#plotBCV(y.ab,pch = 5)
+
+fit <- glmQLFit(y.ab, design)
+
+res <- glmQLFTest(fit,coef = "wt")
+
+sig_dat <- res$table
+sig_dat$celltypes <- rownames(sig_dat)
+sig_dat$cond <- res$comparison
+
+cur_dat <- sig_dat
+cur_dat <- cur_dat %>%
+  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
+         cond = paste0(cond, "_mut")) %>%
+  group_by(tech, cond) %>%
+  mutate(FDR = p.adjust(PValue,method = "BH"),
+         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
+         sig = ifelse(FDR < 0.1 & abs(logFC) > cutoff,TRUE,FALSE),
+         direction = ifelse(logFC > 0 ,"up", "down"),
+         ct_name = gsub("_abundance","",str_split_i(celltypes,"__",1)))
+  
+cur_dat_LUAD <- cur_dat 
+to_show_LUAD <- cur_dat %>%
+  filter(sig == TRUE) %>%
+  pull(celltypes)
+
+cur_dat <- cur_dat %>%
+  filter(celltypes %in% to_show_LUAD) %>%
+  mutate(celltypes = gsub("_abundance","",celltypes))
+
+
+# spatial cluster renaming
+cur_dat <- cur_dat %>%
+  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
+
+# get max and min fold change values
+max_up <- max(cur_dat$logFC)+1
+min_down <- min(cur_dat$logFC)-1
+
+# plot the data
+p <- cur_dat %>%
+  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
+  #geom_tile(aes(fill = sig))+
+  #theme_bw()+
+  geom_point()+
+  theme_bw()+
+  scale_colour_gradientn(colours = c("blue","white","red"), 
+                         values = rescale(c(round(min_down),0,round(max_up))),
+                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
+  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+  #theme_bw()+
+  #scale_color_gradient(low = "white",   high = "red")+
+  scale_size(range = c(1,8))+
+  new_scale_colour() +
+  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
+  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 20),
+        xis.text.y = element_text(size = 20),
+        legend.text = element_text(size = 20),
+        legend.title = element_text(size = 20),
+        legend.location = "plot",
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())+
+  coord_flip()
+  #theme(plot.margin = unit(c(5, 2.5, 2.5, 2.5), "cm"))
+p
+
+```
+
+```{r, fig.width=25, fig.height=10}
+
+dens_dat %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  ggplot(aes(x = name,y = log2(value), fill = EGFR))+
+  geom_boxplot()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 1))
+  stat_compare_means(method = "t.test")
+```
+

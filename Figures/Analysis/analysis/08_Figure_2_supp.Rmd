@@ -86,8 +86,7 @@ for (i in c(data_type,"cello1","cello2")) {
         filter(complete.cases(.)) %>%
         pull(immucan_id)
     }
-    anno <- traits %>%
-      filter(!is.na(.data[["TMB_score"]]))
+    anno <- traits
     
     # remove patients without TMB info from the abundance data
     abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
@@ -183,6 +182,236 @@ ggsave(filename = paste0(out_folder,"S2B_diff_abundance_stage.pdf"),
        height =4)
 ```
 
+
+# stages for LUAD  only
+here we will estimate the dispersion across the whole data set and then do the linear model of count comparison only for the groups of interest.
+```{r, fig.height=8, fig.width=10}
+condition <- c("I","I","II")
+names(condition) <- c("stage_1_2","stage_1_3","stage_2_3")
+
+p.list <- list()
+for (i in c(data_type,"cello1","cello2")) {
+    
+    if(grepl("cello",i)){
+      abundances <- cello_dat %>%
+        select(contains(i))
+      abundances <- t(abundances)
+      colnames(abundances) <- cello_dat$immucan_id
+    } else {
+      abundances <- dat %>%
+        select(contains(i)) %>%
+        filter(complete.cases(.))
+      abundances <- t(abundances)
+      colnames(abundances) <- dat %>%
+        select(contains(i),immucan_id) %>%
+        filter(complete.cases(.)) %>%
+        pull(immucan_id)
+    }
+    anno <- traits %>%
+      filter(simple_histology == "Adenocarcinoma")
+    
+    # remove patients without TMB info from the abundance data
+    abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
+  
+  meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
+  Size <- factor(meta[,"simple_stage"])
+  meta$Size <- Size
+  
+  # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
+  y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
+  design <- model.matrix(~0+group,data = y.ab$samples)
+  colnames(design) <- levels(y.ab$samples$group)
+  # we do not fit a trend 
+  y.ab <- estimateDisp(y.ab, design, trend.method = "none")
+  y.ab$common.dispersion
+  #plotBCV(y.ab,pch = 5)
+  
+  # we only compare the diff abundance for Adeno vs Sqam.
+  fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
+  
+  
+  fit_1_2 <- glmLRT(glmfit = fit.ab,contrast = c(-1,1,0,0))
+  fit_1_3 <- glmLRT(glmfit = fit.ab,contrast = c(-1,0,1,0))
+  fit_2_3 <- glmLRT(glmfit = fit.ab,contrast = c(0,-1,1,0))
+  res_list <- list(fit_1_2,fit_1_3,fit_2_3)
+  
+  cur_list <- lapply(res_list,function(x){
+    sig_dat <- x$table
+    sig_dat$celltypes <- rownames(sig_dat)
+    sig_dat$comparison <- gsub("Size","",x$comparison)
+    return(sig_dat)
+  })
+  
+  p.list[[i]] <- do.call(rbind,cur_list)
+}   
+
+cur_dat <- do.call(rbind,p.list)
+cur_dat <- cur_dat %>%
+  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
+         cond = ifelse(comparison == "-1*I 1*II","stage_2_over_1","stage_3_over_1"),
+         cond = ifelse(comparison == "-1*II 1*III","stage_3_over_2",cond)) %>%
+  group_by(tech) %>%
+  mutate(FDR = p.adjust(PValue,method = "BH"),
+         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
+         sig = ifelse(PValue < 0.05 ,TRUE,FALSE),
+         direction = ifelse(logFC > 0 ,"up", "down"),
+         ct_name = gsub("_abundance","",str_split_i(celltypes,"__",1)))
+
+to_show <- cur_dat %>%
+  filter(sig == TRUE) %>%
+  pull(ct_name)
+# add the one from the linear model of densities to the plot
+to_show <- c(to_show,"CD4","CD8","CD8_GATA3_BCL2","CD8_Ki67","Vasculature","Tumor_IDO1")
+
+cur_dat <- cur_dat %>%
+  filter(ct_name %in% to_show) %>%
+  mutate(celltypes = gsub("_abundance","",celltypes))
+
+## spatial cluster renaming
+cur_dat <- cur_dat %>%
+  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
+
+# get max and min fold change values
+max_up <- max(cur_dat$logFC)+1
+min_down <- min(cur_dat$logFC)-1
+
+# plot the data
+p <- cur_dat %>%
+  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
+  geom_point()+
+  theme_bw()+
+  scale_colour_gradientn(colours = c("blue","white","red"), 
+                         values = rescale(c(round(min_down),0,round(max_up))),
+                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
+  scale_size(range = c(1,4))+
+  new_scale_colour() +
+  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =1)+
+  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "p-value < 0.1")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
+        axis.text.y = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        axis.title.y = element_blank(),
+        plot.margin = unit(c(.1, .5, .5, .5), "cm"),
+        legend.position = "bottom")+
+  labs(x = "Feature")
+p
+```
+
+# stages for LUSC  only
+here we will estimate the dispersion across the whole data set and then do the linear model of count comparison only for the groups of interest.
+```{r, fig.height=8, fig.width=10}
+condition <- c("I","I","II")
+names(condition) <- c("stage_1_2","stage_1_3","stage_2_3")
+
+p.list <- list()
+for (i in c(data_type,"cello1","cello2")) {
+    
+    if(grepl("cello",i)){
+      abundances <- cello_dat %>%
+        select(contains(i))
+      abundances <- t(abundances)
+      colnames(abundances) <- cello_dat$immucan_id
+    } else {
+      abundances <- dat %>%
+        select(contains(i)) %>%
+        filter(complete.cases(.))
+      abundances <- t(abundances)
+      colnames(abundances) <- dat %>%
+        select(contains(i),immucan_id) %>%
+        filter(complete.cases(.)) %>%
+        pull(immucan_id)
+    }
+    anno <- traits %>%
+      filter(simple_histology == "Squamous cell carcinoma")
+    
+    # remove patients without TMB info from the abundance data
+    abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
+  
+  meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
+  Size <- factor(meta[,"simple_stage"])
+  meta$Size <- Size
+  
+  # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
+  y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
+  design <- model.matrix(~0+group,data = y.ab$samples)
+  colnames(design) <- levels(y.ab$samples$group)
+  # we do not fit a trend 
+  y.ab <- estimateDisp(y.ab, design, trend.method = "none")
+  y.ab$common.dispersion
+  #plotBCV(y.ab,pch = 5)
+  
+  # we only compare the diff abundance for Adeno vs Sqam.
+  fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
+  
+  
+  fit_1_2 <- glmLRT(glmfit = fit.ab,contrast = c(-1,1,0,0))
+  fit_1_3 <- glmLRT(glmfit = fit.ab,contrast = c(-1,0,1,0))
+  fit_2_3 <- glmLRT(glmfit = fit.ab,contrast = c(0,-1,1,0))
+  res_list <- list(fit_1_2,fit_1_3,fit_2_3)
+  
+  cur_list <- lapply(res_list,function(x){
+    sig_dat <- x$table
+    sig_dat$celltypes <- rownames(sig_dat)
+    sig_dat$comparison <- gsub("Size","",x$comparison)
+    return(sig_dat)
+  })
+  
+  p.list[[i]] <- do.call(rbind,cur_list)
+}   
+
+cur_dat <- do.call(rbind,p.list)
+cur_dat <- cur_dat %>%
+  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
+         cond = ifelse(comparison == "-1*I 1*II","stage_2_over_1","stage_3_over_1"),
+         cond = ifelse(comparison == "-1*II 1*III","stage_3_over_2",cond)) %>%
+  group_by(tech) %>%
+  mutate(FDR = p.adjust(PValue,method = "BH"),
+         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
+         sig = ifelse(PValue < 0.1 ,TRUE,FALSE),
+         direction = ifelse(logFC > 0 ,"up", "down"),
+         ct_name = gsub("_abundance","",str_split_i(celltypes,"__",1)))
+
+to_show <- cur_dat %>%
+  filter(sig_overall == TRUE) %>%
+  pull(ct_name)
+# add the one from the linear model of densities to the plot
+to_show <- c(to_show,"CD4","CD8","CD8_GATA3_BCL2","CD8_Ki67","Vasculature","Tumor_IDO1")
+
+cur_dat <- cur_dat %>%
+  filter(ct_name %in% to_show) %>%
+  mutate(celltypes = gsub("_abundance","",celltypes))
+
+## spatial cluster renaming
+cur_dat <- cur_dat %>%
+  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
+
+# get max and min fold change values
+max_up <- max(cur_dat$logFC)+1
+min_down <- min(cur_dat$logFC)-1
+
+# plot the data
+p <- cur_dat %>%
+  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
+  geom_point()+
+  theme_bw()+
+  scale_colour_gradientn(colours = c("blue","white","red"), 
+                         values = rescale(c(round(min_down),0,round(max_up))),
+                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
+  scale_size(range = c(1,4))+
+  new_scale_colour() +
+  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =1)+
+  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "p-value < 0.1")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
+        axis.text.y = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        axis.title.y = element_blank(),
+        plot.margin = unit(c(.1, .5, .5, .5), "cm"),
+        legend.position = "bottom")+
+  labs(x = "Feature")
+p
+```
 
 # S2C stage linear regression CD8 and CD4
 
