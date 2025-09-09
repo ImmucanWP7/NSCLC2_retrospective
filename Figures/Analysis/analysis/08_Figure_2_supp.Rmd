@@ -413,11 +413,13 @@ p <- cur_dat %>%
 p
 ```
 
-# S2C stage linear regression CD8 and CD4
 
-```{r, fig.height=10, fig.width=30}
+# S2C linear regression for stage for LUSC
+
+```{r}
 library(purrr)
 library(broom)
+
 sigs <- dens_dat %>%
   pivot_longer(-immucan_id) %>%
     left_join(clin_dat,"immucan_id") %>%
@@ -439,64 +441,7 @@ sigs <- dens_dat %>%
   mutate(tech = str_split_i(name,"__",2)) %>%
   group_by(tech) %>%
   mutate(FDR = p.adjust(p = p.value,method = "BH"),
-         sig = ifelse(FDR < 0.2,TRUE, FALSE))
-
-summary_dat <- sigs %>%
-  filter(sig == TRUE) %>%
-  #filter(grepl("CD8_GATA3_BCL2|^CD8_density|CD8_Ki67_density|CD8_TCF7_density|Tumor_IDO1",name)) %>%
-  mutate(y_position = 1750,
-         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
-  ungroup() %>%
-  as.data.frame()
-
-p1 <- dens_dat %>%
-  pivot_longer(-immucan_id) %>%
-  mutate(tech = str_split_i(name,"__",2)) %>%
-  left_join(clin_dat,"immucan_id") %>%
-  filter(simple_histology == "Squamous cell carcinoma") %>%
-  select(immucan_id,name, value,simple_stage, tech) %>%
-  mutate(stage = ifelse(simple_stage == "I",1,NA),
-         stage = ifelse(simple_stage == "II",2,stage),
-         stage = ifelse(simple_stage == "III",3,stage),
-         stage = ifelse(simple_stage == "IV",4,stage),
-         stage = as.numeric(as.factor(stage)),
-         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
-  filter(name %in% summary_dat$name,
-         stage != 4) %>%
-  ggplot(aes(x = name,y = value,fill=as.factor(stage))) +
-  geom_boxplot(outliers = FALSE)+
-  geom_jitter(position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
-  theme_bw()+
-  theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust =1),
-        axis.title = element_blank())+
-  geom_text(data = summary_dat, aes(x = name,y=y_position,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE)+
-  coord_cartesian(ylim = c(0,1750))+
-  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
-  ggtitle(label = "LUSC")
-p1  
-
-sigs <- dens_dat %>%
-  pivot_longer(-immucan_id) %>%
-    left_join(clin_dat,"immucan_id") %>%
-  filter(simple_histology == "Adenocarcinoma") %>%
-  select(immucan_id,name, value,simple_stage) %>%
-  mutate(stage = ifelse(simple_stage == "I",1,NA),
-         stage = ifelse(simple_stage == "II",2,stage),
-         stage = ifelse(simple_stage == "III",3,stage),
-         stage = ifelse(simple_stage == "IV",4,stage),
-         stage = as.numeric(as.factor(stage))) %>%
-  filter(stage != 4) %>%
-  group_by(name) %>%
-  nest() %>%
-  mutate(model = map(data, ~ lm(value ~ stage, data = .x)),
-         summary = map(model, broom::tidy)) %>%
-  select(name, summary) %>%
-  unnest(c(summary)) %>%
-  filter(term == "stage") %>%
-  mutate(tech = str_split_i(name,"__",2)) %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(p = p.value,method = "BH"),
-         sig = ifelse(FDR < 0.2,TRUE, FALSE))
+         sig = ifelse(p.value < 0.05,TRUE, FALSE))
 
 summary_dat <- sigs %>%
   filter(sig == TRUE) %>%
@@ -510,7 +455,7 @@ p2 <- dens_dat %>%
   pivot_longer(-immucan_id) %>%
   mutate(tech = str_split_i(name,"__",2)) %>%
   left_join(clin_dat,"immucan_id") %>%
-  filter(simple_histology == "Adenocarcinoma") %>%
+  filter(simple_histology == "Squamous cell carcinoma") %>%
   select(immucan_id,name, value,simple_stage, tech) %>%
   mutate(stage = ifelse(simple_stage == "I",1,NA),
          stage = ifelse(simple_stage == "II",2,stage),
@@ -520,23 +465,26 @@ p2 <- dens_dat %>%
          name = gsub(pattern = "density_",replacement = "",x = name)) %>%
   filter(name %in% summary_dat$name,
          stage != 4) %>%
-  ggplot(aes(x = name,y = value,fill=as.factor(stage))) +
+  ggplot(aes(x = name,y = log10(value+1),fill=as.factor(stage))) +
   geom_boxplot(outliers = FALSE)+
   geom_jitter(position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
   theme_bw()+
   theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust = 1),
-        axis.title = element_blank())+
-  geom_text(data = summary_dat, aes(x = name,y=y_position,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE)+
-  coord_cartesian(ylim = c(0,1000))+
+        axis.title.x = element_blank())+
+  guides(fill=guide_legend(title="Stage"))+
+  geom_text(data = summary_dat, aes(x = name,y=4,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE)+
+  coord_cartesian(ylim = c(0,4))+
   scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
-  ggtitle(label = "LUAD")
+  ggtitle(label = "LUSC")+
+  labs(y = expression("Log10(density) [mm"^2*"]"))
 
-plot_grid(p1,p2,nrow = 1, rel_widths = c(2,1.5))
-ggsave(filename = paste0(out_folder,"S2C_linear_model_CD8_CD4_across_stages_split_by_histology.pdf"),
+p2
+
+ggsave(filename = paste0(out_folder,"S2C_linear_model_cell_type_densitie_LUSC_for_stages.pdf"),
        plot = last_plot(),
        device = "pdf",
-       width = 20,
-       height = 4.5)
+       width = 15,
+       height = 3.75)
 ```
 
 
@@ -759,11 +707,14 @@ p <- ggplot(data_to_plot, aes(x = smoking_status, y = feature, fill=smoking_stat
         plot.subtitle = element_text(size = 14, color = "black"),
         axis.line = element_line(color = "black"),
         axis.ticks = element_line(color = "black"),
-        legend.text = element_text(size = 14)) +
+        legend.text = element_text(size = 14),
+        legend.position = "bottom",
+        legend.location = "plot") +
   stat_compare_means(comparisons = list(c("Non-smoker", "Ex-smoker"),
                                         c("Non-smoker", "Current smoker"),
                                         c("Ex-smoker", "Current smoker")),
-                     method = "wilcox.test", label = "p.format",size = 5)
+                     method = "wilcox.test", label = "p.format",size = 5,label.y = c(1200, 1400, 1600))+
+  coord_cartesian(ylim = c(0,1800))
 
 p
 ggsave(filename = paste0(out_folder,"S2F_mutation_signatures_for_smoking.pdf"),
@@ -800,7 +751,10 @@ p <- cur_dat %>%
         axis.title.x = element_blank(),
         axis.title.y = element_text(size = 14),
         legend.text = element_text(size = 14),
-        strip.text.x = element_text(size = 14))
+        strip.text.x = element_text(size = 14),
+        legend.position = "bottom",
+        legend.location = "plot")+
+  ylab("Pathway score")
 
 p
 
@@ -808,5 +762,5 @@ ggsave(filename = paste0(out_folder,"S2G_inflammation_score_for_smoking_status.p
        plot = p,
        device = "pdf",
        width = 7,
-       height = 6)
+       height = 7)
 ```

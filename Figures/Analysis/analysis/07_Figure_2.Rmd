@@ -453,8 +453,8 @@ plotPixels(image = cur_images,
 
 
 
-# 2E linear model densities for stages 
-```{r, fig.height=10, fig.width=10}
+# 2E linear model densities for stages - old
+```{r, fig.height=10, fig.width=20}
 library(purrr)
 library(broom)
 sigs <- dens_dat %>%
@@ -529,11 +529,79 @@ p <- dens_dat %>%
        fill = "Stage")
 
 p 
-ggsave(filename = paste0(out_folder,"2E_linear_model_densities_for_stages.pdf"),
-       plot = p,
-       device = "pdf",
-       width = 8,
-       height = 8)
+
+```
+
+# 2E linear model densities for stages - LUAD only
+
+```{r, fig.height=10, fig.width=30}
+library(purrr)
+library(broom)
+
+sigs <- dens_dat %>%
+  pivot_longer(-immucan_id) %>%
+    left_join(clin_dat,"immucan_id") %>%
+  filter(simple_histology == "Adenocarcinoma") %>%
+  select(immucan_id,name, value,simple_stage) %>%
+  mutate(stage = ifelse(simple_stage == "I",1,NA),
+         stage = ifelse(simple_stage == "II",2,stage),
+         stage = ifelse(simple_stage == "III",3,stage),
+         stage = ifelse(simple_stage == "IV",4,stage),
+         stage = as.numeric(as.factor(stage))) %>%
+  filter(stage != 4) %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(model = map(data, ~ lm(value ~ stage, data = .x)),
+         summary = map(model, broom::tidy)) %>%
+  select(name, summary) %>%
+  unnest(c(summary)) %>%
+  filter(term == "stage") %>%
+  mutate(tech = str_split_i(name,"__",2)) %>%
+  group_by(tech) %>%
+  mutate(FDR = p.adjust(p = p.value,method = "BH"),
+         sig = ifelse(p.value < 0.05,TRUE, FALSE))
+
+summary_dat <- sigs %>%
+  filter(sig == TRUE) %>%
+  #filter(grepl("CD8_GATA3_BCL2|^CD8_density|CD8_Ki67_density|CD8_TCF7_density|Tumor_IDO1",name)) %>%
+  mutate(y_position = 1000,
+         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
+  ungroup() %>%
+  as.data.frame()
+
+p2 <- dens_dat %>%
+  pivot_longer(-immucan_id) %>%
+  mutate(tech = str_split_i(name,"__",2)) %>%
+  left_join(clin_dat,"immucan_id") %>%
+  filter(simple_histology == "Adenocarcinoma") %>%
+  select(immucan_id,name, value,simple_stage, tech) %>%
+  mutate(stage = ifelse(simple_stage == "I",1,NA),
+         stage = ifelse(simple_stage == "II",2,stage),
+         stage = ifelse(simple_stage == "III",3,stage),
+         stage = ifelse(simple_stage == "IV",4,stage),
+         stage = as.numeric(as.factor(stage)),
+         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
+  filter(name %in% summary_dat$name,
+         stage != 4) %>%
+  ggplot(aes(x = name,y = log10(value+1),fill=as.factor(stage))) +
+  geom_boxplot(outliers = FALSE)+
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust = 1),
+        axis.title = element_blank())+
+  guides(fill=guide_legend(title="Stage"))+
+  geom_text(data = summary_dat, aes(x = name,y=4.2,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE)+
+  coord_cartesian(ylim = c(0,4.2))+
+  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
+  ggtitle(label = "LUAD")
+  
+p2
+
+ggsave(filename = paste0(out_folder,"2E_linear_model_densities_for_stages_LUAD.pdf"),
+      plot = p2,
+      device = "pdf",
+      width = 14,
+      height = 4)
 ```
 
 ## fractions in tumor and stroma across stages
@@ -780,10 +848,10 @@ p <- cur_dat %>%
     limits = c(round(min_down), round(max_up)),
     guide = guide_colorbar(
       title = "logFC",                   
-      barwidth = 9,                     
-      barheight = 1,                   
-      title.theme = element_text(size = 16),
-      label.theme = element_text(size = 14)
+      #barwidth = 2,                     
+      #barheight = 1,                   
+      title.theme = element_text(size = 12),
+      label.theme = element_text(size = 12)
     )
   )+
   scale_size(range = c(1,4))+
@@ -792,18 +860,19 @@ p <- cur_dat %>%
   scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
   theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 12),
         axis.text.y = element_text(size = 12),
-        legend.text = element_text(size = 15),
-        legend.title = element_text(size = 15),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12),
         axis.title.y = element_blank(),
         axis.title.x = element_blank(),
-        legend.position =  "bottom")
+        legend.location = "plot",
+        legend.position = "right")
 p
 
 ggsave(filename = paste0(out_folder,"2F_diff_abundance_smoking.pdf"),
        plot = p,
        device = "pdf",
-       width = 14,
-       height = 5)
+       width = 16,
+       height = 4)
 ```
 
 

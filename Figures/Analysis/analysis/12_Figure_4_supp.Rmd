@@ -197,14 +197,210 @@ p <- cur_dat %>%
         axis.title.x = element_blank(),
         axis.title.y = element_blank())
 p
-ggsave(filename = paste0(out_folder,"S4B_driver_mutation_enrichment_in_clinical.pdf"),
-       plot = p,
-       device = "pdf",
-       width = 4.5,
-       height = 5)
+
+```
+
+# S4B enrichment of clinical in LUAD
+```{r, fig.height=8}
+cur_traits <- traits %>% select("TPS_score", "TMB_score","age_dicho", "gender","stage_1_2","stage_1_3","stage_2_3","never_vs_current_smoker",
+            "never_vs_Ex_smoker","current_vs_Ex_smoker", "N0_vs_Nx","M0_vs_Mx")
+condition <- c("negative", "low","low", "Female","I","I","II","Non-smoker","Non-smoker","Ex-smoker", "node_neg", "met_neg")
+
+names(condition) <- colnames(cur_traits)
+plots_list <- list()
+cur_traits <- traits %>% filter(simple_histology == "Adenocarcinoma")
+for(j in c("TP53","KRAS","EGFR","STK11")){
+  p.list <- list()
+  l.list <- list()
+  for (i in names(condition)) {
+    x <- factor(cur_traits[[j]])
+    x <- relevel(x, ref = "FALSE")
+    
+    y <- factor(unlist(cur_traits[,i]))
+    y <- relevel(y, ref = condition[i])
+    
+    p.list[[i]] <- fisher.test(table(x, y))
+    l.list[[i]] <- c(levels(y)[1])
+  }
+  
+  out <- data.frame(feature = names(p.list),
+                    p.value = unlist(lapply(p.list, function(x){
+                      x$p.value})),
+                    odds_ratio = unlist(lapply(p.list, function(x){
+                      x$estimate})),
+                    reference = unlist(l.list))
+  
+  
+  # generate annotation vector:
+  anno_vec <- c("TPSpos_vs_TPSneg","TMBhigh_vs_TMBlow","HighAge_vs_lowAge","Male_vs_Female","StageII_vs_I","StageIII_vs_I","StageIII_vs_II","Smoker_vs_neverSmoker","formerSmoker_vs_neverSmoker","Smoker_vs_formerSmoker","NodePos_vs_NodeNeg","MetPos_Vs_MetNeg")
+  out$annotation = anno_vec
+  out[,"mutation"] <- paste0(j,"mut")
+  plots_list[[j]]<- out %>%
+    mutate(FDR = p.adjust(p.value,method = "BH"),
+           sig = ifelse(FDR < 0.1,TRUE, FALSE),
+           p.value = ifelse(is.infinite(odds_ratio),NA,p.value))
+}
+
+plots_list
+
+cur_dat <- do.call(rbind,plots_list)
+
+cur_dat_LUAD <- cur_dat %>%
+  mutate(odds_ratio = ifelse(odds_ratio == 0,0.01,odds_ratio),
+         odds_ratio = ifelse(is.infinite(odds_ratio),10,odds_ratio),
+         p.value = ifelse(is.na(p.value),min(cur_dat$p.value,na.rm = TRUE),p.value),
+         log_odds = log(odds_ratio))
+min_down <- min(cur_dat_LUAD$log_odds)
+max_up <- max(cur_dat_LUAD$log_odds)
+
+p <- cur_dat_LUAD %>%
+  ggplot(aes(x=mutation, y = annotation,col = log_odds, size= -log10(p.value)))+
+  #geom_tile(aes(fill = sig))+
+  #theme_bw()+
+  geom_point()+
+  theme_bw()+
+  #scale_colour_viridis_c()+
+  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+  #theme_bw()+
+  scale_colour_gradientn(colours = c("blue","white","red"), 
+                         values = rescale(c(round(min_down),0,round(max_up+1))),
+                         guide = "colorbar", limits=c(round(min_down),round(max_up+1)))+
+  scale_size(range = c(1,6))+
+  new_scale_colour() +
+  geom_point(shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.75)+
+  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
+        axis.text.y = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        plot.margin = unit(c(0.5, 0,0,0), "cm"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+p
+
+```
+
+# S4B enrichment of clinical in LUSC
+```{r, fig.height=8}
+cur_traits <- traits %>% select("TPS_score", "TMB_score","age_dicho", "gender","stage_1_2","stage_1_3","stage_2_3","current_vs_Ex_smoker", "N0_vs_Nx","M0_vs_Mx")
+condition <- c("negative", "low","low", "Female","I","I","II","Ex-smoker", "node_neg", "met_neg")
+
+names(condition) <- colnames(cur_traits)
+plots_list <- list()
+cur_traits <- traits %>% filter(simple_histology == "Squamous cell carcinoma")
+for(j in c("TP53","PIK3CA")){
+  p.list <- list()
+  l.list <- list()
+  for (i in names(condition)) {
+    x <- factor(cur_traits[[j]])
+    x <- relevel(x, ref = "FALSE")
+    
+    y <- factor(unlist(cur_traits[,i]))
+    y <- relevel(y, ref = condition[i])
+    
+    p.list[[i]] <- fisher.test(table(x, y))
+    l.list[[i]] <- c(levels(y)[1])
+  }
+  
+  out <- data.frame(feature = names(p.list),
+                    p.value = unlist(lapply(p.list, function(x){
+                      x$p.value})),
+                    odds_ratio = unlist(lapply(p.list, function(x){
+                      x$estimate})),
+                    reference = unlist(l.list))
+  
+  
+  # generate annotation vector:
+  anno_vec <- c("TPSpos_vs_TPSneg","TMBhigh_vs_TMBlow","HighAge_vs_lowAge","Male_vs_Female","StageII_vs_I","StageIII_vs_I","StageIII_vs_II","Smoker_vs_formerSmoker","NodePos_vs_NodeNeg","MetPos_Vs_MetNeg")
+  out$annotation = anno_vec
+  out[,"mutation"] <- paste0(j,"mut")
+  plots_list[[j]]<- out %>%
+    mutate(FDR = p.adjust(p.value,method = "BH"),
+           sig = ifelse(FDR < 0.1,TRUE, FALSE),
+           p.value = ifelse(is.infinite(odds_ratio),NA,p.value))
+}
+
+plots_list
+
+cur_dat <- do.call(rbind,plots_list)
+
+cur_dat_LUSC <- cur_dat %>%
+  mutate(odds_ratio = ifelse(odds_ratio == 0,0.01,odds_ratio),
+         odds_ratio = ifelse(is.infinite(odds_ratio),10,odds_ratio),
+         p.value = ifelse(is.na(p.value),min(cur_dat$p.value,na.rm = TRUE),p.value),
+         log_odds = log(odds_ratio))
+min_down <- min(cur_dat_LUSC$log_odds)
+max_up <- max(cur_dat_LUSC$log_odds)
+
+p <- cur_dat_LUSC %>%
+  ggplot(aes(x=mutation, y = annotation,col = log_odds, size= -log10(p.value)))+
+  #geom_tile(aes(fill = sig))+
+  #theme_bw()+
+  geom_point()+
+  theme_bw()+
+  #scale_colour_viridis_c()+
+  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+  #theme_bw()+
+  scale_colour_gradientn(colours = c("blue","white","red"), 
+                         values = rescale(c(round(min_down),0,round(max_up+1))),
+                         guide = "colorbar", limits=c(round(min_down),round(max_up+1)))+
+  scale_size(range = c(1,6))+
+  new_scale_colour() +
+  geom_point(shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.75)+
+  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
+        axis.text.y = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        plot.margin = unit(c(0.5, 0,0,0), "cm"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+p
+
 ```
 
 
+# S4B LUAD and LUSC together
+
+```{r}
+cur_dat_LUAD$histology <- "LUAD"
+cur_dat_LUSC$histology <- "LUSC"
+
+cur_dat <- rbind(cur_dat_LUAD,cur_dat_LUSC)
+
+cur_dat <- cur_dat %>%
+  mutate(mutation = paste0(histology,"_",mutation),
+         sig_P = ifelse(p.value < 0.05, TRUE, FALSE))
+p <- cur_dat %>%
+  ggplot(aes(x=mutation, y = annotation,col = log_odds, size= -log10(p.value)))+
+  geom_point()+
+  theme_bw()+
+  scale_colour_gradientn(colours = c("blue","white","red"), 
+                         values = rescale(c(round(min_down),0,round(max_up+1))),
+                         guide = "colorbar", limits=c(round(min_down),round(max_up+1)))+
+  scale_size(range = c(1,6))+
+  new_scale_colour() +
+  #geom_point(data = cur_dat %>% filter(sig_P == TRUE),shape = 3,aes(size = -log10(p.value), col = sig_P), stroke =1.75)+
+  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.75)+
+  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
+        axis.text.y = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        plot.margin = unit(c(0.5, 0,0,0), "cm"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.location = "plot")
+
+p
+ggsave(filename = paste0(out_folder,"S4B_driver_mutation_enrichment_in_clinical.pdf"),
+       plot = p,
+       device = "pdf",
+       width = 5,
+       height = 5)
+```
 
 # S4C mean expression of markers across cell types and driver mutations
 ```{r}
