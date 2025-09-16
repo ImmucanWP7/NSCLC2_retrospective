@@ -13,6 +13,7 @@ knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(ggplot2)
 library(ggnewscale)
+library(SingleCellExperiment)
 ```
 
 ```{r}
@@ -165,9 +166,109 @@ ggsave(plot = p,
        device = "pdf",
        path = out_folder,
        width = 7,
-       height = 5)
+       height = 4.5)
 ```
 
+# S1C cell type heatmap panel 2 
+
+## load data
+```{r}
+sce2 <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/sce.rds"))
+```
+
+
+```{r, fig.height=7, fig.width=20}
+library(ComplexHeatmap)
+dat <- as.data.frame(colData(sce2))
+
+use_channel <- rownames(sce2)[!grepl("DNA|Histone", rownames(sce2))]
+mean_sce <- scater::aggregateAcrossCells(sce2,
+                                 ids = sce2$celltypes,
+                                 statistics = "mean",
+                                 use.assay.type = "exprs",
+                                 subset.row = use_channel)
+
+assay(mean_sce,"zscore") <- t(scale(t(assay(mean_sce,"exprs")),center = TRUE,scale = TRUE))
+
+# generate marker classes for visualization
+markers <- rownames(mean_sce)
+marker_type <- c("cell identity","cell identity","cell identity","cell identity","functional","cell identity","functional","cell identity","cell identity","functional","cell identity","cell identity","functional","cell identity","cell identity","cell identity","functional","functional","functional","functional","functional","cell identity","functional","cell identity","functional","cell identity","functional","functional","functional","cell identity","cell identity","functional","functional","cell identity","functional","functional","cell identity","functional","cell identity","cell identity","cell identity")
+names(markers) <- marker_type
+rowData(mean_sce)$marker_type <- marker_type
+
+row_anno <- as.data.frame(colData(mean_sce)) %>%
+  select(ids, ncells)
+colnames(row_anno) <- c("CellType","ncells")
+col_list <- list(CellType = metadata(sce2)$colour_vectors$cell_types)
+pie(rep(1,length(row_anno$CellType)),col=col_list$CellType, labels = names(col_list$CellType))
+
+
+heatmap_body <- t(assay(mean_sce,"zscore"))
+
+#colnames(heatmap_body) <- c(colnames(heatmap_body)[1:26],"CAIX",colnames(heatmap_body)[28:37])
+p <- Heatmap((heatmap_body),
+        name = "exprs",
+        clustering_method_rows = "ward.D2",
+        clustering_method_columns = "ward.D2",
+        column_split = rowData(mean_sce)$marker_type,
+        column_title = c("cell identity markers","functional markers"))+
+  rowAnnotation(CellType = anno_simple(row_anno$CellType,border = TRUE,col =col_list$CellType))+
+  rowAnnotation(n_cells = anno_barplot((row_anno$ncells)))+
+  rowAnnotation(names = anno_text(row_anno$CellType,gp = gpar(fontsize=16)))
+
+p
+
+pdf(file =  paste0(out_folder,"cell_types_heatmap_panel_2.pdf"),width = 10, height = 6)
+p
+dev.off
+```
+
+# S1C cell type heatmap panel 2 
+
+```{r, fig.height=7, fig.width=20}
+dat <- as.data.frame(colData(sce2))
+
+use_channel <- rownames(sce2)[!grepl("DNA|Histone", rownames(sce2))]
+mean_sce <- scater::aggregateAcrossCells(sce2,
+                                 ids = sce2$celltypes_minor,
+                                 statistics = "mean",
+                                 use.assay.type = "exprs",
+                                 subset.row = use_channel)
+
+assay(mean_sce,"zscore") <- t(scale(t(assay(mean_sce,"exprs")),center = TRUE,scale = TRUE))
+
+# generate marker classes for visualization
+markers <- rownames(mean_sce)
+marker_type <- c("cell identity","cell identity","cell identity","cell identity","functional","cell identity","functional","cell identity","cell identity","functional","cell identity","cell identity","functional","cell identity","cell identity","cell identity","functional","functional","functional","functional","functional","cell identity","functional","cell identity","functional","cell identity","functional","functional","functional","cell identity","cell identity","functional","functional","cell identity","functional","functional","cell identity","functional","cell identity","cell identity","cell identity")
+names(markers) <- marker_type
+rowData(mean_sce)$marker_type <- marker_type
+
+row_anno <- as.data.frame(colData(mean_sce)) %>%
+  select(ids, ncells)
+colnames(row_anno) <- c("CellType","ncells")
+col_list <- list(CellType = metadata(sce2)$colour_vectors$celltypes_minor)
+pie(rep(1,length(row_anno$CellType)),col=col_list$CellType, labels = names(col_list$CellType))
+
+
+heatmap_body <- t(assay(mean_sce,"zscore"))
+
+#colnames(heatmap_body) <- c(colnames(heatmap_body)[1:26],"CAIX",colnames(heatmap_body)[28:37])
+p <- Heatmap((heatmap_body),
+        name = "exprs",
+        clustering_method_rows = "ward.D2",
+        clustering_method_columns = "ward.D2",
+        column_split = rowData(mean_sce)$marker_type,
+        column_title = c("cell identity markers","functional markers"))+
+  rowAnnotation(CellType = anno_simple(row_anno$CellType,border = TRUE,col =col_list$CellType))+
+  rowAnnotation(n_cells = anno_barplot((row_anno$ncells)))+
+  rowAnnotation(names = anno_text(row_anno$CellType,gp = gpar(fontsize=16)))
+
+p
+
+pdf(file =  paste0(out_folder,"S1C_cell_types_minor_heatmap_panel_2.pdf"),width = 10.5, height = 9)
+p
+dev.off
+```
 
 # S1C IF IMC correlation
 ## load data

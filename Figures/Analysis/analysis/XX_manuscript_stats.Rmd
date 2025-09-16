@@ -32,6 +32,12 @@ if (!dir.exists(out_folder)) {
 traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
 ```
 
+# median follow up
+```{r}
+median(traits$time_to_event)/365*12
+```
+
+
 ```{r}
 dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
 
