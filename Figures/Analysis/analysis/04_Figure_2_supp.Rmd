@@ -270,7 +270,139 @@ p
 dev.off
 ```
 
+# S1C IF IMC correlation
+## load data
+```{r}
+dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
 
+# remove columns that are positivity for each marker
+dens_dat <- dens_dat[,!grepl("all", colnames(dens_dat))]
+```
+
+## correlation plot
+```{r, fig.height=18, fig.width=16}
+# correlation
+cor <- psych::corr.test(dens_dat[,grepl("_IMC",colnames(dens_dat))],dens_dat[,grepl("__IF",colnames(dens_dat))],  method = "pearson",adjust = "BH")
+
+# format correlation matrix
+cur_dat <- as.data.frame(cor$r)
+cur_dat$variable <- rownames(cur_dat)
+dat_long <- reshape2::melt(cur_dat,id.vars="variable")
+colnames(dat_long) <- c("cell_types_IMC","cell_types_mIF","correlation")
+
+#get p-value matrix
+p_dat <- as_tibble(cor$p)
+p_dat$variable <- rownames(cur_dat)
+pdat_long <- reshape2::melt(p_dat,id.vars="variable")
+colnames(pdat_long) <- c("cell_types_IMC","cell_types_mIF","p_adj")
+
+dat_long$p_adj <- pdat_long$p_adj
+
+dat_long <- dat_long %>%
+  mutate(sig = ifelse(p_adj <= 0.001 & p_adj > 0.0001,0.001,p_adj))
+
+dat_long <- dat_long %>%
+  mutate(sig = case_when(p_adj <= 0.0001 ~ "< 0.0001",
+                         p_adj <= 0.001 & p_adj > 0.0001 ~ "< 0.001",
+                         p_adj <= 0.01 & p_adj > 0.001 ~ "< 0.01",
+                         p_adj <= 0.1 & p_adj > 0.01 ~ "< 0.1",
+                         p_adj >0.1 ~ "ns"))
+
+
+# plot
+cor_filter <- 0.4
+dat_long <- dat_long %>%
+   mutate(cell_types_IMC = gsub("_density","",cell_types_IMC),
+          cell_types_mIF = gsub("_density","",cell_types_mIF))
+
+
+p <-  dat_long %>%
+   filter(abs(correlation) > cor_filter) %>%
+   ggplot(aes(x=factor(cell_types_IMC, levels=sort(unique(dat_long$cell_types_IMC))),y = factor(cell_types_mIF, levels=sort(unique(dat_long$cell_types_mIF))),col = correlation, size= -log10(p_adj)))+
+    geom_point()+
+    theme_bw()+
+    scale_color_gradient2(low =  "blue",mid = "white",high = "red", name = expression("Pearson's" ~ rho))+
+    #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+    #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    #theme_bw()+
+    #scale_color_gradient(low = "white",   high = "red")+
+    scale_size(range = c(1,3))+
+    new_scale_colour() +
+    geom_point(data = dat_long %>% filter(sig <0.01, abs(correlation) > cor_filter),shape = 1,aes(size = -log10(p_adj), col = sig), stroke =1)+
+    scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
+    theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 6),
+          axis.text.y = element_text(size = 6),
+          legend.text = element_text(size = 6),
+          legend.title = element_text(size = 6),
+          #axis.title.x = element_blank(),
+          #axis.title.y = element_blank(),
+          legend.position = "bottom")+
+  labs(y = "IF cell types",x = "IMC cell types")
+p
+
+
+ggsave(plot = p, paste0(out_folder,"S1C_IMC_mIF_cell_type_correlation.pdf"),
+       device = "pdf", 
+       height = 7,
+       width = 6.5)
+```
+
+
+# mean correlation of matche cell types
+```{r, fig.height=18, fig.width=16}
+celltype_dens_dat <- dens_dat %>%
+  pivot_longer(-immucan_id) %>%
+  mutate(celltype = str_split_i(name,"_",1),
+         tech = str_split_i(name,"__",2)) %>%
+  group_by(immucan_id,celltype, tech) %>%
+  summarise(count = sum(value)) %>%
+  pivot_wider(id_cols = immucan_id,values_from = (count),names_from = c(celltype,tech),names_sep = "__") %>%
+  ungroup()
+
+
+# correlation
+cor <- psych::corr.test(celltype_dens_dat[,grepl("_IMC",colnames(celltype_dens_dat))],celltype_dens_dat[,grepl("__IF",colnames(celltype_dens_dat))],  method = "pearson",adjust = "BH")
+
+# format correlation matrix
+cur_dat <- as.data.frame(cor$r)
+cur_dat$variable <- rownames(cur_dat)
+dat_long <- reshape2::melt(cur_dat,id.vars="variable")
+colnames(dat_long) <- c("cell_types_IMC","cell_types_mIF","correlation")
+
+#get p-value matrix
+p_dat <- as_tibble(cor$p)
+p_dat$variable <- rownames(cur_dat)
+pdat_long <- reshape2::melt(p_dat,id.vars="variable")
+colnames(pdat_long) <- c("cell_types_IMC","cell_types_mIF","p_adj")
+
+dat_long$p_adj <- pdat_long$p_adj
+
+dat_long <- dat_long %>%
+  mutate(sig = ifelse(p_adj <= 0.001 & p_adj > 0.0001,0.001,p_adj))
+
+dat_long <- dat_long %>%
+  mutate(sig = case_when(p_adj <= 0.0001 ~ "< 0.0001",
+                         p_adj <= 0.001 & p_adj > 0.0001 ~ "< 0.001",
+                         p_adj <= 0.01 & p_adj > 0.001 ~ "< 0.01",
+                         p_adj <= 0.1 & p_adj > 0.01 ~ "< 0.1",
+                         p_adj >0.1 ~ "ns"))
+
+
+# plot
+cor_filter <- 0.4
+dat_long <- dat_long %>%
+   mutate(cell_types_IMC = gsub("_density","",cell_types_IMC),
+          cell_types_mIF = gsub("_density","",cell_types_mIF))
+
+
+dat_long %>%
+  mutate(IMC = str_split_i(cell_types_IMC,"_",1),
+         IF = str_split_i(cell_types_mIF,"_",1),
+          match = IMC == IF) %>%
+  filter(match == TRUE) %>% arrange(correlation) %>%
+  summarise(mean_cor = mean(abs(correlation)))
+
+```
 
 # S1D cellohood clusters heatmap panel 2
 excluding TLS images
