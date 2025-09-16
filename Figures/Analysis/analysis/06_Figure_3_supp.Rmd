@@ -29,7 +29,7 @@ library(ggnewscale)
 
 ```{r}
 mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
-out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_2_supp/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_3_supp/"
 
 if (!dir.exists(out_folder)) {
   dir.create(out_folder)
@@ -416,7 +416,7 @@ p
 
 # S2C linear regression for stage for LUSC
 
-```{r}
+```{r, fig.width=10}
 library(purrr)
 library(broom)
 
@@ -441,10 +441,11 @@ sigs <- dens_dat %>%
   mutate(tech = str_split_i(name,"__",2)) %>%
   group_by(tech) %>%
   mutate(FDR = p.adjust(p = p.value,method = "BH"),
-         sig = ifelse(p.value < 0.05,TRUE, FALSE))
+         sig_p = ifelse(p.value < 0.05,TRUE, FALSE),
+         sig_fdr = ifelse(FDR < 0.1,TRUE, FALSE))
 
 summary_dat <- sigs %>%
-  filter(sig == TRUE) %>%
+  filter(sig_p == TRUE) %>%
   #filter(grepl("CD8_GATA3_BCL2|^CD8_density|CD8_Ki67_density|CD8_TCF7_density|Tumor_IDO1",name)) %>%
   mutate(y_position = 1000,
          name = gsub(pattern = "density_",replacement = "",x = name)) %>%
@@ -467,16 +468,18 @@ p2 <- dens_dat %>%
          stage != 4) %>%
   ggplot(aes(x = name,y = log10(value+1),fill=as.factor(stage))) +
   geom_boxplot(outliers = FALSE)+
-  geom_jitter(position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
+  geom_jitter(aes(col = as.factor(stage)),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
+  scale_fill_manual(values = alpha(c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"),alpha = 0.6))+
+  scale_color_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
   theme_bw()+
   theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust = 1),
-        axis.title.x = element_blank())+
-  guides(fill=guide_legend(title="Stage"))+
-  geom_text(data = summary_dat, aes(x = name,y=4,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE)+
-  coord_cartesian(ylim = c(0,4))+
-  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
-  ggtitle(label = "LUSC")+
-  labs(y = expression("Log10(density) [mm"^2*"]"))
+        axis.title = element_blank())+
+  guides(fill=guide_legend(title="Stage"),
+         col=guide_legend(title="Stage"))+
+  geom_text(data = summary_dat, aes(x = name,y=4.2,label = paste0("fdr: ",sig_fdr)), inherit.aes = FALSE,size = 3)+
+  geom_text(data = summary_dat, aes(x = name,y=4.6,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE, size = 3)+
+  coord_cartesian(ylim = c(0,4.6))+
+  ggtitle(label = "LUSC")
 
 p2
 
@@ -487,6 +490,85 @@ ggsave(filename = paste0(out_folder,"S2C_linear_model_cell_type_densitie_LUSC_fo
        height = 3.75)
 ```
 
+## major cell types changes
+not in paper
+```{r, fig.width=10}
+library(purrr)
+library(broom)
+d1 <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/celltypes_density_dat_p1.csv"))
+d2 <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/celltypes_density_dat_p2.csv")) 
+
+colnames(d1) <- c("immucan_id",paste0(colnames(d1)[-1],"__IMC1"))
+colnames(d2) <- c("immucan_id",paste0(colnames(d2)[-1],"__IMC2"))
+d1
+d2
+
+dens_dat <- left_join(d1,d2,"immucan_id")
+
+sigs <- dens_dat %>%
+  pivot_longer(-immucan_id) %>%
+    left_join(clin_dat,"immucan_id") %>%
+  filter(simple_histology == "Squamous cell carcinoma") %>%
+  select(immucan_id,name, value,simple_stage) %>%
+  mutate(stage = ifelse(simple_stage == "I",1,NA),
+         stage = ifelse(simple_stage == "II",2,stage),
+         stage = ifelse(simple_stage == "III",3,stage),
+         stage = ifelse(simple_stage == "IV",4,stage),
+         stage = as.numeric(as.factor(stage))) %>%
+  filter(stage != 4) %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(model = map(data, ~ lm(value ~ stage, data = .x)),
+         summary = map(model, broom::tidy)) %>%
+  select(name, summary) %>%
+  unnest(c(summary)) %>%
+  filter(term == "stage") %>%
+  mutate(tech = str_split_i(name,"__",2)) %>%
+  group_by(tech) %>%
+  mutate(FDR = p.adjust(p = p.value,method = "BH"),
+         sig_p = ifelse(p.value < 0.05,TRUE, FALSE),
+         sig_fdr = ifelse(FDR < 0.1,TRUE, FALSE))
+
+summary_dat <- sigs %>%
+  filter(sig_p == TRUE) %>%
+  #filter(grepl("CD8_GATA3_BCL2|^CD8_density|CD8_Ki67_density|CD8_TCF7_density|Tumor_IDO1",name)) %>%
+  mutate(y_position = 1000,
+         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
+  ungroup() %>%
+  as.data.frame()
+
+p2 <- dens_dat %>%
+  pivot_longer(-immucan_id) %>%
+  mutate(tech = str_split_i(name,"__",2)) %>%
+  left_join(clin_dat,"immucan_id") %>%
+  filter(simple_histology == "Squamous cell carcinoma") %>%
+  select(immucan_id,name, value,simple_stage, tech) %>%
+  mutate(stage = ifelse(simple_stage == "I",1,NA),
+         stage = ifelse(simple_stage == "II",2,stage),
+         stage = ifelse(simple_stage == "III",3,stage),
+         stage = ifelse(simple_stage == "IV",4,stage),
+         stage = as.numeric(as.factor(stage)),
+         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
+  filter(name %in% summary_dat$name,
+         stage != 4) %>%
+  ggplot(aes(x = name,y = log10(value+1),fill=as.factor(stage))) +
+  geom_boxplot(outliers = FALSE)+
+  geom_jitter(aes(col = as.factor(stage)),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
+  scale_fill_manual(values = alpha(c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"),alpha = 0.6))+
+  scale_color_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust = 1),
+        axis.title = element_blank())+
+  guides(fill=guide_legend(title="Stage"),
+         col=guide_legend(title="Stage"))+
+  geom_text(data = summary_dat, aes(x = name,y=4.2,label = paste0("fdr: ",sig_fdr)), inherit.aes = FALSE,size = 3)+
+  geom_text(data = summary_dat, aes(x = name,y=4.6,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE, size = 3)+
+  coord_cartesian(ylim = c(0,4.6))+
+  ggtitle(label = "LUSC")
+
+p2
+
+```
 
 # S2D TCGA across stages adenocarcinoma
 ```{r}

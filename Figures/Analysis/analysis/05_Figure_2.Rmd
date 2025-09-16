@@ -559,10 +559,11 @@ sigs <- dens_dat %>%
   mutate(tech = str_split_i(name,"__",2)) %>%
   group_by(tech) %>%
   mutate(FDR = p.adjust(p = p.value,method = "BH"),
-         sig = ifelse(p.value < 0.05,TRUE, FALSE))
+         sig_p = ifelse(p.value < 0.05,TRUE, FALSE),
+         sig_fdr = ifelse(FDR < 0.1,TRUE, FALSE))
 
 summary_dat <- sigs %>%
-  filter(sig == TRUE) %>%
+  filter(sig_p == TRUE) %>%
   #filter(grepl("CD8_GATA3_BCL2|^CD8_density|CD8_Ki67_density|CD8_TCF7_density|Tumor_IDO1",name)) %>%
   mutate(y_position = 1000,
          name = gsub(pattern = "density_",replacement = "",x = name)) %>%
@@ -585,14 +586,17 @@ p2 <- dens_dat %>%
          stage != 4) %>%
   ggplot(aes(x = name,y = log10(value+1),fill=as.factor(stage))) +
   geom_boxplot(outliers = FALSE)+
-  geom_jitter(position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
+  geom_jitter(aes(col = as.factor(stage)),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
+  scale_fill_manual(values = alpha(c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"),alpha = 0.6))+
+  scale_color_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
   theme_bw()+
   theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust = 1),
         axis.title = element_blank())+
-  guides(fill=guide_legend(title="Stage"))+
-  geom_text(data = summary_dat, aes(x = name,y=4.2,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE)+
-  coord_cartesian(ylim = c(0,4.2))+
-  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
+  guides(fill=guide_legend(title="Stage"),
+         col=guide_legend(title="Stage"))+
+  geom_text(data = summary_dat, aes(x = name,y=4.2,label = paste0("fdr: ",sig_fdr)), inherit.aes = FALSE)+
+  geom_text(data = summary_dat, aes(x = name,y=4.6,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE)+
+  coord_cartesian(ylim = c(0,4.6))+
   ggtitle(label = "LUAD")
   
 p2
