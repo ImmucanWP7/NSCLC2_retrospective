@@ -682,8 +682,8 @@ sigs %>%
 
 # 2F diff abundance smoking bubble plot
 
-## smoking status
-here we will estimate the dispersion across the whole data set and then do the linear model of count comparison only for the groups of interest.
+## smoking status LUAD
+
 ```{r, fig.height=15, fig.width=25}
 condition <- c("Non-smoker","Non-smoker","Ex-smoker")
 names(condition) <- c("never_vs_current_smoker","never_vs_Ex_smoker","current_vs_Ex_smoker")
@@ -692,7 +692,8 @@ p.list <- list()
 
 # merge with clinical data
 anno <- clin_dat %>%
-  filter(!is.na(smoking_status))
+  filter(!is.na(smoking_status),
+         simple_histology == "Adenocarcinoma")
   
 for (i in data_type) {
   
@@ -737,12 +738,75 @@ for (i in data_type) {
   
   p.list[[i]] <- do.call(rbind,cur_list)
 }   
-    
-cur_dat.groups <- do.call(rbind,p.list)
 
+cur_dat_LUAD <- do.call(rbind,p.list)
+cur_dat_LUAD <- cur_dat_LUAD %>%
+  mutate(histology = "LUAD")
 ```
 
+## smoking status LUSC
+of note, there are no non-smokers for LUSC histology in our cohort 
+```{r}
+condition <- c("Non-smoker","Non-smoker","Ex-smoker")
+names(condition) <- c("never_vs_current_smoker","never_vs_Ex_smoker","current_vs_Ex_smoker")
+p.list <- list()
+
+# merge with clinical data
+anno <- clin_dat %>%
+  filter(!is.na(smoking_status),
+         simple_histology == "Squamous cell carcinoma")
+  
+for (i in data_type) {
+  
+  # get cell abundances and remove NAs
+  abundances <- dat %>%
+    select(contains(i)) %>%
+    filter(complete.cases(.))
+  abundances <- t(abundances)
+  colnames(abundances) <-dat %>%
+    select(contains(i),immucan_id) %>%
+    filter(complete.cases(.)) %>%
+    pull(immucan_id)
+  
+  abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
+  
+  meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
+  Size <- factor(meta[,"smoking_status"])
+  meta$Size <- Size
+  
+  # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
+  y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
+  design <- model.matrix(~0+group,data = y.ab$samples)
+  colnames(design) <- levels(y.ab$samples$group)
+  # we do not fit a trend 
+  y.ab <- estimateDisp(y.ab, design, trend.method = "none")
+  y.ab$common.dispersion
+  #plotBCV(y.ab,pch = 5)
+  
+  # we only compare the diff abundance for Adeno vs Sqam.
+  fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
+  fit_1_2 <- glmLRT(glmfit = fit.ab,contrast = c(1,-1))
+  res_list <- list(fit_1_2)
+  
+  cur_list <- lapply(res_list,function(x){
+    sig_dat <- x$table
+    sig_dat$celltypes <- rownames(sig_dat)
+    sig_dat$comparison <- gsub("Size","",x$comparison)
+    return(sig_dat)
+  })
+  
+  p.list[[i]] <- do.call(rbind,cur_list)
+}   
+
+cur_dat_LUSC <- do.call(rbind,p.list)
+
+cur_dat_LUSC <- cur_dat_LUSC %>%
+  mutate(histology = "LUSC")
+```
+
+
 ## smoking signature based
+
 ```{r}
 # Merge with mutational signatures
 Lung_NSCLC2_filtered <-read.delim(paste0(mount_path,"data/WES/mutation_signatures/Lung_NSCLC2_filtered.tsv"), sep="\t")
@@ -806,11 +870,140 @@ for (i in data_type) {
 }
 
 cur_dat.SBS <- do.call(rbind,p.list)
+cur_dat.SBS <-cur_dat.SBS %>%
+  mutate(histology = "all")
 ```
 
 
 ```{r, fig.height=10, fig.width=20}
-cur_dat <- rbind(cur_dat.groups, cur_dat.SBS)
+cur_dat <- rbind(cur_dat_LUAD,cur_dat_LUSC,cur_dat.SBS)
+
+cur_dat <- cur_dat %>%
+  mutate(tech = gsub("_density","",str_split_i(celltypes,"__",2)),
+         cond = ifelse(comparison == "1*Current smoker -1*Ex-smoker","CurrentSmoker_over_ExSmoker","ExSmoker_over_NonSmoker"),
+         cond = ifelse(comparison == "1*Current smoker -1*Non-smoker","CurrentSmoker_over_NonSmoker",cond),
+         cond = paste0(histology,"_",cond),
+         cond = ifelse(comparison == "-1*low 1*high","SBS4-SBS92_High_over_Low",cond)) %>%
+  group_by(tech) %>%
+  mutate(FDR = p.adjust(PValue,method = "BH"),
+         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
+         sig = ifelse(FDR < 0.1 ,TRUE,FALSE),
+         direction = ifelse(logFC > 0 ,"up", "down"),
+         ct_name = gsub("_density","",str_split_i(celltypes,"__",1)))
+  
+to_show <- cur_dat %>%
+  filter(sig_overall == TRUE) %>%
+  pull(ct_name)
+
+cur_dat <- cur_dat %>%
+  filter(ct_name %in% to_show) %>%
+  mutate(celltypes = gsub("_abundance","",celltypes))
+
+# get max and min fold change values
+max_up <- max(cur_dat$logFC)+1
+min_down <- min(cur_dat$logFC)-1
+
+# plot the data
+p <- cur_dat %>%
+  ggplot(aes(x=celltypes, y = factor(cond, levels = c("SBS4-SBS92_High_over_Low",
+                                                      "LUAD_CurrentSmoker_over_ExSmoker",
+                                                      "LUAD_ExSmoker_over_NonSmoker",
+                                                      "LUAD_CurrentSmoker_over_NonSmoker",
+                                                      "LUSC_CurrentSmoker_over_ExSmoker")),col = logFC, size= -log10(PValue)))+
+  #geom_tile(aes(fill = sig))+
+  #theme_bw()+
+  geom_point()+
+  theme_bw()+
+  scale_colour_gradientn(
+    colours = c("blue", "white", "red"), 
+    values = rescale(c(round(min_down), 0, round(max_up))),
+    limits = c(round(min_down), round(max_up)),
+    guide = guide_colorbar(
+      title = "logFC",                   
+      #barwidth = 2,                     
+      #barheight = 1,                   
+      title.theme = element_text(size = 12),
+      label.theme = element_text(size = 12)
+    )
+  )+
+  scale_size(range = c(1,4))+
+  new_scale_colour() +
+  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =1.5)+
+  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12),
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        legend.location = "plot",
+        legend.position = "right")
+p
+
+#ggsave(filename = paste0(out_folder,"2F_diff_abundance_smoking.pdf"),
+#       plot = p,
+#       device = "pdf",
+#       width = 16,
+#       height = 4)
+```
+
+
+
+# sanity check smoking effects only in LUSC
+```{r, fig.width=12, fig.height=6}
+condition <- c("Ex-smoker")
+names(condition) <- c("current_vs_Ex_smoker")
+
+p.list <- list()
+
+# merge with clinical data
+anno <- clin_dat %>%
+  filter(!is.na(smoking_status),
+         simple_histology == "Squamous cell carcinoma")
+  
+for (i in data_type) {
+  
+  # get cell abundances and remove NAs
+  abundances <- dat %>%
+    select(contains(i)) %>%
+    filter(complete.cases(.))
+  abundances <- t(abundances)
+  colnames(abundances) <-dat %>%
+    select(contains(i),immucan_id) %>%
+    filter(complete.cases(.)) %>%
+    pull(immucan_id)
+  
+  abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
+  
+  meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
+  Size <- factor(meta[,"smoking_status"])
+  meta$Size <- Size
+  
+  # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
+  y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
+  design <- model.matrix(~0+group,data = y.ab$samples)
+  colnames(design) <- levels(y.ab$samples$group)
+  # we do not fit a trend 
+  y.ab <- estimateDisp(y.ab, design, trend.method = "none")
+  y.ab$common.dispersion
+  #plotBCV(y.ab,pch = 5)
+  
+  # we only compare the diff abundance for Adeno vs Sqam.
+  fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
+  fit_1_2 <- glmLRT(glmfit = fit.ab,contrast = c(1,-1))
+  res_list <- list(fit_1_2,fit_1_3,fit_2_3)
+  
+  cur_list <- lapply(res_list,function(x){
+    sig_dat <- x$table
+    sig_dat$celltypes <- rownames(sig_dat)
+    sig_dat$comparison <- gsub("Size","",x$comparison)
+    return(sig_dat)
+  })
+  
+  p.list[[i]] <- do.call(rbind,cur_list)
+}   
+
+cur_dat <- do.call(rbind,p.list)
 
 cur_dat <- cur_dat %>%
   mutate(tech = gsub("_density","",str_split_i(celltypes,"__",2)),
@@ -871,14 +1064,7 @@ p <- cur_dat %>%
         legend.location = "plot",
         legend.position = "right")
 p
-
-ggsave(filename = paste0(out_folder,"2F_diff_abundance_smoking.pdf"),
-       plot = p,
-       device = "pdf",
-       width = 16,
-       height = 4)
 ```
-
 
 # 2G images for smoking
 
