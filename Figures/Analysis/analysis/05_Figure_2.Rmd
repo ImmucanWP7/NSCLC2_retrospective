@@ -453,7 +453,8 @@ plotPixels(image = cur_images,
 
 
 
-# 2E linear model densities for stages - old
+# linear model densities for stages both histologies
+not in paper
 ```{r, fig.height=10, fig.width=20}
 library(purrr)
 library(broom)
@@ -886,13 +887,15 @@ cur_dat <- cur_dat %>%
          cond = ifelse(comparison == "-1*low 1*high","SBS4-SBS92_High_over_Low",cond)) %>%
   group_by(tech) %>%
   mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         sig = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         direction = ifelse(logFC > 0 ,"up", "down"),
+         sig = ifelse(PValue < 0.05 & logFC > 0, "UP_trend",NA),
+         sig = ifelse(FDR < 0.1 & logFC > 0, "UP",sig),
+         sig = ifelse(PValue < 0.05 & logFC < 0, "DOWN_trend",sig),
+         sig = ifelse(FDR < 0.1 & logFC < 0, "DOWN",sig),
+         sig = ifelse(is.na(sig),"NOTSIG", sig),
          ct_name = gsub("_density","",str_split_i(celltypes,"__",1)))
   
 to_show <- cur_dat %>%
-  filter(sig_overall == TRUE) %>%
+  filter(sig %in% c("UP","DOWN")) %>%
   pull(ct_name)
 
 cur_dat <- cur_dat %>%
@@ -928,8 +931,8 @@ p <- cur_dat %>%
   )+
   scale_size(range = c(1,4))+
   new_scale_colour() +
-  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =1.5)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
+  geom_point(data = cur_dat,shape = 1,aes(size = -log10(PValue), col = sig), stroke =1.5)+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
   theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 12),
         axis.text.y = element_text(size = 12),
         legend.text = element_text(size = 12),
@@ -940,11 +943,11 @@ p <- cur_dat %>%
         legend.position = "right")
 p
 
-#ggsave(filename = paste0(out_folder,"2F_diff_abundance_smoking.pdf"),
-#       plot = p,
-#       device = "pdf",
-#       width = 16,
-#       height = 4)
+ggsave(filename = paste0(out_folder,"2F_diff_abundance_smoking.pdf"),
+       plot = p,
+       device = "pdf",
+       width = 16,
+       height = 5)
 ```
 
 

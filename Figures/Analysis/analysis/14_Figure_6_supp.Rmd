@@ -1,5 +1,5 @@
 ---
-title: "Figure 5 Supps - MOFA"
+title: "Supplementary Figure 6"
 output: html_document
 date: '2023-03-15'
 ---
@@ -33,7 +33,7 @@ library(tidyverse)
 ## load model
 ```{r}
 mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/MOFA"
-out_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_5_supp/"
+out_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_6_supp/"
 
 model_path <- paste0(mount_path, '/mofa_V6_minor.rds')
 
@@ -44,7 +44,7 @@ if (!dir.exists(out_path)){
 model <- readRDS(model_path)
 ```
 
-# 5A supp: GSEA per Factor
+# S6A supp: GSEA per Factor
 ```{r}
 # Load required libraries
 library(MOFA2)
@@ -216,12 +216,12 @@ ht <- Heatmap(
   column_names_side = "top",
   column_names_rot = 0
 )
-pdf(paste0(out_path,"/5A_GSEA_GOBP_C5_heatmap.pdf"), height = 14, width = 10)
+pdf(paste0(out_path,"/S6A_GSEA_GOBP_C5_heatmap.pdf"), height = 14, width = 10)
 draw(ht, heatmap_legend_side = "left", padding = unit(c(1, 1,1, 11), "cm"))
 dev.off()
 ```
 
-# 5B supp: Association LF5 and LCNEC
+# S6B supp: Association LF5 and LCNEC
 ```{r}
 library(ggpubr)
 factors <- get_factors(model, as.data.frame = TRUE) %>%
@@ -291,10 +291,10 @@ gg <- ggplot(temp, aes(x = hist_group, y = Factor5, fill = hist_group)) +
   coord_cartesian(ylim = c(-4,5))
 gg
 
-ggsave(paste0(out_path,"/5B_Factor5_LCNEC_OTHER.pdf"), plot = gg,device = "pdf",width = 7,height = 4.5)
+ggsave(paste0(out_path,"/S6B_Factor5_LCNEC_OTHER.pdf"), plot = gg,device = "pdf",width = 7,height = 4.5)
 ```
 
-# 5C supp: Factor1 Survival analysis
+# S6C supp: Factor1 Survival analysis
 ## LUAD/LUSC
 ```{r}
 ## survival analysis
@@ -402,5 +402,5 @@ p1 <- ggplot(plot_df, aes(y = Cohort, x = HR, col = Cohort)) +
 print(plot_df)
 
 p1
-ggsave(paste0(out_path,"/5C_Factor1_LUAD_LUSC.pdf"), plot = p1, device = "pdf", width = 4, height = 3)
+ggsave(paste0(out_path,"/S6C_Factor1_LUAD_LUSC.pdf"), plot = p1, device = "pdf", width = 4, height = 3)
 ```

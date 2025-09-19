@@ -1,5 +1,5 @@
 ---
-title: "Figure 3"
+title: "Figure S4"
 author: "Daniel Schulz"
 date: "2024-11-15"
 output: html_document
@@ -197,7 +197,7 @@ if (!file.exists(paste0(mount_path,"Figures/scores_for_sharing/dist_dat_all_cell
 ```
 
 
-# S3A B cell patch image
+# S4A B cell patch image
 ```{r, fig.height=40, fig.width=40}
 cur_files <- list.files(paste0(old_mount,"IF/Rout/IF1_features/TLS_summary"),full.names = TRUE)
 cur_list <- list()
@@ -244,7 +244,7 @@ p <- p +
   guides(color = guide_legend(override.aes = list(size = 5)))
 #p2
 p
-ggsave(filename = paste0(out_folder,"S3A_TLS_example.png"),
+ggsave(filename = paste0(out_folder,"S4A_TLS_example.png"),
        plot = p,
        device = "png",
        width = 4000,
@@ -283,7 +283,7 @@ dim(LUSC_pats)[1]/df["Squamous cell carcinoma",]
 
 
 
-## S3B TLS size and number
+## S4B TLS size and number
 
 ```{r}
 plot_dat <- TLS_summary %>%
@@ -308,14 +308,14 @@ p <- plot_dat %>%
   scale_x_log10(limits = c(10,350))
 
 p
-ggsave(filename = paste0(out_folder,"S3B_TLS_count_and_size.pdf"),
+ggsave(filename = paste0(out_folder,"S4B_TLS_count_and_size.pdf"),
        plot = p,
        device = "pdf",
        width = 2.5,
        height = 2)
 ```
 
-## S3C TLS abundance in compartments
+## S4C TLS abundance in compartments
 
 ```{r}
 dist_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/dist_dat_all_cells_inTumor_outside.rds"))
@@ -375,14 +375,14 @@ p <- cur_dat %>%
 
 p
 
-ggsave(filename = paste0(out_folder,"S3C_TLS_location.pdf"),
+ggsave(filename = paste0(out_folder,"S4C_TLS_location.pdf"),
        plot = p,
        device = "pdf",
        width = 2.75,
        height = 8)
 ```
 
-# S3D size of patches by location
+# S4D size of patches by location
 check if patches are larger in border
 ```{r}
 p <- TLS_summary %>%
@@ -411,14 +411,14 @@ p <- TLS_summary %>%
 
 p
 
-ggsave(filename = paste0(out_folder,"S3D_patch_size.pdf"),
+ggsave(filename = paste0(out_folder,"S4D_patch_size.pdf"),
        plot = p,
        device = "pdf",
        width = 3,
        height = 8)
 ```
 
-# S3E T and B cell proportions in Patches by location
+# S4E T and B cell proportions in Patches by location
 composition of outside TLS
 ```{r, fig.height=12, fig.width=10}
 p <- TLS_summary %>%
@@ -440,14 +440,14 @@ p <- TLS_summary %>%
 
 p
 
-ggsave(filename = paste0(out_folder,"S3E_B_and_T_cell_by_location.pdf"),
+ggsave(filename = paste0(out_folder,"S4E_B_and_T_cell_by_location.pdf"),
        plot = p,
        device = "pdf",
        width = 4,
        height = 8)
 ```
 
-# S3F density of patches by histology and stage
+# S4F density of patches by histology and stage
 
 only check inside and outside tumor. with 500 µm expansion of tumor
 
@@ -505,7 +505,7 @@ p <- cur_dat %>%
 p
 
 
-ggsave(filename = paste0(out_folder,"S3F_Patch_density_for_histology.pdf"),
+ggsave(filename = paste0(out_folder,"S4F_Patch_density_for_histology.pdf"),
        plot = p,
        device = "pdf",
        width = 3.5,
@@ -514,7 +514,7 @@ ggsave(filename = paste0(out_folder,"S3F_Patch_density_for_histology.pdf"),
 
 
 
-# S3G heatmap of correlations
+# S4G heatmap of correlations
 ```{r, fig.height=4, fig.width=8}
 # count the number of TLS in each compartment
 TLS_dat <- TLS_summary %>%
@@ -593,13 +593,13 @@ ht2 <- Heatmap(diff_matrix, name = "Diff", col =col_fun_corr2,
 #plot
 ht1 + ht2
 
-pdf(file = paste0(out_folder,"S3G_heatmap_of_correlations.pdf"),
+pdf(file = paste0(out_folder,"S4G_heatmap_of_correlations.pdf"),
     width = 5,height = 7)
 ht1 + ht2
 dev.off()
 ```
 
-# S3H overlap with PDL1, TMB and stage
+# S4H overlap with PDL1, TMB and stage
 
 ```{r}
 p1 <- cur_dat %>%
@@ -657,14 +657,14 @@ p <- plot_grid(p1,p2, ncol = 2)
 p
 
 
-ggsave(filename = paste0(out_folder,"S3H_Overlap_with_clinical_and_PDL1.pdf"),
+ggsave(filename = paste0(out_folder,"S4H_Overlap_with_clinical_and_PDL1.pdf"),
        plot = p,
        device = "pdf",
        width = 8,
        height = 4)
 ```
 
-# S3I stage and patch density
+# S4I stage and patch density
 
 ```{r}
 my_comp <-  list( c("I", "II"), c("I", "III"), c("II", "III") )
@@ -679,7 +679,7 @@ p <- cur_dat %>%
   theme_bw()
 
 p
-ggsave(filename = paste0(out_folder,"S3I_Patches_stage.pdf"),
+ggsave(filename = paste0(out_folder,"S4I_Patches_stage.pdf"),
        plot = p,
        device = "pdf",
        width = 2.5,
@@ -687,7 +687,7 @@ ggsave(filename = paste0(out_folder,"S3I_Patches_stage.pdf"),
 ```
 
 
-# S3J B cell and Patch density survival
+# S4J B cell and Patch density survival
 
 
 ```{r}
@@ -752,7 +752,7 @@ p <- df1 %>%
 
 p
 
-ggsave(filename = paste0(out_folder,"S3j_survival.pdf"),
+ggsave(filename = paste0(out_folder,"S4j_survival.pdf"),
        plot = p,
        device = "pdf",
        width = 3.5,

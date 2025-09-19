@@ -53,16 +53,14 @@ data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2
 The code for this plot is here: [here](../../WES/analysis/immucan_nsclc2_wes_tableReport.Rmd)
 
 
-# 4B Driver mutations adenocarcinoma
+# 4B Driver mutations
 
+## LUAD
 
 ```{r, fig.height=15, fig.width=20}
-condition <- c(FALSE,FALSE,FALSE, FALSE, FALSE)
-names(condition) <- c("KRAS","EGFR","STK11_TP53", "STK11", "TP53")
+condition <- c(FALSE,FALSE,FALSE, FALSE)
+names(condition) <- c("KRAS","EGFR", "STK11", "TP53")
 
-traits <- traits %>%
-  mutate(STK11_TP53 = ifelse(STK11 == TRUE & TP53 == TRUE, TRUE, FALSE),
-         STK11 = ifelse(STK11 == TRUE & TP53 == FALSE, TRUE, FALSE))
 # loop over conditions and do two way abundance difference tests
 p.list <- list()
 for (i in c(data_type,"cello1","cello2")) {
@@ -128,14 +126,21 @@ cur_dat <- cur_dat %>%
          cond = paste0(cond, "_mut")) %>%
   group_by(tech, cond) %>%
   mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         sig = ifelse(FDR < 0.1 & abs(logFC) > cutoff,TRUE,FALSE),
-         direction = ifelse(logFC > 0 ,"up", "down"),
-         ct_name = gsub("_abundance","",str_split_i(celltypes,"__",1)))
+         sig = ifelse(PValue < 0.05 & logFC > 0, "UP_trend",NA),
+         sig = ifelse(FDR < 0.1 & logFC > 0, "UP",sig),
+         sig = ifelse(PValue < 0.05 & logFC < 0, "DOWN_trend",sig),
+         sig = ifelse(FDR < 0.1 & logFC < 0, "DOWN",sig),
+         sig = ifelse(is.na(sig),"NOTSIG", sig),
+         ct_name = gsub("_density","",str_split_i(celltypes,"__",1)))
   
 cur_dat_LUAD <- cur_dat 
+
+# identify histology
+cur_dat_LUAD <- cur_dat_LUAD %>% 
+  mutate(cond = paste0("LUAD_",cond))
+
 to_show_LUAD <- cur_dat %>%
-  filter(sig == TRUE) %>%
+  filter(sig %in% c("UP", "DOWN")) %>%
   pull(celltypes)
 
 cur_dat <- cur_dat %>%
@@ -167,8 +172,8 @@ p <- cur_dat %>%
   #scale_color_gradient(low = "white",   high = "red")+
   scale_size(range = c(1,8))+
   new_scale_colour() +
-  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
+  geom_point(data = cur_dat,shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
   theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 20),
         xis.text.y = element_text(size = 20),
         legend.text = element_text(size = 20),
@@ -181,7 +186,7 @@ p <- cur_dat %>%
 p
 ```
 
-# Wilcoxon test for EGFR - not in paper
+## Wilcoxon test for EGFR - not in paper
 here we see that actually the differential abundance test does not capture the difference in HLADR+ tumor cells while there is a strong difference based on a Wilcoxon or t-test.
 ```{r}
 dat %>%
@@ -252,204 +257,8 @@ w_test %>%
 coord_flip()
 ```
 
-to be deleted. here we test if the results are the same if we estimate the dispersion only for LUAD samples
-```{r, fig.height=15, fig.width=20}
-condition <- c(FALSE,FALSE,FALSE, FALSE)
-names(condition) <- c("KRAS","EGFR","STK11", "TP53")
 
-# loop over conditions and do two way abundance difference tests
-p.list <- list()
-for (i in c(data_type,"cello1","cello2")) {
-  for (j in names(condition)) {
-    
-    if(grepl("cello",i)){
-      abundances <- cello_dat %>%
-        select(contains(i))
-      abundances <- t(abundances)
-      colnames(abundances) <- cello_dat$immucan_id
-    } else {
-      abundances <- dat %>%
-        select(contains(i)) %>%
-        filter(complete.cases(.))
-      abundances <- t(abundances)
-      colnames(abundances) <-dat %>%
-        select(contains(i),immucan_id) %>%
-        filter(complete.cases(.)) %>%
-        pull(immucan_id)
-    }
-    anno <- traits
-    
-    meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-    meta$histology_cond <- paste0(meta$simple_histology,"_",meta[,j])
-    Size <- factor(meta[,"histology_cond"])
-    meta$Size <- Size
-    
-    ####### test if the results are different if only use the adenocarcinoma and EGFR samples
-    meta <- meta[meta$histology_cond %in% c("Adenocarcinoma_FALSE","Adenocarcinoma_TRUE"),]
-    abundances <- abundances[,colnames(abundances) %in% meta$immucan_id]
-    
-    # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
-    y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-    design <- model.matrix(~0+group,data = y.ab$samples)
-    colnames(design) <- levels(y.ab$samples$group)
-    # we do not fit a trend 
-    y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-    y.ab$common.dispersion
-    #plotBCV(y.ab,pch = 5)
-    
-    # subset design matrix for Adenocarcinoma
-    design <- design[,c("Adenocarcinoma_FALSE","Adenocarcinoma_TRUE")]
-    
-    fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-    fit_LUAD <- glmLRT(glmfit = fit.ab,contrast = c(-1,1))
-
-    res_list <-list(fit_LUAD)
-    cur_list <- lapply(as.list(res_list),function(x){
-      sig_dat <- x$table
-      sig_dat$celltypes <- rownames(sig_dat)
-      sig_dat$cond <- j
-      sig_dat$comparison <- grep("Adeno|Squamous",x$comparison,value = TRUE)
-      return(sig_dat)
-    })
-
-    p.list[[paste0(i,"_",j)]] <- do.call(rbind,cur_list)
-    
-  }
-}
-
-# define fold change cutoff for plotting
-cutoff <- 0
-
-cur_dat <- do.call(rbind,p.list)
-cur_dat <- cur_dat %>%
-  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = paste0(cond, "_mut")) %>%
-  group_by(tech, cond) %>%
-  mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         sig = ifelse(FDR < 0.1 & abs(logFC) > cutoff,TRUE,FALSE),
-         direction = ifelse(logFC > 0 ,"up", "down"),
-         ct_name = gsub("_abundance","",str_split_i(celltypes,"__",1)))
-  
-cur_dat_LUAD <- cur_dat 
-to_show_LUAD <- cur_dat %>%
-  filter(sig == TRUE) %>%
-  pull(celltypes)
-
-cur_dat <- cur_dat %>%
-  filter(celltypes %in% to_show_LUAD) %>%
-  mutate(celltypes = gsub("_abundance","",celltypes))
-
-
-# spatial cluster renaming
-cur_dat <- cur_dat %>%
-  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
-
-# get max and min fold change values
-max_up <- max(cur_dat$logFC)+1
-min_down <- min(cur_dat$logFC)-1
-
-# plot the data
-p <- cur_dat %>%
-  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
-  geom_point()+
-  theme_bw()+
-  scale_colour_gradientn(colours = c("blue","white","red"), 
-                         values = rescale(c(round(min_down),0,round(max_up))),
-                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  #scale_color_gradient(low = "white",   high = "red")+
-  scale_size(range = c(1,8))+
-  new_scale_colour() +
-  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 20),
-        xis.text.y = element_text(size = 20),
-        legend.text = element_text(size = 20),
-        legend.title = element_text(size = 20),
-        legend.location = "plot",
-        axis.title.x = element_blank(),
-        axis.title.y = element_blank())+
-  coord_flip()
-  #theme(plot.margin = unit(c(5, 2.5, 2.5, 2.5), "cm"))
-p
-```
-
-sanity check
-```{r}
-dens_dat %>%
-  select(immucan_id,Tumor_PDL1_density__IF2) %>%
-  left_join(traits,"immucan_id") %>%
-  filter(simple_histology == "Adenocarcinoma")%>%
-  ggplot(aes(x = EGFR,y = log10(Tumor_PDL1_density__IF2)))+
-  geom_boxplot()+
-  stat_compare_means()
-dens_dat %>%
-  select(immucan_id,Tumor_PDL1_density__IMC1) %>%
-  left_join(traits,"immucan_id") %>%
-  filter(simple_histology == "Adenocarcinoma")%>%
-  ggplot(aes(x = EGFR,y = log10(Tumor_PDL1_density__IMC1)))+
-  geom_boxplot()+
-  stat_compare_means()
-
-dens_dat %>%
-  select(immucan_id,Tumor_HLADR_density__IMC1) %>%
-  left_join(traits,"immucan_id") %>%
-  filter(simple_histology == "Adenocarcinoma")%>%
-  ggplot(aes(x = EGFR,y = log10(Tumor_HLADR_density__IMC1)))+
-  geom_boxplot()+
-  stat_compare_means()
-dat %>%
-  select(immucan_id,Tumor_HLADR_abundance__IMC1) %>%
-  left_join(traits,"immucan_id") %>%
-  filter(simple_histology == "Adenocarcinoma")%>%
-  ggplot(aes(x = EGFR,y = log10(Tumor_HLADR_abundance__IMC1)))+
-  geom_boxplot()+
-  stat_compare_means()
-
-as.data.frame(t(abundances)) %>%
-  mutate(immucan_id = rownames(as.data.frame(t(abundances)))) %>%
-  select(immucan_id,Tumor_HLADR_abundance__IMC1) %>%
-  left_join(traits,"immucan_id") %>%
-  filter(simple_histology == "Adenocarcinoma")%>%
-  ggplot(aes(x = EGFR,y = log10(Tumor_HLADR_abundance__IMC1)))+
-  geom_boxplot()+
-  stat_compare_means()
-
-cur_dat <- as.data.frame(t(fit_LUAD$fitted.values))
-cur_dat %>%
-  mutate(immucan_id = rownames(cur_dat)) %>%
-  select(immucan_id,Tumor_HLADR_abundance__IMC1) %>%
-  left_join(traits,"immucan_id") %>%
-  filter(simple_histology == "Adenocarcinoma")%>%
-  ggplot(aes(x = EGFR,y = log10(Tumor_HLADR_abundance__IMC1)))+
-  geom_boxplot()+
-  stat_compare_means()
-  
-
-fit.ab$
-cur_dat <- as.data.frame(t(fit.ab$fitted.values))
-cur_dat %>%
-  mutate(immucan_id = rownames(cur_dat)) %>%
-  select(immucan_id,Tumor_HLADR_abundance__IMC1) %>%
-  left_join(traits,"immucan_id") %>%
-  filter(simple_histology == "Adenocarcinoma")%>%
-  ggplot(aes(x = EGFR,y = log10(Tumor_HLADR_abundance__IMC1)))+
-  geom_boxplot()+
-  stat_compare_means()
-topTags(fit_LUAD, n = 40)
-y.ab$tagwise.dispersion
-rownames(abundances)
-test <- glmQLFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-plotQLDisp(test)
-plotMeanVar(y.ab)
-```
-
-# Driver mutations LUSC
+## LUSC
 
 ```{r, fig.height=10, fig.width=20}
 condition <- c(FALSE,FALSE)
@@ -512,24 +321,27 @@ for (i in c(data_type,"cello1","cello2")) {
   }
 }
 
-# define fold change cutoff for plotting
-cutoff <- 0
-
 cur_dat <- do.call(rbind,p.list)
 cur_dat <- cur_dat %>%
   mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
          cond = paste0(cond, "_mut")) %>%
   group_by(tech, cond) %>%
   mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         sig = ifelse(FDR < 0.1 & abs(logFC) > cutoff,TRUE,FALSE),
-         direction = ifelse(logFC > 0 ,"up", "down"),
-         ct_name = gsub("_abundance","",str_split_i(celltypes,"__",1)))
+         sig = ifelse(PValue < 0.05 & logFC > 0, "UP_trend",NA),
+         sig = ifelse(FDR < 0.1 & logFC > 0, "UP",sig),
+         sig = ifelse(PValue < 0.05 & logFC < 0, "DOWN_trend",sig),
+         sig = ifelse(FDR < 0.1 & logFC < 0, "DOWN",sig),
+         sig = ifelse(is.na(sig),"NOTSIG", sig),
+         ct_name = gsub("_density","",str_split_i(celltypes,"__",1)))
   
 cur_dat_LUSC <- cur_dat
 
+# identify histology
+cur_dat_LUSC <- cur_dat_LUSC %>% 
+  mutate(cond = paste0("LUSC_",cond))
+
 to_show_LUSC <- cur_dat %>%
-  filter(sig == TRUE) %>%
+  filter(sig %in% c("UP", "DOWN")) %>%
   pull(celltypes)
 
 cur_dat <- cur_dat %>%
@@ -561,8 +373,8 @@ p <- cur_dat %>%
   #scale_color_gradient(low = "white",   high = "red")+
   scale_size(range = c(1,8))+
   new_scale_colour() +
-  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
+  geom_point(data = cur_dat,shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
   theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 20),
         xis.text.y = element_text(size = 20),
         legend.text = element_text(size = 20),
@@ -578,12 +390,6 @@ p
 
 ## plot  LUSC and LUAD together
 ```{r, fig.height=15, fig.width=10}
-# unify names
-cur_dat_LUAD <- cur_dat_LUAD %>% 
-  mutate(cond = paste0("LUAD_",cond))
-cur_dat_LUSC <- cur_dat_LUSC %>% 
-  mutate(cond = paste0("LUSC_",cond))
-
 cur_dat <- rbind(cur_dat_LUAD,cur_dat_LUSC)
 
 cur_dat <- cur_dat %>%
@@ -600,27 +406,20 @@ min_down <- min(cur_dat$logFC)-1
 
 # plot the data
 p <- cur_dat %>%
-  ggplot(aes(x=(celltypes), y = cond,col = logFC, size= -log10(PValue)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
+  ggplot(aes(x=(celltypes), y = factor(cond, levels = c("LUAD_EGFR_mut","LUAD_KRAS_mut","LUAD_STK11_mut","LUAD_TP53_mut","LUSC_TP53_mut", "LUSC_PIK3CA_mut")),col = logFC, size= -log10(PValue)))+
   geom_point()+
   theme_bw()+
   scale_colour_gradientn(colours = c("blue","white","red"), 
                          values = rescale(c(round(min_down),0,round(max_up))),
                          guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  #scale_color_gradient(low = "white",   high = "red")+
   scale_size(range = c(1,3.5))+
   new_scale_colour() +
-  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =1)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
+  geom_point(data = cur_dat,shape = 1,aes(size = -log10(PValue), col = sig), stroke =1)+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
   theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 7),
         axis.text.y = element_text(size = 7),
         legend.text = element_text(size = 7),
         legend.title = element_text(size = 7),
-        legend.location = "plot",
         axis.title.x = element_blank(),
         axis.title.y = element_blank())+
   coord_flip()

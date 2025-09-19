@@ -105,10 +105,16 @@ out <- out %>%
          feature = ifelse(feature == "T1_vs_Tother","T1_over_T-other", feature))
 
 
-p <- out %>%
+out <- out %>%
   mutate(TPS_score = "negative",
          FDR = p.adjust(p.value,method = "BH"),
-         sig = ifelse(FDR < 0.1,TRUE, FALSE)) %>%
+         sig = ifelse(p.value < 0.05 & odds_ratio > 1, "UP_trend",NA),
+         sig = ifelse(FDR < 0.1 & odds_ratio > 1, "UP",sig),
+         sig = ifelse(p.value < 0.05 & odds_ratio < 1, "DOWN_trend",sig),
+         sig = ifelse(FDR < 0.1 & odds_ratio < 1, "DOWN",sig),
+         sig = ifelse(is.na(sig),"NOTSIG", sig))
+
+p <- out %>%
   ggplot(aes(x=feature, y = TPS_score,col = odds_ratio, size= -log10(p.value)))+
   #geom_tile(aes(fill = sig))+
   #theme_bw()+
@@ -121,8 +127,8 @@ p <- out %>%
   scale_color_gradient2(low = "blue",mid = "white",   high = "red",midpoint = 1)+
   scale_size(range = c(1,4))+
   new_scale_colour() +
-  geom_point(shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.5)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
+  geom_point(data = out,shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.5)+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
   theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 12),
         axis.text.y = element_text(size = 12),
         legend.text = element_text(size = 12),
@@ -204,22 +210,21 @@ for (i in c(data_type,"cello1","cello2")) {
     
 }
 
-# define fold change cutoff for plotting
-cutoff <- 0.7
-
 cur_dat <- do.call(rbind,p.list)
 cur_dat <- cur_dat %>%
   mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
          cond = ifelse(grepl("Adeno",comparison),"TPShigh_LUAD","TPShigh_LUSC")) %>%
   group_by(tech) %>%
   mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         sig = ifelse(FDR < 0.1 & abs(logFC) > cutoff,TRUE,FALSE),
-         direction = ifelse(logFC > 0 ,"up", "down"),
-         ct_name = gsub("_abundance","",str_split_i(celltypes,"__",1)))
+         sig = ifelse(PValue < 0.05 & logFC > 0, "UP_trend",NA),
+         sig = ifelse(FDR < 0.1 & logFC > 0, "UP",sig),
+         sig = ifelse(PValue < 0.05 & logFC < 0, "DOWN_trend",sig),
+         sig = ifelse(FDR < 0.1 & logFC < 0, "DOWN",sig),
+         sig = ifelse(is.na(sig),"NOTSIG", sig),
+         ct_name = gsub("_density","",str_split_i(celltypes,"__",1)))
   
 to_show <- cur_dat %>%
-  filter(sig == TRUE) %>%
+  filter(sig %in% c("UP","DOWN")) %>%
   pull(celltypes)
 
 cur_dat <- cur_dat %>%
@@ -237,30 +242,23 @@ min_down <- min(cur_dat$logFC)-1
 # plot the data
 p <- cur_dat %>%
   ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
   geom_point()+
   theme_bw()+
   scale_colour_gradientn(colours = c("blue","white","red"), 
                          values = rescale(c(round(min_down),0,round(max_up))),
                          guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  #scale_color_gradient(low = "white",   high = "red")+
   scale_size(range = c(1,10))+
   new_scale_colour() +
-  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =1)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 20),
-        axis.text.y = element_text(size = 20),
+  geom_point(data = cur_dat,shape = 1,aes(size = -log10(PValue), col = sig), stroke =1)+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 16),
+        axis.text.y = element_text(size = 16),
         legend.text = element_text(size = 20),
         legend.title = element_text(size = 20),
         legend.location = "plot",
         axis.title.x = element_blank(),
         axis.title.y = element_blank())+
   coord_flip()
-  #theme(plot.margin = unit(c(5, 2.5, 2.5, 2.5), "cm"))
 p
 
 ggsave(filename = paste0(out_folder,"3C_diff_abundance_TPS_LUSC_LUAD_bubble_plot.pdf"),
@@ -654,24 +652,35 @@ out <- out %>%
          feature = ifelse(feature == "T1_vs_Tother","T1_over_T-other", feature))
 
 
-p <- out %>%
-  mutate(TMB_score = "TMB-high",
+out <- out %>%
+  mutate(TPS_score = "negative",
          FDR = p.adjust(p.value,method = "BH"),
-         sig = ifelse(FDR < 0.1,TRUE, FALSE)) %>%
-  ggplot(aes(x=feature, y = TMB_score,col = odds_ratio, size= -log10(p.value)))+
+         sig = ifelse(p.value < 0.05 & odds_ratio > 1, "UP_trend",NA),
+         sig = ifelse(FDR < 0.1 & odds_ratio > 1, "UP",sig),
+         sig = ifelse(p.value < 0.05 & odds_ratio < 1, "DOWN_trend",sig),
+         sig = ifelse(FDR < 0.1 & odds_ratio < 1, "DOWN",sig),
+         sig = ifelse(is.na(sig),"NOTSIG", sig))
+
+p <- out %>%
+  ggplot(aes(x=feature, y = TPS_score,col = odds_ratio, size= -log10(p.value)))+
+  #geom_tile(aes(fill = sig))+
+  #theme_bw()+
   geom_point()+
   theme_bw()+
+  #scale_colour_viridis_c()+
+  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+  #theme_bw()+
   scale_color_gradient2(low = "blue",mid = "white",   high = "red",midpoint = 1)+
   scale_size(range = c(1,4))+
   new_scale_colour() +
-  geom_point(shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.5)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
+  geom_point(data = out,shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.5)+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
   theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
-        axis.text.y = element_text(size = 11),
+        axis.text.y = element_text(size = 10),
         legend.text = element_text(size = 10),
         legend.title = element_text(size = 10),
-        axis.title.y = element_blank(),
-        axis.title.x = element_blank())+
+        axis.title.y = element_blank())+
   coord_flip()
 p
 
@@ -679,7 +688,7 @@ ggsave(filename = paste0(out_folder,"3I_TMB_enrichment_in_clinical.pdf"),
        plot = p,
        device = "pdf",
        width = 4,
-       height = 4.75)
+       height = 4.9)
 ```
 
 
@@ -752,21 +761,21 @@ for (i in c(data_type,"cello1","cello2")) {
     
 }
 
-# define logFC cutoff
-cutoff <- 0.7
 cur_dat <- do.call(rbind,p.list)
 cur_dat <- cur_dat %>%
   mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = ifelse(grepl("Adeno",comparison),"TMBhigh_LUAD","TMBhigh_LUSC")) %>%
+         cond = ifelse(grepl("Adeno",comparison),"LUAD","LUSC")) %>%
   group_by(tech) %>%
   mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         sig = ifelse(FDR < 0.1 & abs(logFC) > cutoff,TRUE,FALSE),
-         direction = ifelse(logFC > 0 ,"up", "down"),
-         ct_name = gsub("_abundance","",str_split_i(celltypes,"__",1)))
+         sig = ifelse(PValue < 0.05 & logFC > 0, "UP_trend",NA),
+         sig = ifelse(FDR < 0.1 & logFC > 0, "UP",sig),
+         sig = ifelse(PValue < 0.05 & logFC < 0, "DOWN_trend",sig),
+         sig = ifelse(FDR < 0.1 & logFC < 0, "DOWN",sig),
+         sig = ifelse(is.na(sig),"NOTSIG", sig),
+         ct_name = gsub("_density","",str_split_i(celltypes,"__",1)))
   
 to_show <- cur_dat %>%
-  filter(sig == TRUE) %>%
+  filter(sig %in% c("UP","DOWN")) %>%
   pull(celltypes)
 
 cur_dat <- cur_dat %>%
@@ -782,36 +791,25 @@ max_up <- max(cur_dat$logFC)+1
 min_down <- min(cur_dat$logFC)-1
 
 # plot the data
-plot_dat <- cur_dat %>%
-  mutate(cond = str_split_i(cond,"_",2))
-p <- plot_dat %>%
+p <- cur_dat %>%
   ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
   geom_point()+
   theme_bw()+
-  scale_colour_gradientn(
-    colours = c("blue", "white", "red"), 
-    values = rescale(c(round(min_down), 0, round(max_up))),
-    limits = c(round(min_down), round(max_up)),
-    guide = guide_colorbar(
-      title = "logFC",                   
-      barwidth = 12,                     
-      barheight = 1.5,                   
-      title.theme = element_text(size = 16),
-      label.theme = element_text(size = 14)
-    )
-  )+
-  scale_size(range = c(1,8))+
+  scale_colour_gradientn(colours = c("blue","white","red"), 
+                         values = rescale(c(round(min_down),0,round(max_up))),
+                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
+  scale_size(range = c(1,10))+
   new_scale_colour() +
-  geom_point(data = plot_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 14),
-        axis.text.y = element_text(size = 14),
-        legend.text = element_text(size = 14),
-        legend.title = element_text(size = 14),
+  geom_point(data = cur_dat,shape = 1,aes(size = -log10(PValue), col = sig), stroke =1)+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 16),
+        axis.text.y = element_text(size = 16),
+        legend.text = element_text(size = 16),
+        legend.title = element_text(size = 16),
+        legend.location = "plot",
         axis.title.x = element_blank(),
         axis.title.y = element_blank(),
-        legend.position = "bottom",
-        plot.title = element_text(hjust = 0.5, size = 14))+
+        title = element_text(size = 16))+
   ggtitle("Differential abundance for TMB-high")
   
 
@@ -819,12 +817,13 @@ p
 ggsave(filename = paste0(out_folder,"3J_diff_abundance_TMB_LUSC_LUAD_bubble_plot.pdf"),
        plot = p,
        device = "pdf",
-       width = 12,
-       height = 5)
+       width = 14,
+       height = 6)
 ```
 
 
-sanity check
+sanity checks
+
 ```{r}
 cello_dat %>%
   select(immucan_id,CN_1__cello2) %>%
@@ -843,7 +842,143 @@ cello_dat %>%
   stat_compare_means()
 ```
 
-# 3K inflammation signature for TMB
+# 3K TMB vs TPS
+
+```{r, fig.height=6, fig.width=15}
+table(traits$TMB_score,traits$TPS_score)
+traits <- traits %>%
+  mutate(TMB_TPS = ifelse(TMB_score == "low" & TPS_score == "positive", "TMBlow_TPShigh",ifelse(TMB_score == "high" & TPS_score == "negative", "TMBhigh_TPSlow", NA))) 
+condition <- c("TMBhigh_TPSlow")
+names(condition) <- c("TMB_TPS")
+
+# loop over conditions and do two way abundance difference tests
+p.list <- list()
+for (i in c(data_type,"cello1","cello2")) {
+    
+    if(grepl("cello",i)){
+      abundances <- cello_dat %>%
+        select(contains(i))
+      abundances <- t(abundances)
+      colnames(abundances) <- cello_dat$immucan_id
+    } else {
+      abundances <- dat %>%
+        select(contains(i)) %>%
+        filter(complete.cases(.))
+      abundances <- t(abundances)
+      colnames(abundances) <- dat %>%
+        select(contains(i),immucan_id) %>%
+        filter(complete.cases(.)) %>%
+        pull(immucan_id)
+    }
+    anno <- traits %>%
+      filter(!is.na(.data[["TMB_TPS"]]))
+    
+    # remove patients without TMB info from the abundance data
+    abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
+    
+    meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
+    meta$histology_TMB_TPS <- paste0(meta$simple_histology,"_",meta$TMB_TPS)
+    Size <- factor(meta[,"histology_TMB_TPS"])
+    meta$Size <- Size
+    
+    # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
+    y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
+    design <- model.matrix(~0+group,data = y.ab$samples)
+    colnames(design) <- levels(y.ab$samples$group)
+    # we do not fit a trend 
+    y.ab <- estimateDisp(y.ab, design, trend.method = "none")
+    y.ab$common.dispersion
+    #plotBCV(y.ab,pch = 5)
+    
+    # we only compare the diff abundance for Adeno vs Sqam.
+    fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
+    fit_LUAD <- glmLRT(glmfit = fit.ab,contrast = c(-1,1,0,0,0,0,0,0))
+    fit_LUSC <- glmLRT(glmfit = fit.ab,contrast = c(0,0,0,0,0,-1,1,0))
+    #plotQLDisp(fit.ab, pch = 5)
+
+    res_list <- list(fit_LUAD,fit_LUSC)
+    
+    cur_list <- lapply(res_list,function(x){
+      sig_dat <- x$table
+      sig_dat$celltypes <- rownames(sig_dat)
+      sig_dat$comparison <- grep("Adeno|Squamous",x$comparison,value = TRUE)
+      return(sig_dat)
+    })
+
+    p.list[[i]] <- do.call(rbind,cur_list)
+    
+    
+}
+
+cur_dat <- do.call(rbind,p.list)
+cur_dat <- cur_dat %>%
+  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
+         cond = ifelse(grepl("Adeno",comparison),"LUAD","LUSC")) %>%
+  group_by(tech) %>%
+  mutate(FDR = p.adjust(PValue,method = "BH"),
+         sig = ifelse(PValue < 0.05 & logFC > 0, "UP_trend",NA),
+         sig = ifelse(FDR < 0.1 & logFC > 0, "UP",sig),
+         sig = ifelse(PValue < 0.05 & logFC < 0, "DOWN_trend",sig),
+         sig = ifelse(FDR < 0.1 & logFC < 0, "DOWN",sig),
+         sig = ifelse(is.na(sig),"NOTSIG", sig),
+         ct_name = gsub("_density","",str_split_i(celltypes,"__",1)))
+  
+to_show <- cur_dat %>%
+  filter(sig %in% c("UP","DOWN")) %>%
+  pull(celltypes)
+
+cur_dat <- cur_dat %>%
+  filter(celltypes %in% to_show) %>%
+  mutate(celltypes = gsub("_abundance","",celltypes))
+
+## spatial cluster renaming
+cur_dat <- cur_dat %>%
+  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
+
+# get max and min fold change values
+max_up <- max(cur_dat$logFC)+1
+min_down <- min(cur_dat$logFC)-1
+
+# plot the data
+p <- cur_dat %>%
+  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
+  #geom_tile(aes(fill = sig))+
+  #theme_bw()+
+  geom_point()+
+  theme_bw()+
+  scale_colour_gradientn(colours = c("blue","white","red"), 
+                         values = rescale(c(round(min_down),0,round(max_up))),
+                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
+  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+  #theme_bw()+
+  #scale_color_gradient(low = "white",   high = "red")+
+  scale_size(range = c(1,10))+
+  new_scale_colour() +
+  geom_point(data = cur_dat,shape = 1,aes(size = -log10(PValue), col = sig), stroke =1)+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 16),
+        axis.text.y = element_text(size = 16),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        legend.location = "plot",
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        title = element_text(size = 14))+
+  ggtitle("Differential abundance for TPS-high/TMB-low over TPS-low/TMB-high")
+  
+
+p
+
+ggsave(filename = paste0(out_folder,"3K_diff_abundance_TMB_vs_TPS.pdf"),
+       plot = p,
+       device = "pdf",
+       width = 20,
+       height = 5.5)
+```
+
+
+# 3L inflammation signature for TMB
 
 ```{r}
 cur_dat <- read.table(paste0(mount_path,"data/RNASeq/CURIE/inflammation_quantification_NSCLC2/outputs/pathwayActivity/PathwayActivity_NSCLC2_mlm"))
@@ -879,7 +1014,7 @@ p <- cur_dat %>%
   ylab("Pathway score")
 
 p
-ggsave(filename = paste0(out_folder,"3K_inflammation_score_for_TMB.pdf"),
+ggsave(filename = paste0(out_folder,"3L_inflammation_score_for_TMB.pdf"),
        plot = p,
        device = "pdf",
        width = 4,
@@ -1013,127 +1148,4 @@ p <- plot_dat %>%
 p
 ```
 
-```{r, fig.height=6, fig.width=15}
-table(traits$TMB_score,traits$TPS_score)
-traits <- traits %>%
-  mutate(TMB_TPS = ifelse(TMB_score == "low" & TPS_score == "positive", "TMBlow_TPShigh",ifelse(TMB_score == "high" & TPS_score == "negative", "TMBhigh_TPSlow", NA))) 
-condition <- c("TMBhigh_TPSlow")
-names(condition) <- c("TMB_TPS")
 
-# loop over conditions and do two way abundance difference tests
-p.list <- list()
-for (i in c(data_type,"cello1","cello2")) {
-    
-    if(grepl("cello",i)){
-      abundances <- cello_dat %>%
-        select(contains(i))
-      abundances <- t(abundances)
-      colnames(abundances) <- cello_dat$immucan_id
-    } else {
-      abundances <- dat %>%
-        select(contains(i)) %>%
-        filter(complete.cases(.))
-      abundances <- t(abundances)
-      colnames(abundances) <- dat %>%
-        select(contains(i),immucan_id) %>%
-        filter(complete.cases(.)) %>%
-        pull(immucan_id)
-    }
-    anno <- traits %>%
-      filter(!is.na(.data[["TMB_TPS"]]),
-             simple_histology == "Squamous cell carcinoma")
-    
-    # remove patients without TMB info from the abundance data
-    abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
-    
-    # new from here
-    meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-    Size <- factor(meta[,"TMB_TPS"])
-    meta$Size <- Size
-    
-    # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
-    y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-    design <- model.matrix(~0+group,data = y.ab$samples)
-    colnames(design) <- levels(y.ab$samples$group)
-    # we do not fit a trend 
-    y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-    y.ab$common.dispersion
-    #plotBCV(y.ab,pch = 5)
-    
-    # we only compare the diff abundance for Adeno vs Sqam.
-    fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-    fit <- glmLRT(glmfit = fit.ab,contrast = c(1,-1))
-    #plotQLDisp(fit.ab, pch = 5)
-
-    sig_dat <- fit$table
-    sig_dat$celltypes <- rownames(sig_dat)
-
-    p.list[[i]] <- sig_dat
-    
-    
-}
-
-# define logFC cutoff
-cutoff <- 0.7
-cur_dat <- do.call(rbind,p.list)
-cur_dat <- cur_dat %>%
-  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = "TMBhigh_TPSlow-over-TMBlow_TPShigh") %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         sig = ifelse(FDR < 0.1 & abs(logFC) > cutoff,TRUE,FALSE),
-         direction = ifelse(logFC > 0 ,"up", "down"),
-         ct_name = gsub("_abundance","",str_split_i(celltypes,"__",1)))
-  
-to_show <- cur_dat %>%
-  filter(sig == TRUE) %>%
-  pull(celltypes)
-
-cur_dat <- cur_dat %>%
-  filter(celltypes %in% to_show) %>%
-  mutate(celltypes = gsub("_abundance","",celltypes))
-
-## spatial cluster renaming
-cur_dat <- cur_dat %>%
-  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
-
-# get max and min fold change values
-max_up <- max(cur_dat$logFC)+1
-min_down <- min(cur_dat$logFC)-1
-
-# plot the data
-plot_dat <- cur_dat
-p <- plot_dat %>%
-  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  geom_point()+
-  theme_bw()+
-  scale_colour_gradientn(
-    colours = c("blue", "white", "red"), 
-    values = rescale(c(round(min_down), 0, round(max_up))),
-    limits = c(round(min_down), round(max_up)),
-    guide = guide_colorbar(
-      title = "logFC",                   
-      barwidth = 12,                     
-      barheight = 1.5,                   
-      title.theme = element_text(size = 16),
-      label.theme = element_text(size = 14)
-    )
-  )+
-  scale_size(range = c(1,8))+
-  new_scale_colour() +
-  geom_point(data = plot_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 14),
-        axis.text.y = element_text(size = 14),
-        legend.text = element_text(size = 14),
-        legend.title = element_text(size = 14),
-        axis.title.x = element_blank(),
-        axis.title.y = element_blank(),
-        legend.position = "bottom",
-        plot.title = element_text(hjust = 0.5, size = 14))+
-  ggtitle("Differential abundance for TMB-high")
-  
-
-p
-```
