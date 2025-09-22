@@ -836,11 +836,12 @@ cur_dat <- cur_dat %>%
   
 to_show <- cur_dat %>%
   filter(sig %in% c("UP","DOWN")) %>%
-  pull(ct_name)
+  pull(celltypes)
 
 cur_dat <- cur_dat %>%
-  filter(ct_name %in% to_show) %>%
-  mutate(celltypes = gsub("_abundance","",celltypes))
+  filter(celltypes %in% to_show) %>%
+  mutate(celltypes = gsub("_abundance","",celltypes),
+         celltypes = gsub("cello", "IMC",celltypes))
 
 # get max and min fold change values
 max_up <- max(cur_dat$logFC)+1
@@ -853,8 +854,6 @@ p <- cur_dat %>%
                                                       "LUAD_ExSmoker_over_NonSmoker",
                                                       "LUAD_CurrentSmoker_over_NonSmoker",
                                                       "LUSC_CurrentSmoker_over_ExSmoker")),col = logFC, size= -log10(PValue)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
   geom_point()+
   theme_bw()+
   scale_colour_gradientn(
@@ -863,8 +862,6 @@ p <- cur_dat %>%
     limits = c(round(min_down), round(max_up)),
     guide = guide_colorbar(
       title = "logFC",                   
-      #barwidth = 2,                     
-      #barheight = 1,                   
       title.theme = element_text(size = 12),
       label.theme = element_text(size = 12)
     )
@@ -892,114 +889,7 @@ ggsave(filename = paste0(out_folder,"S3D_diff_abundance_smoking.pdf"),
        height = 6)
 ```
 
-## LUAD
-```{r, fig.height=15, fig.width=25}
-condition <- c("Non-smoker","Non-smoker","Ex-smoker")
-names(condition) <- c("never_vs_current_smoker","never_vs_Ex_smoker","current_vs_Ex_smoker")
-j <- names(condition)
-p.list <- list()
-for (i in c("cello1","cello2")) {
 
-  abundances <- cello_dat %>%
-    select(contains(i))
-  abundances <- t(abundances)
-  colnames(abundances) <- cello_dat$immucan_id
-  
-  anno <- clin_dat %>%
-    filter(!is.na(smoking_status),
-           simple_histology == "Adenocarcinoma")
-  
-  abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
-  
-  meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-  Size <- factor(meta[,"smoking_status"])
-  meta$Size <- Size
-  
-  # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
-  y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-  design <- model.matrix(~0+group,data = y.ab$samples)
-  colnames(design) <- levels(y.ab$samples$group)
-  # we do not fit a trend 
-  y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-  y.ab$common.dispersion
-  #plotBCV(y.ab,pch = 5)
-  
-  # we only compare the diff abundance for Adeno vs Sqam.
-  fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-  fit_1_2 <- glmLRT(glmfit = fit.ab,contrast = c(1,-1,0))
-  fit_1_3 <- glmLRT(glmfit = fit.ab,contrast = c(1,0,-1))
-  fit_2_3 <- glmLRT(glmfit = fit.ab,contrast = c(0,1,-1))
-  res_list <- list(fit_1_2,fit_1_3,fit_2_3)
-  
-  cur_list <- lapply(res_list,function(x){
-    sig_dat <- x$table
-    sig_dat$celltypes <- rownames(sig_dat)
-    sig_dat$comparison <- gsub("Size","",x$comparison)
-    return(sig_dat)
-  })
-  
-  p.list[[i]] <- do.call(rbind,cur_list)
-}   
-    
-cur_dat_LUAD <- do.call(rbind,p.list)
-
-cur_dat <- cur_dat %>%
-  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = ifelse(comparison == "1*Current smoker -1*Ex-smoker","CurrentSmoker_over_ExSmoker","ExSmoker_over_NonSmoker"),
-         cond = ifelse(comparison == "1*Current smoker -1*Non-smoker","CurrentSmoker_over_NonSmoker",cond)) %>%
-  group_by(tech) %>%
-mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig = ifelse(PValue < 0.05 & logFC > 0, "UP_trend",NA),
-         sig = ifelse(FDR < 0.1 & logFC > 0, "UP",sig),
-         sig = ifelse(PValue < 0.05 & logFC < 0, "DOWN_trend",sig),
-         sig = ifelse(FDR < 0.1 & logFC < 0, "DOWN",sig),
-         sig = ifelse(is.na(sig),"not sig", sig),
-         ct_name = gsub("_density","",str_split_i(celltypes,"__",1)))
-  
-to_show <- cur_dat %>%
-  filter(sig %in% c("DOWN","UP")) %>%
-  pull(celltypes)
-
-cur_dat <- cur_dat %>%
-  filter(celltypes %in% to_show) %>%
-  mutate(celltypes = gsub("_abundance","",celltypes))
-
-## spatial cluster renaming
-cur_dat <- cur_dat %>%
-  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
-
-# get max and min fold change values
-max_up <- max(cur_dat$logFC)+1
-min_down <- min(cur_dat$logFC)-1
-
-# plot the data
-p <- cur_dat %>%
-  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  geom_point()+
-  theme_bw()+
-  scale_colour_gradientn(colours = c("blue","white","red"), 
-                         values = rescale(c(round(min_down),0,round(max_up))),
-                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  scale_size(range = c(1,5))+
-  new_scale_colour() +
-  geom_point(data = cur_dat ,shape = 1,aes(size = -log10(PValue), col = sig), stroke =1.5)+
-  scale_color_manual(values = c("UP" = "darkred","UP_trend" = "red","DOWN" = "darkblue","UP_trend" = "blue","not sig" = "gray"), name = "stats")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 12),
-        axis.text.y = element_text(size = 12),
-        legend.text = element_text(size = 12),
-        legend.title = element_text(size = 12),
-        axis.title.y = element_blank(),
-        axis.title.x = element_text(size = 16),
-        legend.position = "bottom")+
-  xlab("cellohood clusters")
-p
-
-ggsave(filename = paste0(out_folder,"S3D_diff_abundance_smoking_cellohood.pdf"),
-       plot = p,
-       device = "pdf",
-       width = 10,
-       height = 3.25)
-```
 
 # S3E mutation signatures
 

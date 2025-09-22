@@ -92,6 +92,23 @@ dat %>%
   summarise(sum(Freq))
 ```
 
+# smoking and TP53 in LUAD
+
+```{r}
+cur_traits <- traits %>%
+  filter(!is.na(smoking_status)) %>%
+  mutate(smoker = ifelse(smoking_status %in% c("Current smoker","Ex-smoker"),"smoker", "non-smoker")) %>%
+  filter(simple_histology == "Adenocarcinoma")
+res <- fisher.test(table(cur_traits$smoker,cur_traits$TP53), or = TRUE,conf.int = TRUE)
+print(res)
+res$method
+table(cur_traits$smoker,cur_traits$TP53)
+table(cur_traits$smoking_status,cur_traits$TP53)
+
+
+```
+
+
 # survival for neo-adjuvant and adjuvant treatment
 ```{r}
 ggforest(coxph( Surv(time_to_event, censoring) ~  neo_adjuvant_treatment,data = traits))

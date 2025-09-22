@@ -682,7 +682,6 @@ sigs %>%
 
 
 # 2F diff abundance smoking bubble plot
-
 ## smoking status LUAD
 
 ```{r, fig.height=15, fig.width=25}
@@ -875,7 +874,7 @@ cur_dat.SBS <-cur_dat.SBS %>%
   mutate(histology = "all")
 ```
 
-
+## plot together
 ```{r, fig.height=10, fig.width=20}
 cur_dat <- rbind(cur_dat_LUAD,cur_dat_LUSC,cur_dat.SBS)
 
@@ -1069,8 +1068,8 @@ p <- cur_dat %>%
 p
 ```
 
-# 2G images for smoking
-
+# images for smoking
+not in paper
 ```{r, fig.height=12, fig.width=16}
 # identify images with high amuounts of differentiall abundant cello clusters 18 from panel 1
 cello_dat %>% 
