@@ -461,7 +461,7 @@ p
 
 # combined plot with colors
 p1 <- cur_traits %>%
-  mutate(LUAD_vs_LUSC = ifelse(is.na(LUAD_vs_LUSC), "other", LUAD_vs_LUSC),
+  mutate(LUAD_vs_LUSC = ifelse(is.na(LUAD_vs_LUSC), "Other", LUAD_vs_LUSC),
          LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma","LUAD", LUAD_vs_LUSC),
           LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Squamous cell carcinoma","LUSC", LUAD_vs_LUSC)) %>%
   ggplot(aes(x = log2(TPS),y = log2(mean_total_CD8_density), col = (LUAD_vs_LUSC)))+
@@ -530,7 +530,7 @@ p <- plot_grid(p1, p2, nrow = 2)
 p
 
 p1 <- cur_traits %>%
-  mutate(LUAD_vs_LUSC = ifelse(is.na(LUAD_vs_LUSC), "other", LUAD_vs_LUSC),
+  mutate(LUAD_vs_LUSC = ifelse(is.na(LUAD_vs_LUSC), "Other", LUAD_vs_LUSC),
          LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma","LUAD", LUAD_vs_LUSC),
           LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Squamous cell carcinoma","LUSC", LUAD_vs_LUSC)) %>%
   ggplot(aes(x = log2(TPS),y = log2(mean_inf_ratio), col = (LUAD_vs_LUSC)))+
@@ -558,7 +558,7 @@ p1
 ggsave(filename = paste0(out_folder,"3F_correlation_interaction_ratio_and_TPS_colored.pdf"),
        plot = p1,
        device = "pdf",
-       width = 4,
+       width = 5,
        height = 4)
 
 ```
@@ -601,7 +601,7 @@ p
 ggsave(filename = paste0(out_folder,"3H_inflammation_score_across_TPS.pdf"),
        plot = p,
        device = "pdf",
-       width = 3,
+       width = 3.2,
        height = 6)
 ```
 
