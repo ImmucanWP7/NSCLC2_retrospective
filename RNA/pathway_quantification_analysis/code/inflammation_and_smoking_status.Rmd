@@ -1,0 +1,237 @@
+
+```{r , echo=FALSE, include=FALSE}
+# select the samples for which RNA is available
+ind_av_samples <- which(clinical_data$immucan_id %in% colnames(NSCLC2))
+clinical_data <- clinical_data[ind_av_samples,]
+
+#remove patients for which we don't know time_since_stopped_smoking:
+ind_missing <- which( clinical_data$smoking_status =="Ex-smoker" & is.na(clinical_data$long_term_ex_smoker) )
+clinical_data <- clinical_data[-ind_missing]
+
+ind_long_term_ex_smoker <- which(clinical_data$long_term_ex_smoker == TRUE)
+ind_non_long_term_ex_smoker <- which(clinical_data$long_term_ex_smoker == FALSE)
+
+clinical_data$smoking_status[ind_long_term_ex_smoker] <- "Ex-smoker"
+clinical_data$smoking_status[ind_non_long_term_ex_smoker] <- "Current smoker"
+```
+
+
+```{r , echo=FALSE}
+clinical_data_min <- clinical_data[,c(2, 13, 26)]
+```
+
+
+## Compare inflammation quantification according to 3 smoking status
+
+```{r inflammation_quantif_smoking, echo=FALSE, include=FALSE}
+pdf(paste0("../", GraphOutDir, "/", outputDirInflammation, "/boxplot_inflammation_quantification_3smokingStatus.pdf"), height=5)
+for (i in 1:length(list_files)) 
+{
+  data <- read.table(paste0("../", list_files[i]), header = TRUE)
+  #add info smoking status
+  data_NSCLC <- merge(data, clinical_data_min, by.x = "row.names", by.y = "immucan_id")
+  
+  #method
+  method_name <- unlist(str_split(list_files[i], "_NSCLC2_"))[2]
+  
+  #comparison
+  my_comparisons <- list( c("Current smoker", "Ex-smoker"), c("Ex-smoker", "Non-smoker"), c("Current smoker", "Non-smoker") )
+  
+  #NF-KB
+  p_NFkB <- ggplot(data_NSCLC, aes(x=smoking_status, y=NFkB)) + 
+    ylab("NFKB") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(colour = "darkgrey", size = 1, width = 0.15) +
+    ggtitle(glue::glue('NFKB quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 10)) +
+    stat_compare_means(comparisons = my_comparisons) + # Add pairwise comparisons p-value
+    stat_compare_means()
+  
+  #MAPK
+  p_MAPK <- ggplot(data_NSCLC, aes(x=smoking_status, y=MAPK)) + 
+    ylab("MAPK") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(colour = "darkgrey", size = 1, width = 0.15) +
+    ggtitle(glue::glue('MAPK quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 9)) +
+    stat_compare_means(comparisons = my_comparisons) + # Add pairwise comparisons p-value
+    stat_compare_means()
+  
+  #JAK-STAT
+  p_JAK_STAT <- ggplot(data_NSCLC, aes(x=smoking_status, y=JAK.STAT)) + 
+    ylab("JAK-STAT") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(colour = "darkgrey", size = 1, width = 0.15) +
+    ggtitle(glue::glue('JAK-STAT quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 8)) +
+    stat_compare_means(comparisons = my_comparisons) + # Add pairwise comparisons p-value
+    stat_compare_means()
+  
+  print(ggarrange(p_NFkB, p_MAPK, p_JAK_STAT, 
+                  labels = c("A", "B", "C"),
+                  ncol = 3, nrow = 1) )
+  
+}
+dev.off()
+```
+
+
+## Compare inflammation quantification according to smoking status with histology information
+
+```{r inflammation_quantif_smoking_histology, echo=FALSE, include=FALSE}
+pdf(paste0("../", GraphOutDir, "/", outputDirInflammation, "boxplot_inflammation_quantification_by_histology_3smokingStatus.pdf"), height=5, width=13)
+for (i in 1:length(list_files))
+{
+  data <- read.table(paste0("../", file=list_files[i]), header = TRUE)
+
+  #add info smoking status
+  data_NSCLC <- merge(data, clinical_data_min, by.x = "row.names", by.y = "immucan_id")
+  
+  #method
+  method_name <- unlist(str_split(list_files[i], "_NSCLC2_"))[2]
+  
+  #comparison
+  my_comparisons <- list( c("Current smoker", "Ex-smoker"), c("Ex-smoker", "Non-smoker"), c("Current smoker", "Non-smoker") )
+
+  # NF-KB
+  p_NFkB <- ggplot(data_NSCLC, aes(x=smoking_status, y=NFkB)) + 
+    ylab("NFKB") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(aes(colour = simple_histology), size = 1, width = 0.15) +
+    ggtitle(glue::glue('NFKB quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 10)) +
+    stat_compare_means(comparisons = my_comparisons) + # Add pairwise comparisons p-value
+    stat_compare_means()
+  
+  #MAPK
+  p_MAPK <- ggplot(data_NSCLC, aes(x=smoking_status, y=MAPK)) + 
+    ylab("MAPK") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(aes(colour = simple_histology), size = 1, width = 0.15) +
+    ggtitle(glue::glue('MAPK quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 9)) +
+    stat_compare_means(comparisons = my_comparisons) + # Add pairwise comparisons p-value
+    stat_compare_means()
+  
+  #JAK-STAT
+  p_JAK_STAT <- ggplot(data_NSCLC, aes(x=smoking_status, y=JAK.STAT)) + 
+    ylab("JAK-STAT") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(aes(colour = simple_histology), size = 1, width = 0.15) +
+    ggtitle(glue::glue('JAK-STAT quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 8)) +
+    stat_compare_means(comparisons = my_comparisons) + # Add pairwise comparisons p-value
+    stat_compare_means()
+  
+  print(ggarrange(p_NFkB, p_MAPK, p_JAK_STAT, 
+                  labels = c("A", "B", "C"),
+                  ncol = 3, nrow = 1) )
+  
+}
+dev.off()
+```
+
+
+## Compare inflammation quantification according to 2 smoking status
+
+```{r , echo=FALSE}
+ind_cur_ex <- which(clinical_data$smoking_status %in% c("Current smoker", "Ex-smoker"))
+clinical_data_min$smoking_status[ind_cur_ex] <- "Current or Ex-smoker"
+```
+
+```{r inflammation_quantif_smoking_2groups, echo=FALSE, include=FALSE}
+pdf(paste0("../", GraphOutDir, "/", outputDirInflammation, "/boxplot_inflammation_quantification_2smokingStatus.pdf"), height=5)
+for (i in 1:length(list_files))
+{
+  data <- read.table(paste0("../", file=list_files[i]), header = TRUE)
+  
+  #add info smoking status
+  data_NSCLC <- merge(data, clinical_data_min, by.x = "row.names", by.y = "immucan_id")
+  
+  #method
+  method_name <- unlist(str_split(list_files[i], "_NSCLC2_"))[2]
+  
+  # NF-KB
+  p_NFkB <- ggplot(data_NSCLC, aes(x=smoking_status, y=NFkB)) + 
+    ylab("NFKB") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(colour = "darkgrey", size = 1, width = 0.15) +
+    ggtitle(glue::glue('NFKB quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 10)) +
+    stat_compare_means()
+  
+  #MAPK
+  p_MAPK <- ggplot(data_NSCLC, aes(x=smoking_status, y=MAPK)) + 
+    ylab("MAPK") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(colour = "darkgrey", size = 1, width = 0.15) +
+    ggtitle(glue::glue('MAPK quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 9)) +
+    stat_compare_means()
+  
+  #JAK-STAT
+  p_JAK_STAT <- ggplot(data_NSCLC, aes(x=smoking_status, y=JAK.STAT)) + 
+    ylab("JAK-STAT") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(colour = "darkgrey", size = 1, width = 0.15) +
+    ggtitle(glue::glue('JAK-STAT quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 8)) +
+    stat_compare_means()
+  
+  print(ggarrange(p_NFkB, p_MAPK, p_JAK_STAT, 
+                  labels = c("A", "B", "C"),
+                  ncol = 3, nrow = 1) )
+  
+}
+dev.off()
+```
+
+
+## Compare inflammation quantification according to 2 smoking status with histology information
+
+```{r inflammation_quantif_smoking_histology_2groups, echo=FALSE, include=FALSE}
+pdf(paste0("../", GraphOutDir, "/", outputDirInflammation, "/boxplot_inflammation_quantification_by_histology_2smokingStatus.pdf"), height=5, width=13)
+for (i in 1:length(list_files))
+{
+  data <- read.table(paste0("../", file=list_files[i]), header = TRUE)
+
+  #add info smoking status
+  data_NSCLC <- merge(data, clinical_data_min, by.x = "row.names", by.y = "immucan_id")
+  
+  #method
+  method_name <- unlist(str_split(list_files[i], "_NSCLC2_"))[2]
+  
+  # NF-KB
+  p_NFkB <- ggplot(data_NSCLC, aes(x=smoking_status, y=NFkB)) + 
+    ylab("NFKB") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(aes(colour = simple_histology), size = 1, width = 0.15) +
+    ggtitle(glue::glue('NFKB quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 10)) +
+    stat_compare_means()
+  
+  #MAPK
+  p_MAPK <- ggplot(data_NSCLC, aes(x=smoking_status, y=MAPK)) + 
+    ylab("MAPK") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(aes(colour = simple_histology), size = 1, width = 0.15) +
+    ggtitle(glue::glue('MAPK quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 9)) +
+    stat_compare_means()
+  
+  #JAK-STAT
+  p_JAK_STAT <- ggplot(data_NSCLC, aes(x=smoking_status, y=JAK.STAT)) + 
+    ylab("JAK-STAT") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(aes(colour = simple_histology), size = 1, width = 0.15) +
+    ggtitle(glue::glue('JAK-STAT quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 8)) +
+    stat_compare_means()
+  
+  print(ggarrange(p_NFkB, p_MAPK, p_JAK_STAT, 
+                  labels = c("A", "B", "C"),
+                  ncol = 3, nrow = 1) )
+  
+}
+dev.off()
+```
