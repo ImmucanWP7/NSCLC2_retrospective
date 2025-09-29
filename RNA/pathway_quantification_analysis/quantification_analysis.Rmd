@@ -1,0 +1,140 @@
+---
+title: "Pathway quantification in the NSCLC2 cohort"
+subtitle: "Inflammation according to smoking status, TMB and TPS"
+author: "Jane Merlevède"
+date: "`r format(Sys.time(), '%m/%d/%y')`"
+output:
+  bookdown::html_document2:
+    self_contained: true
+    toc: true
+    toc_float:
+      collapsed: true
+      smooth_scroll: true 
+    toc_depth: 4
+    number_sections: true         
+    df_print: paged       
+    keep_md: true
+    verbose: true
+    #delete_merged_file: false
+---
+
+
+```{r load_r_packages, include=FALSE}
+library(pheatmap)
+library(ggplot2)
+library(ggpubr)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(stringr)
+library(decoupleR)
+library(progeny)
+library(OmnipathR)
+```
+
+
+```{r user_defined_parameters, include=FALSE}
+cohort = "NSCLC2"
+cancer_type = "lung"
+method_pathway = c( "mlm", "ulm", "wsum", "wmean", "aucell", "ora", "viper", "gsva")
+```
+
+
+```{r read_inputs_data, echo=FALSE, include=FALSE}
+#modify the path to the clinical data
+clinical_data <- read.csv(file="../../../../data/clinical_data/20241115_NSCLC2_for_R_update_2024.csv")
+clinical_data$immucan_id <- gsub("LUNG-", "", clinical_data$immucan_id)
+
+clinical_data_all_traits <- read.csv(file="../../../../data/clinical_data/all_traits.csv")
+clinical_data_all_traits$immucan_id <- gsub("LUNG-", "", clinical_data_all_traits$immucan_id)
+
+NSCLC2 = read.delim("inputs/NSCLC2_combatseq_24220_genes_normalized_counts_N=124_2023-10-07.csv", sep=",", row.names=1)
+tempx <- unlist(str_split(colnames(NSCLC2),".F")) 
+colnames(NSCLC2) <- tempx[seq(1,length(tempx),2)]
+colnames(NSCLC2) <- gsub("\\.", "-", colnames(NSCLC2))
+```
+
+
+```{r define_input_output_folders, echo=FALSE, eval=TRUE}
+inputDir <- "inputs/"
+outputDir="outputs/"
+GraphOutDir <- "outputs_graphs"
+outputDirInflammation="Inflammation_quantification/"
+outputDirPathwayActivity="pathwayActivity/"
+
+if (!file.exists(inputDir)){
+  dir.create(inputDir)
+}
+
+if (!file.exists(outputDir)){
+  dir.create(outputDir)
+  dir.create(file.path(outputDir, outputDirPathwayActivity))
+}
+
+if (!file.exists(GraphOutDir)){
+  dir.create(GraphOutDir)
+  dir.create(file.path(GraphOutDir, outputDirPathwayActivity))
+  dir.create(file.path(GraphOutDir, outputDirInflammation))
+}
+```
+
+
+<br><br>
+**The aim of this analysis is to look at the quantification of inflammation in the `r cohort` IMMUcan cohort according to different groups of patients based on smoking, TMB and TPS status. We looked at 3 pathways defined in PROGENy (Schubert M. et al, 2018): NFKB, JAK-STAT and MAPK.**
+<br><br>
+
+
+
+# Perform quantification
+
+## Methods
+We use the decoupleR approach (Badia-i-Mompel P. et al, 2022), an ensemble of computational methods to infer biological activities from omics data. decoupleR extracts biological signatures from prior knowledge within a unified framework. It incorporates methods that take into account the sign and weight of network interactions.
+
+![decoupleR toolbox: decoupleR's workflow, it contains a collection of computational methods that coupled with prior knowledge resources estimates biological activities from omics data molecular readouts such as normalized counts or log fold changes. (Badia-i-Mompel P. et al, 2022)](inputs/decoupleR.jpeg)
+
+The inputs of decoupleR are: 
+
+- a matrix containing molecular feature values, either for single samples or from population comparisons, like normalized gene expression counts per sample or log fold changes
+
+- a prior knowledge resource such as a collection of gene sets. 
+
+The user can then choose any method alone or many simultaneously. The recommended methods based on the benchmark performed in the decoupleR paper are ulm, mlm and concensus.
+
+
+## Prepare clinical data for annotation 
+```{r prepare_clinical_data, echo=FALSE}
+source ("code/prepare_clinical_data.R")
+```
+
+## Pathway activity quantification  {.tabset .tabset-dropdown}
+```{r pathway_activity_inference, echo=FALSE, include=FALSE, eval=TRUE}
+net_progeny <- decoupleR::get_progeny(organism = "human", top = 100)
+source ("code/pathway_activity_inference.R")
+```
+
+
+# Test inflammation across groups of patients
+
+```{r read_quantif_matrices, echo=FALSE}
+list_files <- list.files(paste0(outputDir, outputDirPathwayActivity), pattern = "PathwayActivity_NSCLC2_*", full.names = TRUE)
+# order the quantifications with first the recommended methods (mlm, ulm)
+list_files <- list_files[c(3, 5, 1:2, 4, 6:8)]
+```
+
+## Compare inflammation quantification according to smoking status
+```{r, child = "code/inflammation_and_smoking_status.Rmd", eval=TRUE}
+```
+
+## Compare inflammation quantification according to TMB
+```{r, child = "code/inflammation_and_TMB.Rmd", eval=TRUE}
+```
+
+## Compare inflammation quantification according to TPS
+```{r, child = "code/inflammation_and_TPS.Rmd", eval=TRUE}
+```
+
+
+# Session info
+```{r, eval=TRUE}
+sessionInfo()
+```
