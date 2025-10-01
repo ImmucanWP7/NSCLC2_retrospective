@@ -1,7 +1,8 @@
 ---
-title: "Untitled"
+title: "MOFA - Training"
+author: "Bruno Palau"
+date: "2025-10-01"
 output: html_document
-date: "2025-05-13"
 ---
 
 ```{r setup, include=TRUE}
@@ -30,6 +31,7 @@ library(stringr)
 
 
 MOFA_INPUT_PATH <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/MOFA/"
+CLINICAL_PATH <- "/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv"
 ```
 
 
@@ -37,7 +39,7 @@ MOFA_INPUT_PATH <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/sco
 
 ```{r}
 # clinical data
-clinical <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv") %>%
+clinical <- read.csv(CLINICAL_PATH) %>%
   dplyr::rename(Immucan_id = immucan_id) %>%
   mutate(Immucan_id = gsub("-", "_", Immucan_id))
 
