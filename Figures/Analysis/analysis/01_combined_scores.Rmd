@@ -99,6 +99,10 @@ mut_new <- mut_new %>%
   select(Gene_Name,everything(), -GENE)
 
 drivers <- c("TP53","KRAS","EGFR","PIK3CA","ALK","RET","MET","HER2","BRAF","ROS1","NTRK","NRG1","STK11", "KEAP1")
+genes_driver <- c("KRAS", "EGFR", "BRAF", "MET", "ALK", "ROS", "RET", "NTRK", "NRG1", "FGFR1", "FGFR2", "HRAS", "NRAS", "MAP2K1", "ERBB2", "ROS1", "PIK3CA", "NTRK1", "STK11")
+genes_sup <- c("TP53", "KEAP1","STK11","RB1","CDKN2A", "CDKN2B","NKX2", "NF1")
+
+drivers <- c(genes_driver, genes_sup)
 
 # check if they exist in our data
 # no data for:
@@ -124,7 +128,7 @@ mut_new <- mut_new %>%
 
 # select two additional drivers
 nonsynSNV <- mut_new %>%
-  select(immucan_id, drivers)
+  select(immucan_id, all_of(drivers))
 
 # change patient 0712 EGFR driver status to non-mut_newated
 nonsynSNV <- nonsynSNV %>%

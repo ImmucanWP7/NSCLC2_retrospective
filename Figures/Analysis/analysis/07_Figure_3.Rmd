@@ -106,7 +106,7 @@ out <- out %>%
 
 
 out <- out %>%
-  mutate(TPS_score = "negative",
+  mutate(TPS_score = "high",
          FDR = p.adjust(p.value,method = "BH"),
          sig = ifelse(p.value < 0.05 & odds_ratio > 1, "UP_trend",NA),
          sig = ifelse(FDR < 0.1 & odds_ratio > 1, "UP",sig),
@@ -213,7 +213,7 @@ for (i in c(data_type,"cello1","cello2")) {
 cur_dat <- do.call(rbind,p.list)
 cur_dat <- cur_dat %>%
   mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = ifelse(grepl("Adeno",comparison),"TPShigh_LUAD","TPShigh_LUSC")) %>%
+         cond = ifelse(grepl("Adeno",comparison),"TPS-high_LUAD","TPS-high_LUSC")) %>%
   group_by(tech) %>%
   mutate(FDR = p.adjust(PValue,method = "BH"),
          sig = ifelse(PValue < 0.05 & logFC > 0, "UP_trend",NA),
@@ -577,7 +577,7 @@ p <- cur_dat %>%
          LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma","LUAD",LUAD_vs_LUSC),
          LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Squamous cell carcinoma","LUSC",LUAD_vs_LUSC)) %>%
   filter(!is.na(TPS_score)) %>%
-  mutate(TPS_score = ifelse(TPS_score == "positive", "pos","neg")) %>%
+  mutate(TPS_score = ifelse(TPS_score == "positive", "high","low")) %>%
   ggplot(aes(x = LUAD_vs_LUSC,y = JAK.STAT, fill = TPS_score))+
   geom_boxplot()+
   geom_jitter(aes(color = TPS_score),position = position_jitterdodge(jitter.width = 0.2), size= 1.75, show.legend = FALSE)+
@@ -653,7 +653,7 @@ out <- out %>%
 
 
 out <- out %>%
-  mutate(TPS_score = "negative",
+  mutate(TMB_score = "high",
          FDR = p.adjust(p.value,method = "BH"),
          sig = ifelse(p.value < 0.05 & odds_ratio > 1, "UP_trend",NA),
          sig = ifelse(FDR < 0.1 & odds_ratio > 1, "UP",sig),
@@ -662,7 +662,7 @@ out <- out %>%
          sig = ifelse(is.na(sig),"NOTSIG", sig))
 
 p <- out %>%
-  ggplot(aes(x=feature, y = TPS_score,col = odds_ratio, size= -log10(p.value)))+
+  ggplot(aes(x=feature, y = TMB_score,col = odds_ratio, size= -log10(p.value)))+
   #geom_tile(aes(fill = sig))+
   #theme_bw()+
   geom_point()+
@@ -764,7 +764,7 @@ for (i in c(data_type,"cello1","cello2")) {
 cur_dat <- do.call(rbind,p.list)
 cur_dat <- cur_dat %>%
   mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = ifelse(grepl("Adeno",comparison),"LUAD","LUSC")) %>%
+         cond = ifelse(grepl("Adeno",comparison),"TMB-high_LUAD","TMB-high_LUSC")) %>%
   group_by(tech) %>%
   mutate(FDR = p.adjust(PValue,method = "BH"),
          sig = ifelse(PValue < 0.05 & logFC > 0, "UP_trend",NA),
@@ -809,15 +809,14 @@ p <- cur_dat %>%
         legend.location = "plot",
         axis.title.x = element_blank(),
         axis.title.y = element_blank(),
-        title = element_text(size = 16))+
-  ggtitle("Differential abundance for TMB-high")
+        title = element_text(size = 16))
   
 
 p
 ggsave(filename = paste0(out_folder,"3J_diff_abundance_TMB_LUSC_LUAD_bubble_plot.pdf"),
        plot = p,
        device = "pdf",
-       width = 14,
+       width = 15,
        height = 6)
 ```
 
@@ -1004,21 +1003,21 @@ p <- cur_dat %>%
   scale_color_manual(values = c("blue", "red"))+
   stat_compare_means(size = 8,label = "p.signif",method = "t.test")+
   theme_bw()+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 1, size = 20),
-        axis.text.y = element_text(size = 20),
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 1, size = 18),
+        axis.text.y = element_text(size = 18),
         axis.title.x = element_blank(),
-        axis.title.y = element_text(size = 20),
-        legend.text = element_text(size = 20),
-        legend.title = element_text(size = 20),
-        strip.text.x = element_text(size = 20))+
+        axis.title.y = element_text(size = 18),
+        legend.text = element_text(size = 18),
+        legend.title = element_text(size = 18),
+        strip.text.x = element_text(size = 18))+
   ylab("Pathway score")
 
 p
 ggsave(filename = paste0(out_folder,"3L_inflammation_score_for_TMB.pdf"),
        plot = p,
        device = "pdf",
-       width = 4,
-       height = 6)
+       width = 4.5,
+       height = 7)
 ```
 
 not in figures.

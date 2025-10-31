@@ -1,0 +1,107 @@
+---
+title: "Deconvolution"
+author: "Daniel Schulz"
+date: "2025-10-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(immunedeconv)
+library(tidyverse)
+library(vroom)
+library(tidyr)
+library(corrplot)
+```
+
+
+# Deconvolution with TPM counts
+
+## load data
+```{r}
+all_files <- list.files("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/TPM_counts",full.names = TRUE,pattern = "counts_TPM")
+all_files <- all_files[grepl("NSCLC2",basename(all_files))]
+length(all_files)
+
+all_dat <- vroom(all_files[1:125],col_names = FALSE,id = "sample_id",delim = "\t")
+colnames(all_dat) <- c("sample_id","Gene","counts")
+# get filenames
+all_dat <- all_dat %>%
+    mutate(sample_id = basename(sample_id),
+           sample_id = substr(x = sample_id,start = 1,stop = 16))
+all_dat <- all_dat %>%
+  filter(Gene != "gene")
+
+all_dat <- all_dat %>%
+  pivot_wider(names_from = "sample_id",values_from = "counts")
+
+gene_key <- read_csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNAseq/annotations/HGNC_ENS_matching.csv",col_names = c("HGNC","Gene"))
+
+all_dat <- all_dat %>%
+  mutate(Gene = str_split(string = Gene,pattern = "\\.",simplify = TRUE)[,1])
+
+# genes in our data not in the Ensembl download
+#genes[which(genes %in% gene_key$Gene == FALSE)]
+
+# genes in the Ensembl download but not in our data
+#genes[which(gene_key$Gene %in% genes == FALSE)]
+
+all_dat <- left_join(all_dat,gene_key,"Gene")
+
+# we will remove all rows for which no HGNC name is available
+all_dat <- all_dat %>%
+  filter(!is.na(HGNC))
+
+
+# normalize data
+library(edgeR)
+mat <- as.matrix(all_dat %>% select(-c(Gene,HGNC)))
+rownames(mat) <- all_dat$HGNC
+norm_mat <- edgeR::cpm(mat)
+dim(norm_mat)
+
+write.csv(x = as.data.frame(norm_mat),file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/RNAseq/TPM_norm_for_xCell.csv",quote = FALSE)
+```
+
+
+# load results from website
+Notes from code:
+xCell results:  Dear xCell user,  Your xCell analysis has finished succesfully. You may download the final results file using "Download results" button: *.txt",  Raw enrichment scores: *RAW.txt, P-values for the significance of the scores to be different from zero: *pvals.txt.  In the manuscript we use a threshold of 0.2 to detemine a significant score.  Files will be deleted from the server shortly after download.  Thank you for using xCell. Please cite the xCell manuscript:  Aran, Hu and Butte, xCell: digitally portraying the tissue cellular heterogeneity landscape. Genome Biology (2017) 18:220., Sincerely, xCell team Warning message: useNames = NA is deprecated. Instead, specify either useNames = TRUE or useNames = TRUE.
+
+versions:
+R version 4.1.2 (2021-11-01) Platform: x86_64-pc-linux-gnu (64-bit) Running under: Ubuntu 22.04.2 LTS  Matrix products: default BLAS:   /usr/lib/x86_64-linux-gnu/blas/libblas.so.3.10.0 LAPACK: /usr/lib/x86_64-linux-gnu/lapack/liblapack.so.3.10.0  locale: [1] C  attached base packages: [1] tools     stats4    stats     graphics  grDevices utils     datasets  [8] methods   base       other attached packages:  [1] zip_2.3.0            quadprog_1.5-8       dplyr_1.1.2           [4] xCell_1.1.0          GSVA_1.42.0          GSEABase_1.56.0       [7] graph_1.72.0         annotate_1.72.0      XML_3.99-0.14        [10] AnnotationDbi_1.56.2 IRanges_2.28.0       S4Vectors_0.32.4     [13] Biobase_2.54.0       BiocGenerics_0.40.0   loaded via a namespace (and not attached):  [1] Rcpp_1.0.10                 rsvd_1.0.5                   [3] lattice_0.20-45             png_0.1-8                    [5] Biostrings_2.62.0           SingleCellExperiment_1.16.0  [7] utf8_1.2.3                  R6_2.5.1                     [9] GenomeInfoDb_1.30.1         RSQLite_2.3.1               [11] pracma_2.4.2                httr_1.4.6                  [13] pillar_1.9.0                sparseMatrixStats_1.6.0     [15] zlibbioc_1.40.0             rlang_1.1.1                 [17] irlba_2.3.5.1               blob_1.2.4                  [19] Matrix_1.4-0                BiocParallel_1.28.3         [21] RCurl_1.98-1.12             bit_4.0.5                   [23] beachmat_2.10.0             DelayedArray_0.20.0         [25] HDF5Array_1.22.1            compiler_4.1.2              [27] BiocSingular_1.10.0         pkgconfig_2.0.3             [29] tidyselect_1.2.0            KEGGREST_1.34.0             [31] SummarizedExperiment_1.24.0 tibble_3.2.1                [33] GenomeInfoDbData_1.2.7      matrixStats_1.0.0           [35] fansi_1.0.4                 crayon_1.5.2                [37] MASS_7.3-55                 rhdf5filters_1.6.0          [39] bitops_1.0-7                grid_4.1.2                  [41] xtable_1.8-4                lifecycle_1.0.3             [43] DBI_1.1.3                   magrittr_2.0.3              [45] ScaledMatrix_1.2.0          cli_3.6.1                   [47] cachem_1.0.8                XVector_0.34.0              [49] DelayedMatrixStats_1.16.0   vctrs_0.6.3                 [51] generics_0.1.3              Rhdf5lib_1.16.0             [53] bit64_4.0.5                 glue_1.6.2                  [55] MatrixGenerics_1.6.0        parallel_4.1.2              [57] fastmap_1.1.1               rhdf5_2.38.1                [59] GenomicRanges_1.46.1        memoise_2.0.1              
+
+```{r}
+res <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/RNAseq/xcell_results/xCell_TPM_norm_for_xCell_xCell_1129103125_RAW.txt", sep = "\t")
+res2 <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/RNAseq/xcell_results/xCell_TPM_norm_for_xCell_xCell_1129103125.pvals.txt", sep = "\t")
+res3 <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/RNAseq/xcell_results/xCell_TPM_norm_for_xCell_xCell_1129103125.txt", sep = "\t")
+head(res)
+head(res3)
+```
+
+## run deconvolution
+unfortunately xcell does not run here. might be some dependencies/package problem
+```{r}
+
+# dat <- immunedeconv::deconvolute(gene_expression = norm_mat,method = "xcell")
+# # run deconvolution
+# res_cpm <- lapply(decon_methods, function(x){
+#     if (x %in% c("timer","consensus_tme")) {
+#     dat <- immunedeconv::deconvolute(gene_expression = norm_mat,method = x,indications = c(rep("luad",125)))
+#   } else {
+#     dat <- immunedeconv::deconvolute(gene_expression = norm_mat,method = x)
+#   }
+# 
+# 
+#   dat <- dat %>%
+#   pivot_longer(2:ncol(dat)) %>%
+#   pivot_wider(names_from = cell_type,values_from = value, values_fill = 0)
+#   colnames(dat) <- c("immucan_id",paste0(colnames(dat)[2:ncol(dat)],"_",x))
+#   return(dat)
+# })
+# names(res_cpm) <- decon_methods
+
+```

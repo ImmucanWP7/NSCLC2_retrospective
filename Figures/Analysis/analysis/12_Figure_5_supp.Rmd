@@ -125,7 +125,7 @@ condition <- c("Adenocarcinoma")
 
 names(condition) <- colnames(cur_traits)
 plots_list <- list()
-for(j in c("TP53","KRAS","EGFR","STK11","PIK3CA")){
+for(j in c("TP53","KRAS","EGFR","STK11","PIK3CA","NF1","KEAP1", "CDKN2A")){
   p.list <- list()
   l.list <- list()
   for (i in names(condition)) {

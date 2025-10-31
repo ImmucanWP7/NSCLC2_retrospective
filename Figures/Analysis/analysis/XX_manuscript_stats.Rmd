@@ -95,6 +95,7 @@ dat %>%
 # smoking and TP53 in LUAD
 
 ```{r}
+table(traits$smoking_status, traits$TP53)
 cur_traits <- traits %>%
   filter(!is.na(smoking_status)) %>%
   mutate(smoker = ifelse(smoking_status %in% c("Current smoker","Ex-smoker"),"smoker", "non-smoker")) %>%
@@ -104,7 +105,6 @@ print(res)
 res$method
 table(cur_traits$smoker,cur_traits$TP53)
 table(cur_traits$smoking_status,cur_traits$TP53)
-
 
 ```
 
@@ -181,6 +181,7 @@ summary(x)
 table(traits$smoking_status,traits$TP53)
 cur_traits <- traits
 cur_traits <- cur_traits %>%
+  filter(simple_histology == "Adenocarcinoma") %>%
   mutate(smoking_status = ifelse(smoking_status == "Ex-smoker", "smoker",smoking_status),
          smoking_status = ifelse(smoking_status == "Current smoker", "smoker",smoking_status))
 table(cur_traits$smoking_status, cur_traits$TP53)
