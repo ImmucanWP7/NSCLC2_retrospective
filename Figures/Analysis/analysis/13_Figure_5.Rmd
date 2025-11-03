@@ -1251,6 +1251,19 @@ results_annotated <- results %>%
   ) %>%
   ungroup()
 
+results_annotated <- results %>%
+  group_by(factor) %>% 
+  mutate(
+    p_adj = p.adjust(p_val, method = "fdr"),
+    sig_label = case_when(
+      p_val < 0.001 & p_adj < 0.1 ~ "***",
+      p_val < 0.01 & p_adj < 0.1  ~ "**",
+      p_val < 0.05 & p_adj < 0.1  ~ "*",
+      TRUE          ~ ""
+    )
+  ) %>%
+  ungroup()
+
 # Create estimate matrix for heatmap values
 estimate_mat <- results_annotated %>%
   dplyr::select(factor, feature, estimate) %>%

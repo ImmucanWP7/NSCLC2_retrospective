@@ -1,0 +1,829 @@
+---
+title: "imi_nsclc2_wes_overview"
+author: "Timo Trefzer <timo.trefzer@bayer.com>"
+date: '`r format(Sys.time(), "%d %B, %Y")`'
+output:
+  html_notebook:
+    code_folding: hide
+    highlight: haddock
+    theme: yeti
+    toc: true
+    toc_depth: 4
+    number_sections: true
+    toc_float: true
+    fig_height: 5
+    fig_width: 8
+    #css: styles.css
+  html_document:
+    highlight: haddock
+    theme: journal
+    toc: true
+    toc_depth: 4
+    number_sections: keep
+    fig_height: 5
+    fig_width: 8
+    css: styles.css
+  rmdformats::readthedown:
+    code_folding: hide
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: true
+    highlight: tango
+    toc_depth: 4
+    use_bookdown: true
+    css: readthedown.css
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    toc_depth: 4
+    number_sections: keep
+    fig_height: 5
+    fig_width: 8
+csl: vancouver.csl
+---
+
+```{r setup, include = FALSE}
+library(pander)
+library(ggplot2)
+theme_set(theme_minimal())
+```
+  
+-------------------------------------------------------------------------------
+
+********************************************************************************
+  
+
+
+# Introduction
+
+Whole exome sequencing data was processed by the "vegan-pipelin" for calling and annotation of genomic variants.  
+  
+In this notebook variants are filtered by folowing criteria:  
+    - Only variants that passed "vegan" quality control are kept ("PASS" filter)
+    - Variants with a population allele frequency above 1%, as by "vegan" from the gnomAD data base are removed from further analysis.  
+    - Only variants included in the COSMIC data base as annotated by the "vegan-pipeline" are kept for further analysis
+    - Variants are further filtered to only include functionally relevant alterations for downstream analysis
+
+   
+  
+********************************************************************************
+
+\newpage
+
+# Libraries
+```{r loading_libraries, message=FALSE}
+library(data.table)
+library(dplyr)
+library(ComplexHeatmap)
+library(tidyr)
+library(ggtext)
+```
+
+# Variables and directories
+```{r}
+# The folowing firectories need to change according to the setup
+mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/"
+path_output <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/Rout/"
+
+
+#following directories are set automatically
+path_data_clin <- file.path( "/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+path_data_tmb <- file.path("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/tmb")
+path_vegan <-file.path("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/tableReports") # results of main vegan run
+
+
+# Define driver Genes
+Genes_driver <- c("KRAS", "EGFR", "BRAF", "MET", "ALK", "ROS", "RET", "NTRK", "NRG1", "FGFR1", "FGFR2", "HRAS", "NRAS", "MAP2K1", "ERBB2", "ROS1", "PIK3CA", "NTRK1", "STK11")
+Genes_sup <- c("TP53", "KEAP1","STK11","RB1","CDKN2A", "CDKN2B","NKX2", "NF1")
+
+genes_sel <- c(Genes_driver, Genes_sup)
+```
+
+
+# Main Program with Plots and Results
+
+## Load data
+
+### Clinical
+
+```{r clinical_data}
+data_clin <- fread(path_data_clin)
+data_clin
+```
+
+### VeganID to IMMUcanID
+```{r}
+vegan_lookup <- list.files(path_vegan, pattern = "design.csv", full.names = T)
+vegan_lookup <- lapply(vegan_lookup, fread)
+vegan_lookup <- do.call("rbind", vegan_lookup)
+vegan_lookup[["immucan_id"]] <- gsub("-FIXT.*", "", vegan_lookup[["PAIR_ID"]])
+vegan_lookup
+```
+
+
+### TMB
+
+```{r}
+data_tmb <- list.files(path_data_tmb, pattern = "tmb.txt", recursive = T, full.names = T)
+data_tmb <- lapply(data_tmb, function(x){
+  name <- gsub("_Mutect2.*", "", 
+               gsub(".*tmb/", "", x)
+               )
+  data_tmp <- read.delim(x) %>%
+    separate(col = 1, sep = "=", into = c("a", "b")) %>%
+    filter(a == "TMB")
+  
+  data_tmp <- data_tmp[,"b",drop=T]
+  data_tmp <- as.numeric(gsub(" ", "", data_tmp))
+
+  
+  names(data_tmp) <- name
+  
+  return(data_tmp)
+  
+  
+})
+
+data_tmb <-unlist(data_tmb)
+
+data_tmb <- data.frame(TUMOR_ID = names(data_tmb),
+           TMB = data_tmb)
+
+data_tmb <- merge(data_tmb, vegan_lookup, all.x = T, by = "TUMOR_ID")
+
+data_tmb
+```
+
+### Combine meta-data per sample
+```{r}
+data_meta <- merge(data_clin, data_tmb, by="immucan_id") # TMB data
+data_meta
+```
+
+```{r}
+data_mut <- list.files(path = path_vegan, 
+                       pattern = "Mutect2_filtered_pass_norm_COSMIC_CancerHotspots_GnomAD_dbNSFP.tsv",
+                       recursive = T,
+                       full.names = T)
+
+
+data_mut <- lapply(data_mut, function(path){
+  
+  name <- gsub("_.*", "", 
+               gsub(".*tableReports/", "", path)
+               )
+  data_tmp <- fread(path)
+  colnames(data_tmp) <- c(colnames(data_tmp)[1:14],"AD","DP","AF")
+  data_tmp$TUMOR_ID <- name
+  
+  return(data_tmp)
+  
+})
+
+data_mut <- do.call("rbind", data_mut)
+
+data_mut <- merge(data_mut, data_meta, all.x = T, by = "TUMOR_ID")
+data_mut <-  as.data.frame(data_mut)
+
+# Format some column names
+#colnames(data_mut) <- gsub("ANN\\[0\\]\\.", "", colnames(data_mut))
+data_mut <- data_mut %>%
+  transform(AF = as.numeric(AF),
+            DP = as.numeric(DP))
+
+data_mut
+```
+
+### Filter mutations {.tabsets}
+
+#### mutation frequency
+
+coverage of selected gene variants
+
+```{r}
+data_mut %>%
+  filter(Gene %in% genes_sel,
+         FILTER_AF == "keep",
+         FILTER_COSMIC == "keep",
+         FILTER_Effect == "keep",
+         ) %>%
+  ggplot(aes(x = Gene,y = DP))+
+  geom_boxplot()+
+  theme(axis.text.x = element_text(angle = 90,vjust = 0.5,hjust = 1))+
+  geom_hline(yintercept = 75)
+data_mut %>%
+  filter(Gene %in% genes_sel,
+         FILTER_AF == "keep",
+         FILTER_COSMIC == "keep",
+         FILTER_Effect == "keep",
+         ) %>%
+  summarise(med_var = median(DP),
+            min_var = min(DP))
+```
+
+Remove all variants that do not occur in at least 5% of the reads
+```{r}
+
+hist(data_mut$DP)
+data_mut[["FILTER_DP"]] <- ifelse(data_mut$DP >= 75, "keep", "remove")
+data_mut[["FILTER_AF"]] <- ifelse(data_mut$AF >= 0.1, "keep", "remove")
+data_mut
+
+# check if our selected Genes are affected by the AF filter
+data_mut %>%
+  filter(Gene %in% genes_sel) %>%
+  select(Effect,Gene,HGVS_C,AF,AD, FILTER_AF) %>%
+  filter(FILTER_AF == "remove")
+
+```
+
+#### COSMIC
+Remove all variants that are not described in COSMIC
+```{r}
+data_mut$FILTER_COSMIC <- ifelse(data_mut$COSMIC == "TRUE",
+                                   "keep", "remove"
+                                   )
+```
+
+#### Functional filter
+
+```{r fig.height=15}
+data_plot <- data_mut %>% 
+  group_by(Effect) %>% 
+  dplyr::count() %>% 
+  as.data.frame()
+
+ggplot(data=data_plot, aes(x=reorder(Effect,-n), y=n)) +
+  geom_bar(stat="identity", fill="grey") +
+  theme(axis.text.x = element_markdown(angle = 90, vjust = 0.5, hjust=1), axis.title.x = element_blank()) +
+  scale_y_log10()
+```
+
+Keep following functional annotations
+
+```{r fig.height=13}
+keep_func = c("missense_variant", 
+              "stop_gained", 
+            #  "synonymous_variant", 
+            #  "downstream_Gene_variant", 
+              "disruptive_inframe_insertion",
+            #  "upstream_Gene_variant",
+              "frameshift_variant",
+            #  "intron_variant",
+            #  "non_coding_transcript_exon_variant",
+            #  "splice_donor_variant&intron_variant",
+              "disruptive_inframe_deletion",
+            #  "5_prime_UTR_variant",
+              "missense_variant&splice_region_variant",
+            #  "intergenic_region",
+              "stop_gained&splice_region_variant",
+              "start_lost",
+              "5_prime_UTR_premature_start_codon_gain_variant",
+              "conservative_inframe_deletion",
+              "frameshift_variant&stop_gained",
+            #  "3_prime_UTR_variant",
+            #  "splice_region_variant&intron_variant",
+            #  "splice_region_variant&synonymous_variant",
+              "stop_lost",
+            #  "splice_region_variant",
+              "conservative_inframe_insertion",
+            #  "splice_acceptor_variant&splice_region_variant&intron_variant",
+              "frameshift_variant&splice_region_variant",
+            #  "synonymous_variant",
+            #  "downstream_Gene_variant",
+            #  "upstream_Gene_variant",
+            #  "intron_variant",
+            #  "non_coding_transcript_exon_variant",
+            #  "splice_donor_variant&intron_variant",
+            #  "5_prime_UTR_variant",
+              "missense_variant&splice_region_variant",
+            #  "intergenic_region",
+              "stop_gained&splice_region_variant", #!
+            #  "3_prime_UTR_variant",
+            #  "splice_region_variant&intron_variant",
+            #  "splice_region_variant&synonymous_variant",
+              "splice_region_variant",
+            #  "splice_acceptor_variant&splice_region_variant&intron_variant",
+            #  "frameshift_variant&splice_region_variant",
+            #  "splice_donor_variant&missense_variant&splice_region_variant&intron_variant",
+            #  "splice_region_variant&non_coding_transcript_exon_variant",
+            #  "frameshift_variant&splice_donor_variant&splice_region_variant&intron_variant",
+            #  "stop_retained_variant",
+            #  "splice_acceptor_variant&intron_variant",
+              "stop_gained&disruptive_inframe_deletion",
+            #  "splice_acceptor_variant&splice_donor_variant&intron_variant",
+              "initiator_codon_variant",
+              "stop_lost&splice_region_variant", #!
+              "frameshift_variant&splice_acceptor_variant&splice_region_variant&intron_variant", #!
+              "splice_acceptor_variant&missense_variant&splice_region_variant&intron_variant", #!
+              "splice_acceptor_variant&disruptive_inframe_deletion&splice_region_variant&intron_variant", #!
+              "splice_acceptor_variant&conservative_inframe_deletion&splice_region_variant&intron_variant", #!
+              "splice_donor_variant&conservative_inframe_deletion&splice_region_variant&intron_variant", #!
+              "disruptive_inframe_deletion&splice_region_variant",
+            #  "splice_donor_variant&splice_region_variant&intron_variant",
+              "stop_lost&conservative_inframe_deletion",
+              "frameshift_variant&stop_lost",
+              "conservative_inframe_deletion&splice_region_variant",
+              "frameshift_variant&start_lost",
+              "splice_donor_variant&disruptive_inframe_deletion&splice_region_variant&intron_variant", #!
+              "start_lost&splice_region_variant",
+              "stop_gained&disruptive_inframe_insertion",
+              "splice_acceptor_variant&splice_donor_variant&disruptive_inframe_deletion&splice_region_variant&intron_variant", #!
+              "exon_loss_variant&splice_acceptor_variant&splice_donor_variant&splice_region_variant&intron_variant", #!
+              "disruptive_inframe_insertion&splice_region_variant",
+              "stop_gained&splice_donor_variant&splice_region_variant&intron_variant", #!
+              "bidirectional_Gene_fusion",
+              "start_lost&conservative_inframe_deletion",
+            #  "splice_donor_variant&splice_region_variant&synonymous_variant&intron_variant",
+              "stop_lost&disruptive_inframe_deletion",
+              "stop_gained&splice_donor_variant&disruptive_inframe_deletion&splice_region_variant&intron_variant", #!
+              "stop_gained&conservative_inframe_insertion",
+              "frameshift_variant&stop_lost&splice_region_variant",
+            #  "splice_donor_variant&5_prime_UTR_variant&intron_variant",
+              "stop_lost&conservative_inframe_deletion&splice_region_variant",
+              "start_lost&conservative_inframe_insertion",
+            #  "splice_acceptor_variant&splice_region_variant&intron_variant&non_coding_transcript_exon_variant",
+              "frameshift_variant&start_lost&splice_region_variant",
+              "start_lost&disruptive_inframe_deletion",
+            #  "start_retained_variant",
+              "stop_gained&disruptive_inframe_insertion&splice_region_variant",
+              "stop_gained&disruptive_inframe_deletion&splice_region_variant",
+              "stop_lost&3_prime_UTR_truncation&exon_loss_variant&conservative_inframe_deletion&splice_region_variant",
+            #  "splice_region_variant&stop_retained_variant",
+              "stop_gained&splice_acceptor_variant&splice_region_variant&intron_variant", #!
+            #  "splice_acceptor_variant&splice_region_variant&5_prime_UTR_variant&intron_variant",
+            #  "splice_donor_variant&splice_region_variant&intron_variant&non_coding_transcript_exon_variant",
+              "frameshift_variant&stop_gained&splice_region_variant",
+              "stop_gained&conservative_inframe_insertion&splice_region_variant",
+              "start_lost&conservative_inframe_deletion&splice_region_variant"
+            )
+
+data_plot$keep <- ifelse(data_plot$Effect %in% keep_func,
+                         "keep",
+                         "remove"
+                         )
+
+data_plot$col_label <- ifelse(data_plot$keep == "keep", "darkgreen", "black")
+data_plot$xlabel <- glue::glue("<span style='color:{data_plot$col_label}'>{data_plot$Effect}</span>")
+
+ggplot(data=data_plot, aes(x=reorder(xlabel,-n), y=n, fill=keep)) +
+  geom_bar(stat="identity") +
+  theme(axis.text.x = element_markdown(angle = 90, vjust = 0.5, hjust=1), axis.title.x = element_blank()) +
+  scale_y_log10() +
+  scale_fill_manual(values = c("keep" = "darkgreen", "remove"="grey"), guide = FALSE ) +
+  ggtitle("Functions in green are kept for analysis")
+```
+ 
+```{r}
+data_mut$FILTER_Effect <- ifelse(data_mut$Effect %in% keep_func,
+                         "keep",
+                         "remove"
+                         )
+```
+
+Translate multiple annotations to one 
+```{r}
+new_Effect <- c(
+  "missense_variant&splice_region_variant" = "missense_variant",
+  "stop_gained&splice_region_variant" = "stop_gained",
+  "frameshift_variant&stop_gained" = "stop_gained",
+  "frameshift_variant&splice_region_variant" = "frameshift_variant",
+  "stop_gained&disruptive_inframe_deletion" = "stop_gained",
+  "disruptive_inframe_deletion&splice_region_variant" = "disruptive_inframe_deletion",
+  "stop_lost&conservative_inframe_deletion" = "stop_lost",
+  "frameshift_variant&stop_lost" = "stop_lost",
+  "conservative_inframe_deletion&splice_region_variant" = "conservative_inframe_deletion",
+  "frameshift_variant&start_lost" = "start_lost",
+  "start_lost&splice_region_variant" = "start_lost",
+  "stop_gained&disruptive_inframe_insertion" = "stop_gained",
+  "disruptive_inframe_insertion&splice_region_variant" = "disruptive_inframe_insertion",
+  "start_lost&conservative_inframe_deletion" = "start_lost",
+  "stop_lost&disruptive_inframe_deletion" = "stop_lost",
+  "stop_gained&conservative_inframe_insertion" = "stop_gained",
+  "frameshift_variant&stop_lost&splice_region_variant" = "stop_lost",
+  "stop_lost&conservative_inframe_deletion&splice_region_variant" = "stop_lost",
+  "start_lost&conservative_inframe_insertion" = "start_lost",
+  "frameshift_variant&start_lost&splice_region_variant" = "start_lost",
+  "start_lost&disruptive_inframe_deletion" = "start_lost",
+  "stop_gained&disruptive_inframe_insertion&splice_region_variant" = "stop_gained",
+  "stop_gained&disruptive_inframe_deletion&splice_region_variant" = "stop_gained",
+  "stop_lost&3_prime_UTR_truncation&exon_loss_variant&conservative_inframe_deletion&splice_region_variant" = "stop_lost",
+  "frameshift_variant&stop_gained&splice_region_variant" = "stop_gained",
+  "stop_gained&conservative_inframe_insertion&splice_region_variant" = "stop_gained",
+  "start_lost&conservative_inframe_deletion&splice_region_variant" = "start_lost",
+  "5_prime_UTR_premature_start_codon_gain_variant" = "start_gained"
+  )
+
+data_mut$Effect_NEW <- plyr::mapvalues(data_mut$Effect, names(new_Effect), new_Effect)
+```
+
+```{r}
+data_mut
+```
+
+### Oncoprint old
+
+```{r}
+# Prepare plot data
+data_plot <- data_mut %>% 
+  filter(if_all(starts_with("FILTER_"), ~ . == "keep")) %>% 
+  select(immucan_id, Gene, Effect_NEW) %>%
+  pivot_wider(names_from = immucan_id, values_from = Effect_NEW, values_fn = function(x) paste(x, collapse="|")) %>%
+  as.data.frame()
+
+data_plot <- data_plot %>% 
+  filter(Gene %in% Genes_driver)
+
+
+rownames(data_plot) <- data_plot[["Gene"]]
+data_plot[["Gene"]] <- NULL
+```
+
+```{r}
+# Prepare meta data
+data_meta <- as.data.frame(data_meta)
+rownames(data_meta) <- data_meta[["immucan_id"]]
+data_meta
+```
+
+
+```{r fig.width=20, fig.height=8}
+# Define Variables
+
+separator <- "|"
+#get_type_fun <- function(x) strsplit(x, separator)[[1]]
+col_meta <- c("gender", "simple_histology", "simple_stage", "environmental_exposure", "smoking_status", "long_term_ex_smoker")
+
+col_fun <- function(df_meta, cl_name, brew_pallete = "Set1"){
+  names_tmp <- unique(df_meta[[cl_name]])
+  names_tmp[is.na(names_tmp)] <- "unkown"
+  pal_tmp <- RColorBrewer::brewer.pal(length(names_tmp), brew_pallete)
+  pal_tmp <- setNames(pal_tmp, names_tmp)
+  
+  return(pal_tmp)
+}
+
+col_list <- list(gender = c("Male" = "#6f50a1", "Female" = "#0d6d64"),
+               simple_histology = col_fun(data_meta, cl_name = "simple_histology"),
+               simple_stage = col_fun(data_meta, cl_name = "simple_stage"),
+               environmental_exposure = col_fun(data_meta, cl_name = "environmental_exposure"),
+               smoking_status = col_fun(data_meta, cl_name = "smoking_status"),
+               long_term_ex_smoker = col_fun(data_meta, cl_name = "long_term_ex_smoker")
+               )
+
+## Define alteration functions
+alt_predef <- unique(unlist(sapply(data_plot, unique)))
+alt_predef <- alt_predef[!is.na(alt_predef)]
+# Add 'mutated' for simple annotation
+alt_predef <- c(alt_predef, "mutated")
+alt_predef <- setNames(alt_predef, rainbow(length(alt_predef)))
+alt_predef<- setNames(alt_predef, pals::alphabet(n = length(alt_predef)))
+alt_fun_predef = list(
+  "mutated" = function(x, y, w, h){
+    grid.rect(x, y, w, h,
+              gp = gpar(fill =  "#bd1a26", col = "white"))
+  },
+  "missense_variant" = function(x, y, w, h){
+    grid.rect(x, y, w, h,
+              gp = gpar(fill =  names(alt_predef[1]), col = "white"))
+  },
+  "stop_gained" = function(x, y, w, h){
+    grid.rect(x-0.5*x, y, w*0.4, h,
+              gp = gpar(fill =  names(alt_predef[2]), col = "white"))
+  },
+  "frameshift_variant" = function(x, y, w, h){
+    grid.rect(x-0.3*x, y, w*0.4, h,
+              gp = gpar(fill =  names(alt_predef[3]), col = "white"))
+  },
+  "frameshift_variant|missense_variant" = function(x, y, w, h){
+    grid.rect(x-0.1*x, y, w*0.4, h,
+              gp = gpar(fill =  names(alt_predef[4]), col = "white"))
+  },
+  "conservative_inframe_deletion" = function(x, y, w, h){
+    grid.rect(x+0.1*x, y, w*0.4, h,
+              gp = gpar(fill =  names(alt_predef[5]), col = "white"))
+  },
+  "disruptive_inframe_deletion" = function(x, y, w, h){
+    grid.rect(x+0.3*x, y, w*0.4, h,
+              gp = gpar(fill =  names(alt_predef[6]), col = "white"))
+  },
+  "missense_variant|missense_variant" = function(x, y, w, h){
+    grid.rect(x, y, w*0.4, h,
+              gp = gpar(fill =  names(alt_predef[7]), col = "white"))
+  },
+   "stop_gained|missense_variant" = function(x, y, w, h){
+    grid.rect(x, y, w*0.4, h,
+              gp = gpar(fill =  names(alt_predef[8]), col = "white"))
+  }
+)
+
+
+background_fun <- list(
+      background = function(...) NULL
+    )
+
+alt_fun <- append(background_fun, alt_fun_predef)
+
+# Annotation
+df_top <- data_meta[, col_meta]
+df_top <- df_top[colnames(data_plot), ]
+top_annotation = HeatmapAnnotation(
+      cbar = anno_oncoprint_barplot(),
+      df = df_top,
+      col = col_list,
+      annotation_name_side = "left",
+      annotation_legend_param = list(title_gp = gpar(fontsize = 12),
+                                     labels_gp = gpar(fontsize = 12))
+      , annotation_name_gp= gpar(fontsize = 12)
+    )
+
+data_plot[is.na(data_plot)] <- ""
+```
+
+#### Driver
+```{r fig.width=15, fig.height=10}
+top_annotation = HeatmapAnnotation(
+      cbar = anno_oncoprint_barplot(),
+      df = df_top,
+      col = col_list,
+      annotation_name_side = "left",
+      annotation_legend_param = list(title_gp = gpar(fontsize = 12),
+                                     labels_gp = gpar(fontsize = 12))
+      , annotation_name_gp= gpar(fontsize = 12)
+    )
+ht <- ComplexHeatmap::oncoPrint(data_plot,
+                    #, get_type = get_type_fun
+                    , alter_fun = alt_fun
+                    , col = setNames(names(alt_predef), alt_predef)
+                    , remove_empty_columns = FALSE
+                    , remove_empty_rows = FALSE
+                    , top_annotation = top_annotation
+                    , row_names_gp = gpar(fontsize = 12)
+                    #, heatmap_legend_param = list(legend_gp = gpar(fontsize = 12))
+  )
+ht
+#pdf(file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_4/4A_oncoprint.pdf",width = 10,height = 9)
+#draw(ht,
+#     heatmap_legend_side = "bottom"
+#     ,annotation_legend_side = "bottom"
+#     ,padding = unit(c(2, 5, 2, 2), "mm"))
+#dev.off()
+```
+
+
+### Oncoprint
+
+```{r}
+# Prepare plot data
+data_plot <- data_mut %>% 
+  filter(Gene %in% genes_sel,
+         FILTER_Effect == "keep",
+         FILTER_AF == "keep",
+         FILTER_COSMIC == "keep",
+         FILTER_DP == "keep") %>%
+  select(immucan_id, Gene, Effect_NEW) %>%
+  group_by(Gene, immucan_id) %>%
+  dplyr::count(Effect_NEW) %>%
+  mutate(Effect_NEW = ifelse(n >= 2, paste0(Effect_NEW,"s"), Effect_NEW)) %>%
+  ungroup() %>%
+  select(-n) %>%
+  distinct() %>%
+  pivot_wider(names_from = immucan_id,values_from = Effect_NEW,values_fn = function(x) paste(x, collapse = " & ")) %>%
+  as.data.frame()
+
+data_plot %>%
+  filter(Gene == "EGFR") %>%
+  pivot_longer(-Gene) %>%
+  dplyr::count(value)
+
+rownames(data_plot) <- data_plot[["Gene"]]
+data_plot[["Gene"]] <- NULL
+
+# add patients with no mutation back
+missing_pats <- unique(data_mut$immucan_id)[!unique(data_mut$immucan_id) %in% colnames(data_plot)]
+no_mut <- as.data.frame(matrix(nrow = nrow(data_plot),ncol = length(missing_pats)))
+colnames(no_mut) <- missing_pats
+rownames(no_mut) <- rownames(data_plot)
+
+data_plot <- cbind(data_plot,no_mut)
+```
+
+```{r}
+# Prepare meta data
+data_meta <- as.data.frame(data_meta)
+rownames(data_meta) <- data_meta[["immucan_id"]]
+data_meta
+```
+
+
+```{r fig.width=20, fig.height=8}
+# Define Variables
+separator <- "&"
+#get_type_fun <- function(x) strsplit(x, separator)[[1]]
+col_meta <- c("gender", "simple_histology", "simple_stage", "environmental_exposure", "smoking_status", "long_term_ex_smoker")
+
+col_fun <- function(df_meta, cl_name, brew_pallete = "Set1"){
+  names_tmp <- unique(df_meta[[cl_name]])
+  names_tmp[is.na(names_tmp)] <- "unkown"
+  pal_tmp <- RColorBrewer::brewer.pal(length(names_tmp), brew_pallete)
+  pal_tmp <- setNames(pal_tmp, names_tmp)
+  
+  return(pal_tmp)
+}
+
+col_list <- list(Gender = c("Male" = "#6f50a1", "Female" = "#0d6d64"),
+               Histology = col_fun(data_meta, cl_name = "simple_histology"),
+               Stage = col_fun(data_meta, cl_name = "simple_stage"),
+               Environmental_exposure = col_fun(data_meta, cl_name = "environmental_exposure"),
+               Smoking_status = col_fun(data_meta, cl_name = "smoking_status"),
+               Long_term_ex_smoker = col_fun(data_meta, cl_name = "long_term_ex_smoker")
+               )
+
+## Define alteration functions
+## Define alteration functions
+alt_predef <- unique(unlist(sapply(data_plot, unique)))
+alt_predef <- alt_predef[!is.na(alt_predef)]
+alt_predef <- setNames( pals::alphabet(n = length(alt_predef)),alt_predef)
+alt_predef
+
+col_fun1 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[1]), col = "white"))}
+col_fun2 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[2]), col = "white"))}
+col_fun3<- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[3]), col = "white"))}
+col_fun4 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[4]), col = "white"))}
+col_fun5 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[5]), col = "white"))}
+col_fun6 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[6]), col = "white"))}
+col_fun7 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[7]), col = "white"))}
+col_fun8 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[8]), col = "white"))}
+col_fun9 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[9]), col = "white"))}
+col_fun10 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[10]), col = "white"))}
+col_fun11 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[11]), col = "white"))}
+col_fun12 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[12]), col = "white"))}
+col_fun13 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[13]), col = "white"))}
+col_fun14 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[14]), col = "white"))}
+col_fun15 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[15]), col = "white"))}
+
+
+alt_fun_predef <- list(col_fun1,col_fun2,col_fun3,col_fun4,col_fun5,col_fun6,col_fun7,col_fun8
+                       ,col_fun9
+                       ,col_fun10
+                       ,col_fun11
+                       ,col_fun12
+                       ,col_fun13
+                       ,col_fun14
+                       ,col_fun15
+                       )
+names(alt_fun_predef) <- names(alt_predef)
+
+background_fun <- list(
+      background = function(...) NULL
+    )
+
+alt_fun <- append(background_fun, alt_fun_predef)
+
+# Annotation
+df_top <- data_meta[, col_meta]
+df_top <- df_top[colnames(data_plot), ]
+
+# clean up colnames
+colnames(df_top) <- c("Gender","Histology","Stage","Environmental_exposure","Smoking_status","Long_term_ex_smoker")
+
+data_plot[is.na(data_plot)] <- ""
+```
+
+#### Driver {-}
+```{r fig.width=15, fig.height=10}
+top_annotation = HeatmapAnnotation(
+      cbar = anno_oncoprint_barplot(),
+      df = df_top,
+      col = col_list,
+      annotation_name_side = "left",
+      annotation_legend_param = list(title_gp = gpar(fontsize = 12),
+                                     labels_gp = gpar(fontsize = 12))
+      , annotation_name_gp= gpar(fontsize = 12)
+    )
+ht <- ComplexHeatmap::oncoPrint(data_plot,
+                    #, get_type = get_type_fun
+                    , alter_fun = alt_fun
+                    , col = alt_predef,
+                    , remove_empty_columns = FALSE
+                    , remove_empty_rows = FALSE
+                    , top_annotation = top_annotation
+                    , row_names_gp = gpar(fontsize = 12)
+                    #, heatmap_legend_param = list(legend_gp = gpar(fontsize = 12))
+  )
+ht
+pdf(file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_4/20251010_4A_oncoprint.pdf",width = 10,height = 10)
+draw(ht,
+    heatmap_legend_side = "bottom"
+    ,annotation_legend_side = "bottom"
+    ,padding = unit(c(2, 5, 2, 2), "mm"))
+dev.off()
+```
+
+
+
+
+
+#### Driver - simple
+```{r fig.width=15, fig.height=5}
+data_plot[!is.na(data_plot)] <- "mutated"
+ComplexHeatmap::oncoPrint(data_plot
+                    #, get_type = get_type_fun
+                    , alter_fun = alt_fun
+                    , col = setNames("#bd1a26", "mutated")
+                    , remove_empty_columns = FALSE
+                    , remove_empty_rows = FALSE
+                    , top_annotation = top_annotation
+  )
+
+
+```
+
+### Save filtered data
+```{r}
+# Whole table 
+data_save <- data_mut %>%
+  filter(if_all(starts_with("FILTER_"), ~ . == "keep"))
+
+data_save
+write.csv(data_save, file = file.path(path_output, "NSCLC2_mutation_table_full.csv"), quote = F)
+```
+
+```{r}
+# Matrix
+data_save <- data_mut %>%
+  filter(if_all(starts_with("FILTER_"), ~ . == "keep"))
+
+data_save <- data_save %>%
+  group_by(immucan_id, Gene) %>%
+  dplyr::count() %>%
+  pivot_wider(names_from = immucan_id, values_from = n, values_fill = 0)
+
+data_save
+write.csv(data_save, file = file.path(path_output, "20251010_NSCLC2_mutation_matrix.csv"), quote = F)
+```
+
+```{r}
+# Driver only
+## Whole table 
+data_save <- data_mut %>%
+  filter(if_all(starts_with("FILTER_"), ~ . == "keep")) %>%
+  filter(Gene %in% genes_sel)
+
+data_save
+write.csv(data_save, file = file.path(path_output, "NSCLC2_mutation_table_driver.csv"), quote = F)
+```
+
+```{r}
+# Driver only
+## Matrix
+data_save <- data_mut %>%
+  filter(if_all(starts_with("FILTER_"), ~ . == "keep")) %>%
+  filter(Gene %in% genes_sel)
+
+data_save <- data_save %>%
+  group_by(immucan_id, Gene) %>%
+  dplyr::count() %>%
+  pivot_wider(names_from = immucan_id, values_from = n, values_fill = 0)
+
+data_save
+write.csv(data_save, file = file.path(path_output, "NSCLC2_mutation_matrix_driver.csv"), quote = F)
+```
+
+```{r}
+# TMB
+write.csv(data_tmb, file = file.path(path_output, "NSCLC2_TMB.csv"), quote = F)
+```
+
+********************************************************************************
+  
+# Session info
+  
+```{r session_info, results='asis'}
+sessionInfo() %>% pander()
+Sys.time() %>% pander()
+```
+
+```{r system_info, results='asis'}
+pander::pandoc.table(as.data.frame(Sys.info()), justify = 'left')
+```
+
+
+********************************************************************************
+
