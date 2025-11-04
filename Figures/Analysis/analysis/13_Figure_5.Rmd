@@ -206,6 +206,11 @@ dev.off()
 
 # 5C - features per factor
 
+```{r}
+MOFA2::get_weights(model)
+
+```
+
 ## plotting function
 ```{r}
 library(purrr)
@@ -293,7 +298,10 @@ plot_top_feature_heatmap <- function(model, views, view_order, view_colors, mode
   feature_ids <- colnames(feature_mat)
   view_labels <- sapply(strsplit(feature_ids, " \\| "), `[`, 1)
   feature_names <- sapply(strsplit(feature_ids, " \\| "), `[`, 2)
-
+  # test to change names
+  feature_names <- gsub(pattern = "_P1|_p1|_p1_p1", replacement = "_IMC1",feature_names)
+  feature_names <- gsub(pattern = "_P2|_p2|_p2_p2", replacement = "_IMC2",feature_names)
+  
   feature_priority <- top_features %>%
     group_by(feature_id) %>%
     summarise(first_factor = factor[1], .groups = "drop") %>%
@@ -440,7 +448,7 @@ draw(res$ht_extended, heatmap_legend_side = "bottom", padding = unit(c(1, 2, 2, 
 dev.off()
 ```
 
-# 5D
+# 5D (old)
 
 ## compute correlation
 ```{r}
@@ -718,7 +726,7 @@ ht <- Heatmap(
 )
 
 # Set PDF output
-CairoPDF(paste0(out_path, "/5D_clinical_x_factors.pdf"), width = 6, height = 4)  # adjust width/height as needed
+#CairoPDF(paste0(out_path, "/5D_clinical_x_factors.pdf"), width = 6, height = 4)  # adjust width/height as needed
 
 draw(ht, padding = unit(c(2, 2, 2, 2), "mm"))
 decorate_annotation("HR", {
@@ -743,318 +751,14 @@ decorate_annotation("HR", {
 
 
 # Close the PDF device
-dev.off() 
+#dev.off() 
 ```
 
 
 
 
-# 5E
-## VALIDATIONS
-### Fetch TCGA datasets
-```{r}
-library(TCGAbiolinks)
-library(SummarizedExperiment)
 
-# Query and download data
-query <- GDCquery(
-  project = c("TCGA-LUAD"),
-  data.category = "Transcriptome Profiling",
-  data.type = "Gene Expression Quantification",
-  workflow.type = "STAR - Counts"
-)
-GDCdownload(query)
-LUAD_data <- GDCprepare(query)
-
-# Query and download data
-query <- GDCquery(
-  project = c("TCGA-LUSC"),
-  data.category = "Transcriptome Profiling",
-  data.type = "Gene Expression Quantification",
-  workflow.type = "STAR - Counts"
-)
-GDCdownload(query)
-LUSC_data <- GDCprepare(query)
-
-
-# TODO: filter out deceased with no days
-# Unify data
-LUSC_data$survival <- LUSC_data$vital_status
-LUSC_data$histology <- "LUSC"
-LUAD_data$survival <- LUAD_data$vital_status
-LUAD_data$histology <- "LUAD"
-
-table(LUAD_data$vital_status, LUAD_data$paper_Survival)
-# table(is.na(LUAD_data$days_to_death), LUAD_data$survival)
-# table(is.na(LUSC_data$days_to_death), LUSC_data$survival)
-
-inters <- intersect(colnames(colData(LUAD_data)), colnames(colData(LUSC_data)))
-colData(LUAD_data) <- colData(LUAD_data)[,inters]
-colData(LUSC_data) <- colData(LUSC_data)[,inters]
-
-sce <- cbind(LUAD_data, LUSC_data)
-
-rownames(sce) <- rowData(sce)$gene_name  
-
-# replace - with . in some cases
-rownames(sce)[startsWith(rownames(sce),"IGHV") |  startsWith(rownames(sce),"IGKV") |  startsWith(rownames(sce),"IGLV")] <- gsub("-", "\\.",rownames(sce)[startsWith(rownames(sce),"IGHV") |  startsWith(rownames(sce),"IGKV") |  startsWith(rownames(sce),"IGLV")])
-# Save as .RDS (recommended for R objects)
-saveRDS(sce, file = paste0(mount_path,"/tcga_LUAD_LUSC.rds"))
-```
-
-## Gene set enrichment for Combined FACTOR1 (Signature enrichment/in Combined)
-```{r}
-library(SummarizedExperiment)
-library(SingleCellExperiment)
-library(singscore)
-library(dplyr)
-library(survival)
-
-# # Load TCGA RNA data
-tcga <- readRDS(paste0(mount_path,"/tcga_LUAD_LUSC.rds"))
-
-
-# Convert to SCE
-sce <- as(tcga, "SingleCellExperiment")
-
-# Rank genes and score
-ranked_data <- rankGenes(sce)
-
-top_n <- 10
-p.list <- list()
-gene_df <- data.frame()
-for (f in seq(1,6,1)){
-  
-  # Extract weights for RNA view and Factor 1
-  rna_weights <- get_weights(model, view = "RNA", factors = f)$RNA[,1]
-  # filter for the ones present in the tcga data
-  rna_weights <- rna_weights[names(rna_weights) %in% rownames(sce)]
-  top_abs_features <- names(sort(abs(rna_weights), decreasing = TRUE))[1:top_n]
-  
-  signature_mofa_f1 <- list(
-    up = top_abs_features[rna_weights[top_abs_features] > 0],
-    down = top_abs_features[rna_weights[top_abs_features] < 0]
-  )
-  temp <- data.frame(Factor = rep(paste0("Factor",f),length(top_abs_features)),
-                     gene = top_abs_features,
-                     weight = rna_weights[top_abs_features])
-  gene_df <- rbind(gene_df, temp)
-  if (length(signature_mofa_f1$up) <= 2){
-    print("WARNING: Score is computed inverted and is negated")
-    score <- simpleScore(ranked_data, upSet = signature_mofa_f1$down)
-    # Merge with clinical data
-    survival_df <- data.frame(
-      ID = rownames(colData(sce)),
-      survival = sce$survival,
-      days_to_death = sce$days_to_death,
-      days_to_last_follow_up = sce$days_to_last_follow_up,
-      score = -score$TotalScore,
-      Histology = sce$histology
-    )
-  }else if(length(signature_mofa_f1$down) <= 2){
-    score <- simpleScore(ranked_data, upSet = signature_mofa_f1$up)
-    # Merge with clinical data
-    survival_df <- data.frame(
-      ID = rownames(colData(sce)),
-      survival = sce$survival,
-      days_to_death = sce$days_to_death,
-      days_to_last_follow_up = sce$days_to_last_follow_up,
-      score = score$TotalScore,
-      Histology = sce$histology
-    )
-  }else{
-    score <- simpleScore(ranked_data, downSet = signature_mofa_f1$down, upSet = signature_mofa_f1$up)
-    # Merge with clinical data
-    survival_df <- data.frame(
-      ID = rownames(colData(sce)),
-      survival = sce$survival,
-      days_to_death = sce$days_to_death,
-      days_to_last_follow_up = sce$days_to_last_follow_up,
-      score = score$TotalScore,
-      score_up = score$UpScore,
-      score_down = score$DownScore,
-      Histology = sce$histology
-    )
-  }
-  
-  # normalize values before fitting model
-  survival_df[survival_df$Histology == "LUAD",]$score <- scale(survival_df[survival_df$Histology == "LUAD",]$score)
-  survival_df[survival_df$Histology == "LUSC",]$score <- scale(survival_df[survival_df$Histology == "LUSC",]$score)
-  
-  
-  # Compute survival object
-  survival_df <- survival_df %>%
-    mutate(
-      time = ifelse(!is.na(days_to_death), days_to_death, days_to_last_follow_up),
-      status = ifelse(tolower(survival) %in% c("dead", "deceased"), 1, 0)
-    ) %>%
-    filter(!is.na(time) & !is.na(status) & !is.na(score))
-  
-  # Cox regression
-  cox_model <- coxph(Surv(time, status) ~ score * Histology, data = survival_df)
-  print(paste0("Factor",f))
-  print(summary(cox_model))
-  p.list[[paste0("Factor",f)]] <- cox_model
-  
-  # Stratify into high/low groups using median
-  luad_mean <- median(survival_df %>% filter(Histology == "LUAD") %>% pull(score))
-  lusc_mean <- median(survival_df %>% filter(Histology == "LUAD") %>% pull(score))
-  survival_df$score_group <- ifelse(survival_df$Histology =="LUAD",
-                                    ifelse(survival_df$score >= luad_mean, "LUAD HIGH", "LUAD LOW"),
-                                    ifelse(survival_df$score >= lusc_mean, "LUSC HIGH", "LUSC LOW"))
-  
-  # hist(survival_df %>% filter(Histology == "LUAD") %>% pull(score))
-  # hist(survival_df %>% filter(Histology == "LUSC") %>% pull(score))
-  
-  # KM plot
-  fit <- survfit(Surv(time, status) ~ score_group, data = survival_df)
-  cox_model <- coxph(Surv(time, status) ~ score_group, data = survival_df)
-  
-  print(ggsurvplot(fit,
-             data = survival_df,
-             pval = TRUE,
-             risk.table = TRUE,
-             ggtheme = theme_minimal(),
-              title = paste0("Survival by ssGSEA Score Group (Factor ",f,")")))
-  
-}
-
-
-df <- data.frame(HR = unlist(lapply(p.list, function(x){summary(x)$coefficients[,"coef"]})),
-                 p.value = unlist(lapply(p.list, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
-                 lower_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "lower .95"]})),
-                 upper_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "upper .95"]}))) %>%
-  rownames_to_column("term")
-```
-
-## plot heatmap
-```{r}
-custom_order <- c("Factor6", "Factor5", "Factor4", "Factor3", "Factor2", "Factor1")
-
-
-library(ComplexHeatmap)
-library(circlize)
-library(dplyr)
-
-# Prepare data
-plot_df <- gene_df %>%
-  filter(Factor == "Factor1") %>%
-  arrange(weight)  # to sort genes by weight
-
-# Create a named vector of weights
-weights <- plot_df$weight
-names(weights) <- plot_df$gene
-
-# Convert to matrix (one column)
-mat <- matrix(weights, ncol = 1)
-rownames(mat) <- names(weights)
-colnames(mat) <- "Factor1"
-mat <- round(mat)
-
-# Define color scale
-col_fun <- c("1" = "chartreuse4", "-1" = "darkorchid")
-
-
-# compute CI for LUSC
-coef_vec <- coef(p.list[[1]])
-vcov_mat <- vcov(p.list[[1]])
-coef_luad <- coef_vec["score"]
-coef_interaction <- coef_vec["score:HistologyLUSC"]
-coef_lusc <- coef_luad + coef_interaction
-hr_lusc <- exp(coef_lusc)
-var_lusc <- vcov_mat["score", "score"] +
-            vcov_mat["score:HistologyLUSC", "score:HistologyLUSC"] +
-            2 * vcov_mat["score", "score:HistologyLUSC"]
-se_lusc <- sqrt(var_lusc)
-ci_lower <- exp(coef_lusc - 1.96 * se_lusc)
-ci_upper <- exp(coef_lusc + 1.96 * se_lusc)
-
-temp_df <- df %>%
-  filter(startsWith(term, "Factor1")) %>%
-  column_to_rownames("term")
-temp_df <- temp_df %>% mutate(HR = exp(HR))
-temp_df["Factor1.score:HistologyLUSC","HR"] <- hr_lusc
-
-temp_df["Factor1.score:HistologyLUSC","lower_conf"] <- ci_lower
-temp_df["Factor1.score:HistologyLUSC","upper_conf"] <- ci_upper
-
-rownames(temp_df) <- c("Score effect LUAD", "Baseline risk\n(LUSC vs LUAD)", "Score effect LUSC")
-# order data frame
-temp_df <- temp_df[c("Baseline risk\n(LUSC vs LUAD)", "Score effect LUSC", "Score effect LUAD"),]
-
-temp <- temp_df %>%
-  dplyr::select(-p.value) %>%
-  as.matrix() 
-
-
-x_labels <- c(0.7,0.8,0.9,1,1.1,1.2,1.3)
-rg <- c(min(x_labels)-0.1, max(x_labels)+0.1)
-panel_fun = function(index, nm) {
-    pushViewport(viewport(xscale = rg, yscale = c(0.5, nrow(temp) + 0.5)))
-    grid.rect()
-    grid.xaxis(at = x_labels, label = x_labels, gp = gpar(fontsize = 8))
-    grid.yaxis(at = seq(nrow(temp)), label = rownames(temp), main = TRUE, gp = gpar(fontsize = 8))
-    grid.yaxis(at = seq(nrow(temp)), label = paste0(round(temp_df$HR, 2) , "\n",paste0(paste0("(",round(temp_df$lower_conf,2), " - ",round(temp_df$upper_conf,2), ")")), ", p=", signif(temp_df$p.value,2)), main = FALSE, gp = gpar(fontsize = 7))
-    for (i in seq_len(nrow(temp))){
-      grid.boxplot(temp[i, ], pch = 2, size = unit(40, "mm"), pos = i, direction = "horizontal", box_width = 0.00005)
-    }
-    # Solid line at HR = 1
-    grid.lines(c(1, 1), c(0.5, nrow(temp) + 0.5),
-             gp = gpar(lty = 1, col = "grey50"), default.units = "native")
-    # Example: Add dashed lines at HR = 0.6, 0.8, 1.2, 1.4
-    for (x in x_labels){
-      grid.lines(c(x, x), c(0.5, nrow(temp) + 0.5),
-                 gp = gpar(lty = 2, col = "grey50"), default.units = "native")
-    }
-    grid.points(
-      temp[, 1], 1:nrow(temp),
-      pch = 19, size = unit(2, "mm"),
-      gp = gpar(col = ifelse(temp_df$p.value < 0.05, "#D55E00", "grey30")), 
-      default.units = "native"
-    )
-    popViewport()
-}
-anno = anno_link(align_to = rep("a", nrow(mat)), which = "row", panel_fun = panel_fun, 
-    size = unit(2.5, "cm"), width = unit(10, "cm"), link_width = unit(3, "cm"))
-
-
-
-# Plot heatmap
-ht <- Heatmap(
-  mat,
-  name = "Factor1 Weight",
-  heatmap_legend_param = list(labels = c("Depleted", "Enriched"), at = c(-1,1)),
-  right_annotation = rowAnnotation(HR = anno, gap = unit(0, "points")),
-  col = col_fun,
-  row_names_side = "left",
-  row_names_gp = gpar(fontsize = 8),
-  row_names_max_width = unit(8, "cm"),  # ← Increase space for row names here
-  cluster_rows = FALSE,
-  cluster_columns = FALSE,
-  show_column_names = FALSE,
-  # show_heatmap_legend = FALSE,
-  width = unit(0.4, "cm"),
-  height = unit(7, "cm"),
-  border = TRUE,
-  cell_fun = function(j, i, x, y, width, height, fill) {
-    grid.rect(x = x, y = y, width = width, height = height,
-              gp = gpar(col = "black", fill = NA, lwd = 0.5))
-  }
-)
-
-draw(ht, padding = unit(c(10, 2, 20, 20), "mm"), heatmap_legend_side = "bottom")
-# Set PDF output
-CairoPDF(paste0(out_path, "/5E_Combined_Factor_survival_TCGA.pdf"), width = 7, height = 4)  # adjust width/height as needed
-
-# Draw the heatmap
-draw(ht, padding = unit(c(0,0,0,20), "mm"), heatmap_legend_side = "bottom")
-
-# Close the PDF device
-dev.off() 
-```
-
-
-# 5D with mutations
+# 5D with additionaly info
 
 ## get all scores for heatmap
 ```{r}
@@ -1464,6 +1168,317 @@ decorate_annotation("HR", {
 dev.off() 
 
 ```
+
+# 5E
+## VALIDATIONS
+### Fetch TCGA datasets
+```{r}
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+
+# Query and download data
+query <- GDCquery(
+  project = c("TCGA-LUAD"),
+  data.category = "Transcriptome Profiling",
+  data.type = "Gene Expression Quantification",
+  workflow.type = "STAR - Counts"
+)
+GDCdownload(query)
+LUAD_data <- GDCprepare(query)
+
+# Query and download data
+query <- GDCquery(
+  project = c("TCGA-LUSC"),
+  data.category = "Transcriptome Profiling",
+  data.type = "Gene Expression Quantification",
+  workflow.type = "STAR - Counts"
+)
+GDCdownload(query)
+LUSC_data <- GDCprepare(query)
+
+
+# Unify data
+LUSC_data$survival <- LUSC_data$vital_status
+LUSC_data$histology <- "LUSC"
+LUAD_data$survival <- LUAD_data$vital_status
+LUAD_data$histology <- "LUAD"
+
+table(LUAD_data$vital_status, LUAD_data$paper_Survival)
+# table(is.na(LUAD_data$days_to_death), LUAD_data$survival)
+# table(is.na(LUSC_data$days_to_death), LUSC_data$survival)
+
+inters <- intersect(colnames(colData(LUAD_data)), colnames(colData(LUSC_data)))
+colData(LUAD_data) <- colData(LUAD_data)[,inters]
+colData(LUSC_data) <- colData(LUSC_data)[,inters]
+
+sce <- cbind(LUAD_data, LUSC_data)
+
+rownames(sce) <- rowData(sce)$gene_name  
+
+# filter out deceased with no info on days to survival
+sce <- sce[,!(sce$survival == "Dead" & is.na(sce$days_to_death))]
+
+# replace - with . in some cases
+rownames(sce)[startsWith(rownames(sce),"IGHV") |  startsWith(rownames(sce),"IGKV") |  startsWith(rownames(sce),"IGLV")] <- gsub("-", "\\.",rownames(sce)[startsWith(rownames(sce),"IGHV") |  startsWith(rownames(sce),"IGKV") |  startsWith(rownames(sce),"IGLV")])
+# Save as .RDS (recommended for R objects)
+saveRDS(sce, file = paste0(mount_path,"/tcga_LUAD_LUSC.rds"))
+```
+
+## Gene set enrichment for Combined FACTOR1 (Signature enrichment/in Combined)
+```{r}
+library(SummarizedExperiment)
+library(SingleCellExperiment)
+library(singscore)
+library(dplyr)
+library(survival)
+
+# # Load TCGA RNA data
+tcga <- readRDS(paste0(mount_path,"/tcga_LUAD_LUSC.rds"))
+
+
+# Convert to SCE
+sce <- as(tcga, "SingleCellExperiment")
+
+
+
+# Rank genes and score
+ranked_data <- rankGenes(sce)
+
+top_n <- 10
+p.list <- list()
+gene_df <- data.frame()
+for (f in seq(1,6,1)){
+  
+  # Extract weights for RNA view and Factor 1
+  rna_weights <- get_weights(model, view = "RNA", factors = f)$RNA[,1]
+  # filter for the ones present in the tcga data
+  rna_weights <- rna_weights[names(rna_weights) %in% rownames(sce)]
+  top_abs_features <- names(sort(abs(rna_weights), decreasing = TRUE))[1:top_n]
+  
+  signature_mofa_f1 <- list(
+    up = top_abs_features[rna_weights[top_abs_features] > 0],
+    down = top_abs_features[rna_weights[top_abs_features] < 0]
+  )
+  temp <- data.frame(Factor = rep(paste0("Factor",f),length(top_abs_features)),
+                     gene = top_abs_features,
+                     weight = rna_weights[top_abs_features])
+  gene_df <- rbind(gene_df, temp)
+  if (length(signature_mofa_f1$up) <= 2){
+    print("WARNING: Score is computed inverted and is negated")
+    score <- simpleScore(ranked_data, upSet = signature_mofa_f1$down)
+    # Merge with clinical data
+    survival_df <- data.frame(
+      ID = rownames(colData(sce)),
+      survival = sce$survival,
+      days_to_death = sce$days_to_death,
+      days_to_last_follow_up = sce$days_to_last_follow_up,
+      score = -score$TotalScore,
+      Histology = sce$histology
+    )
+  }else if(length(signature_mofa_f1$down) <= 2){
+    score <- simpleScore(ranked_data, upSet = signature_mofa_f1$up)
+    # Merge with clinical data
+    survival_df <- data.frame(
+      ID = rownames(colData(sce)),
+      survival = sce$survival,
+      days_to_death = sce$days_to_death,
+      days_to_last_follow_up = sce$days_to_last_follow_up,
+      score = score$TotalScore,
+      Histology = sce$histology
+    )
+  }else{
+    score <- simpleScore(ranked_data, downSet = signature_mofa_f1$down, upSet = signature_mofa_f1$up)
+    # Merge with clinical data
+    survival_df <- data.frame(
+      ID = rownames(colData(sce)),
+      survival = sce$survival,
+      days_to_death = sce$days_to_death,
+      days_to_last_follow_up = sce$days_to_last_follow_up,
+      score = score$TotalScore,
+      score_up = score$UpScore,
+      score_down = score$DownScore,
+      Histology = sce$histology
+    )
+  }
+  
+  # normalize values before fitting model
+  survival_df[survival_df$Histology == "LUAD",]$score <- scale(survival_df[survival_df$Histology == "LUAD",]$score)
+  survival_df[survival_df$Histology == "LUSC",]$score <- scale(survival_df[survival_df$Histology == "LUSC",]$score)
+  
+  
+  # Compute survival object
+  survival_df <- survival_df %>%
+    mutate(
+      time = ifelse(!is.na(days_to_death), days_to_death, days_to_last_follow_up),
+      status = ifelse(tolower(survival) %in% c("dead", "deceased"), 1, 0)
+    ) %>%
+    filter(!is.na(time) & !is.na(status) & !is.na(score))
+  
+  # Cox regression
+  cox_model <- coxph(Surv(time, status) ~ score * Histology, data = survival_df)
+  print(paste0("Factor",f))
+  print(summary(cox_model))
+  p.list[[paste0("Factor",f)]] <- cox_model
+  
+  # Stratify into high/low groups using median
+  luad_mean <- median(survival_df %>% filter(Histology == "LUAD") %>% pull(score))
+  lusc_mean <- median(survival_df %>% filter(Histology == "LUAD") %>% pull(score))
+  survival_df$score_group <- ifelse(survival_df$Histology =="LUAD",
+                                    ifelse(survival_df$score >= luad_mean, "LUAD HIGH", "LUAD LOW"),
+                                    ifelse(survival_df$score >= lusc_mean, "LUSC HIGH", "LUSC LOW"))
+  
+  # hist(survival_df %>% filter(Histology == "LUAD") %>% pull(score))
+  # hist(survival_df %>% filter(Histology == "LUSC") %>% pull(score))
+  
+  # KM plot
+  fit <- survfit(Surv(time, status) ~ score_group, data = survival_df)
+  cox_model <- coxph(Surv(time, status) ~ score_group, data = survival_df)
+  
+  print(ggsurvplot(fit,
+             data = survival_df,
+             pval = TRUE,
+             risk.table = TRUE,
+             ggtheme = theme_minimal(),
+              title = paste0("Survival by ssGSEA Score Group (Factor ",f,")")))
+  
+}
+
+
+df <- data.frame(HR = unlist(lapply(p.list, function(x){summary(x)$coefficients[,"coef"]})),
+                 p.value = unlist(lapply(p.list, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 lower_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "lower .95"]})),
+                 upper_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "upper .95"]}))) %>%
+  rownames_to_column("term")
+```
+
+## plot heatmap
+```{r}
+custom_order <- c("Factor6", "Factor5", "Factor4", "Factor3", "Factor2", "Factor1")
+
+
+library(ComplexHeatmap)
+library(circlize)
+library(dplyr)
+
+# Prepare data
+plot_df <- gene_df %>%
+  filter(Factor == "Factor1") %>%
+  arrange(weight)  # to sort genes by weight
+
+# Create a named vector of weights
+weights <- plot_df$weight
+names(weights) <- plot_df$gene
+
+# Convert to matrix (one column)
+mat <- matrix(weights, ncol = 1)
+rownames(mat) <- names(weights)
+colnames(mat) <- "Factor1"
+mat <- round(mat)
+
+# Define color scale
+col_fun <- c("1" = "chartreuse4", "-1" = "darkorchid")
+
+
+# compute CI for LUSC
+coef_vec <- coef(p.list[[1]])
+vcov_mat <- vcov(p.list[[1]])
+coef_luad <- coef_vec["score"]
+coef_interaction <- coef_vec["score:HistologyLUSC"]
+coef_lusc <- coef_luad + coef_interaction
+hr_lusc <- exp(coef_lusc)
+var_lusc <- vcov_mat["score", "score"] +
+            vcov_mat["score:HistologyLUSC", "score:HistologyLUSC"] +
+            2 * vcov_mat["score", "score:HistologyLUSC"]
+se_lusc <- sqrt(var_lusc)
+ci_lower <- exp(coef_lusc - 1.96 * se_lusc)
+ci_upper <- exp(coef_lusc + 1.96 * se_lusc)
+
+temp_df <- df %>%
+  filter(startsWith(term, "Factor1")) %>%
+  column_to_rownames("term")
+temp_df <- temp_df %>% mutate(HR = exp(HR))
+temp_df["Factor1.score:HistologyLUSC","HR"] <- hr_lusc
+
+temp_df["Factor1.score:HistologyLUSC","lower_conf"] <- ci_lower
+temp_df["Factor1.score:HistologyLUSC","upper_conf"] <- ci_upper
+
+rownames(temp_df) <- c("Score effect LUAD", "Baseline risk\n(LUSC vs LUAD)", "Score effect LUSC")
+# order data frame
+temp_df <- temp_df[c("Baseline risk\n(LUSC vs LUAD)", "Score effect LUSC", "Score effect LUAD"),]
+
+temp <- temp_df %>%
+  dplyr::select(-p.value) %>%
+  as.matrix() 
+
+
+x_labels <- c(0.7,0.8,0.9,1,1.1,1.2,1.3,1.4)
+rg <- c(min(x_labels)-0.1, max(x_labels)+0.1)
+panel_fun = function(index, nm) {
+    pushViewport(viewport(xscale = rg, yscale = c(0.5, nrow(temp) + 0.5)))
+    grid.rect()
+    grid.xaxis(at = x_labels, label = x_labels, gp = gpar(fontsize = 8))
+    grid.yaxis(at = seq(nrow(temp)), label = rownames(temp), main = TRUE, gp = gpar(fontsize = 8))
+    grid.yaxis(at = seq(nrow(temp)), label = paste0(round(temp_df$HR, 2) , "\n",paste0(paste0("(",round(temp_df$lower_conf,2), " - ",round(temp_df$upper_conf,2), ")")), ", p=", signif(temp_df$p.value,2)), main = FALSE, gp = gpar(fontsize = 7))
+    for (i in seq_len(nrow(temp))){
+      grid.boxplot(temp[i, ], pch = 2, size = unit(40, "mm"), pos = i, direction = "horizontal", box_width = 0.00005)
+    }
+    # Solid line at HR = 1
+    grid.lines(c(1, 1), c(0.5, nrow(temp) + 0.5),
+             gp = gpar(lty = 1, col = "grey50"), default.units = "native")
+    # Example: Add dashed lines at HR = 0.6, 0.8, 1.2, 1.4
+    for (x in x_labels){
+      grid.lines(c(x, x), c(0.5, nrow(temp) + 0.5),
+                 gp = gpar(lty = 2, col = "grey50"), default.units = "native")
+    }
+    grid.points(
+      temp[, 1], 1:nrow(temp),
+      pch = 19, size = unit(2, "mm"),
+      gp = gpar(col = ifelse(temp_df$p.value < 0.05, "#D55E00", "grey30")), 
+      default.units = "native"
+    )
+    popViewport()
+}
+anno = anno_link(align_to = rep("a", nrow(mat)), which = "row", panel_fun = panel_fun, 
+    size = unit(2.5, "cm"), width = unit(10, "cm"), link_width = unit(3, "cm"))
+
+
+
+# Plot heatmap
+ht <- Heatmap(
+  mat,
+  name = "Factor1 Weight",
+  heatmap_legend_param = list(labels = c("Depleted", "Enriched"), at = c(-1,1)),
+  right_annotation = rowAnnotation(HR = anno, gap = unit(0, "points")),
+  col = col_fun,
+  row_names_side = "left",
+  row_names_gp = gpar(fontsize = 8),
+  row_names_max_width = unit(8, "cm"),  # ← Increase space for row names here
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  show_column_names = FALSE,
+  # show_heatmap_legend = FALSE,
+  width = unit(0.4, "cm"),
+  height = unit(7, "cm"),
+  border = TRUE,
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    grid.rect(x = x, y = y, width = width, height = height,
+              gp = gpar(col = "black", fill = NA, lwd = 0.5))
+  }
+)
+
+draw(ht, padding = unit(c(10, 2, 20, 20), "mm"), heatmap_legend_side = "bottom")
+# Set PDF output
+CairoPDF(paste0(out_path, "/5E_Combined_Factor_survival_TCGA.pdf"), width = 7, height = 4)  # adjust width/height as needed
+
+# Draw the heatmap
+draw(ht, padding = unit(c(0,0,0,30), "mm"), heatmap_legend_side = "bottom")
+
+# Close the PDF device
+dev.off() 
+```
+
+
+
 
 
 
