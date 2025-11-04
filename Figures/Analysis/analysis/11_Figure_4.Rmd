@@ -290,17 +290,11 @@ min_down <- min(cur_dat$logFC)-1
 # plot the data
 p <- cur_dat %>%
   ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
   geom_point()+
   theme_bw()+
-  scale_colour_gradientn(colours = c("blue","white","red"), 
+  scale_colour_gradientn(colours = c("white","red"), 
                          values = rescale(c(round(min_down),0,round(max_up))),
                          guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  #scale_color_gradient(low = "white",   high = "red")+
   scale_size(range = c(1,8))+
   new_scale_colour() +
   geom_point(data = cur_dat,shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
@@ -315,6 +309,8 @@ p <- cur_dat %>%
   coord_flip()
   #theme(plot.margin = unit(c(5, 2.5, 2.5, 2.5), "cm"))
 p
+cur_dat %>%
+  filter(celltypes == "Tumor_Ki67__IF2")
 ```
 
 ## Wilcoxon test for EGFR - not in paper
@@ -520,7 +516,7 @@ p
 ```
 
 ## all
-
+not in paper
 ```{r, fig.height=10, fig.width=20}
 condition <- c(FALSE,FALSE)
 names(condition) <- c("NF1","KEAP1")
@@ -653,7 +649,7 @@ p
 ```{r, fig.height=15, fig.width=10}
 cur_dat <- rbind(cur_dat_LUAD,cur_dat_LUSC)
 cur_dat <- rbind(cur_dat, cur_dat_LUAD_TP53_smoker)
-cur_dat <- rbind(cur_dat, cur_dat_all)
+
 
 cur_dat <- cur_dat %>%
   filter(celltypes %in% c(to_show_LUAD,to_show_LUSC, to_show_LUAD_smoker)) %>%
@@ -758,7 +754,7 @@ p_Tumor_HLADR_EGFR <- mean_exp %>%
   scale_color_manual(values = c("red", "blue"))+
   facet_wrap(.~name, scales= "free")+
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
-  stat_compare_means(size = 1.5,label.y = 4)+
+  stat_compare_means(size = 2,label.y = 4,label = "p.format")+
     theme_bw()+
   theme(axis.text.y = element_text(size = 6),
         axis.text.x = element_text(size = 6,angle = 90, vjust = 1, hjust = 0.5),
@@ -767,7 +763,8 @@ p_Tumor_HLADR_EGFR <- mean_exp %>%
         strip.text = element_text(size = 6),
         axis.title.x = element_text(size = 7),
         axis.title.y = element_text(size = 7))+
-  theme(legend.position = "none")
+  theme(legend.position = "none")+
+  coord_cartesian(ylim = c(0.2,4.2))
 p_Tumor_HLADR_EGFR
 
 ggsave(filename = paste0(out_folder,"4C_HLADR_on_tumor_cells_EGFR.pdf"),
@@ -878,7 +875,7 @@ p_CD8_CXCL13_EGFR <- mean_exp %>%
   scale_color_manual(values = c("red", "blue"))+
   facet_wrap(.~name, scales= "free",nrow = 1)+
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
-  stat_compare_means(size = 1.5)+
+  stat_compare_means(size = 2.7, label = "p.format")+
     theme_bw()+
   theme(axis.text.y = element_text(size = 6),
         axis.text.x = element_text(size = 6, angle = 90, vjust = 1,hjust = 0.5),
@@ -896,7 +893,7 @@ ggsave(filename = paste0(out_folder,"4D_exhaustion_on_CD8_Tcells.pdf"),
 ```
 
 
-# 4E Tumor cells EGFR HLADR in STK11
+# 4F Tumor cells EGFR HLADR in STK11
 ```{r, fig.height=5, fig.width=5}
 p_Tumor_HLADR_STK11 <- mean_exp %>%
   filter(celltypes == "Tumor",
@@ -910,7 +907,7 @@ p_Tumor_HLADR_STK11 <- mean_exp %>%
   scale_color_manual(values = c("red", "blue"))+
   facet_wrap(.~name, scales= "free")+
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
-  stat_compare_means(size = 1.5)+
+  stat_compare_means(size = 2.5, label = "p.format")+
     theme_bw()+
   theme(axis.text.y = element_text(size = 6),
         axis.text.x = element_text(size = 6, angle = 90, vjust = 1, hjust = 0.5),
@@ -922,14 +919,14 @@ p_Tumor_HLADR_STK11 <- mean_exp %>%
   theme(legend.position = "none")
 p_Tumor_HLADR_STK11
 
-ggsave(filename = paste0(out_folder,"4E_HLADR_and_EGFR_on_tumor_cells_STK11.pdf"),
+ggsave(filename = paste0(out_folder,"4F_HLADR_and_EGFR_on_tumor_cells_STK11.pdf"),
        plot = p_Tumor_HLADR_STK11,
        device = "pdf",
        width = 1.8,
        height = 2)
 ```
 
-# 4F Ki67 and p53 on tumor cells in TP53 mutated in LUAD
+# 4E Ki67 and p53 on tumor cells in TP53 mutated in LUAD
 
 ```{r, fig.height=5, fig.width=5}
 p_Tumor_Ki67_P53_TP53 <- mean_exp %>%
@@ -944,7 +941,7 @@ p_Tumor_Ki67_P53_TP53 <- mean_exp %>%
   scale_color_manual(values = c("red", "blue"))+
   facet_wrap(.~name, scales= "free")+
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
-  stat_compare_means(size = 1)+
+  stat_compare_means(size = 2.2, label = "p.format")+
     theme_bw()+
   theme(axis.text.y = element_text(size = 6),
         axis.text.x = element_text(size = 6, angle = 90, vjust = 1, hjust = 0.5),
@@ -956,7 +953,7 @@ p_Tumor_Ki67_P53_TP53 <- mean_exp %>%
   theme(legend.position = "none")
 p_Tumor_Ki67_P53_TP53
 
-ggsave(filename = paste0(out_folder,"4F_Ki67_p53_on_tumor_cells_TP53.pdf"),
+ggsave(filename = paste0(out_folder,"4E_Ki67_p53_on_tumor_cells_TP53.pdf"),
        plot = p_Tumor_Ki67_P53_TP53,
        device = "pdf",
        width = 1.8,
@@ -1098,7 +1095,7 @@ p_Treg_GITR_PIK3CA <- mean_exp %>%
   scale_color_manual(values = c("red", "blue"))+
   facet_wrap(.~name, scales= "free")+
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
-  stat_compare_means(size = 1)+
+  stat_compare_means(size = 2, label = "p.format")+
     theme_bw()+
   theme(axis.text.y = element_text(size = 6),
         axis.text.x = element_text(size = 6, angle = 90, vjust = 1, hjust = 0.5),

@@ -37,6 +37,10 @@ traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"
 median(traits$time_to_event)/365*12
 ```
 
+```{r}
+traits %>% filter(simple_stage == "IV")
+```
+
 
 ```{r}
 dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
@@ -102,10 +106,6 @@ cur_traits <- traits %>%
   filter(simple_histology == "Adenocarcinoma")
 res <- fisher.test(table(cur_traits$smoker,cur_traits$TP53), or = TRUE,conf.int = TRUE)
 print(res)
-res$method
-table(cur_traits$smoker,cur_traits$TP53)
-table(cur_traits$smoking_status,cur_traits$TP53)
-
 ```
 
 

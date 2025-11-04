@@ -92,11 +92,14 @@ write.csv(PDL1_score,file = paste0(out_folder,"PDL1_score",".csv"), row.names = 
 # Driver mutations
 
 ```{r}
+# this is the old mutation file from before the VAF integration
+#mut_new <- read.csv(paste0(mount_path,"data/WES/data/Rout/NSCLC2_mutation_matrix.csv"))
 mut_new <- read.csv(paste0(mount_path,"data/WES/data/Rout/NSCLC2_mutation_matrix.csv"))
 mut_new <- mut_new[,-1]
+
 mut_new <- mut_new %>%
-  mutate(Gene_Name = GENE) %>%
-  select(Gene_Name,everything(), -GENE)
+  mutate(Gene_Name = Gene) %>%
+  select(Gene_Name,everything(), -Gene)
 
 drivers <- c("TP53","KRAS","EGFR","PIK3CA","ALK","RET","MET","HER2","BRAF","ROS1","NTRK","NRG1","STK11", "KEAP1")
 genes_driver <- c("KRAS", "EGFR", "BRAF", "MET", "ALK", "ROS", "RET", "NTRK", "NRG1", "FGFR1", "FGFR2", "HRAS", "NRAS", "MAP2K1", "ERBB2", "ROS1", "PIK3CA", "NTRK1", "STK11")
@@ -116,6 +119,9 @@ mut_new <- mut_new %>%
   select(-max)
 
 mut_new <- as.data.frame(mut_new)
+
+mut_new %>%
+  filter(Gene_Name == "EGFR")
 
 # clean up
 rownames(mut_new) <- mut_new$Gene_Name

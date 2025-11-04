@@ -104,12 +104,12 @@ p1 <- df1 %>%
 # Kaplan Meier plot for EGFR since no patients die
 surv_fit <- survfit(Surv(time_to_event, censoring) ~ EGFR, data = traits)
 
-p2 <- ggsurvplot(surv_fit, data = traits %>% filter(simple_histology == "Adenocarcinoma"), risk.table = TRUE, pval = TRUE,palette = c("red","blue"))+
+p2 <- ggsurvplot(surv_fit, data = traits %>% filter(simple_histology == "Adenocarcinoma"), risk.table = TRUE, pval = TRUE,palette = c("red","blue"))
+p2 <- p2$plot+
   ylab("OS probability")+
   xlab("Time (days)")
 
-p2 <- plot_grid(p2$plot,ncol = 1, rel_heights = c(1,0.5))
-p2
+p2 <- plot_grid(p2,ncol = 1, rel_heights = c(1,0.5))
 
 p <- plot_grid(p1,p2,ncol = 1,rel_heights = c(1,1))
 p
@@ -157,7 +157,9 @@ for(j in c("TP53","KRAS","EGFR","STK11","PIK3CA","NF1","KEAP1", "CDKN2A")){
 cur_dat <- do.call(rbind,plots_list)
 
 cur_dat <- cur_dat %>%
-    mutate(FDR = p.adjust(p.value,method = "BH"),
+    mutate(odds_ratio = ifelse(is.infinite(odds_ratio),1024,odds_ratio),
+           odds_ratio = ifelse(odds_ratio == 0,2^-10,odds_ratio),
+           FDR = p.adjust(p.value,method = "BH"),
            sig = ifelse(p.value < 0.05 & odds_ratio > 1, "UP_trend",NA),
            sig = ifelse(FDR < 0.1 & odds_ratio > 1, "UP",sig),
            sig = ifelse(p.value < 0.05 & odds_ratio < 1, "DOWN_trend",sig),
@@ -197,6 +199,7 @@ ggsave(filename = paste0(out_folder,"S5A_Driver_enrichment_in_histology.pdf"),
        width = 3,
        height = 1.5)
 ```
+
 # S5A enrichment of clinical in oncogenes
 
 ## LUAD
@@ -281,7 +284,7 @@ condition <- c("negative", "low","low", "Female","I","I","II","Ex-smoker", "node
 names(condition) <- colnames(cur_traits)
 plots_list <- list()
 cur_traits <- traits %>% filter(simple_histology == "Squamous cell carcinoma")
-for(j in c("TP53","PIK3CA")){
+for(j in c("TP53","PIK3CA", "CDKN2A")){
   p.list <- list()
   l.list <- list()
   for (i in names(condition)) {
@@ -388,7 +391,8 @@ p <- cur_dat %>%
         legend.location = "plot")
 
 p
-p2 <- plot_grid(p1,p,ncol = 1, rel_heights = c(1,4.5))
+p2 <- plot_grid(p1,p,ncol = 1, rel_heights = c(1,4))
+p2
 ggsave(filename = paste0(out_folder,"S5A_driver_mutation_enrichment_in_clinical.pdf"),
        plot = p2,
        device = "pdf",
@@ -762,6 +766,9 @@ ggsave(filename = paste0(out_folder,"S5B_marker_exp_fold_changes_all_celltypes.p
        width = 15,
        height = 10)
 
+dat %>%
+  filter(condition == "LUAD_EGFR",
+         celltypes == "Tumor")
 ```
 
 # S5C number HLADR positive tumor cells in EGFR
@@ -796,8 +803,6 @@ counts_EGFRneg <- counts %>%
          simple_histology == "Adenocarcinoma",
          EGFR == FALSE)
 
-library(mclust)
-
 fit2 <- mixtools::normalmixEM(counts_EGFRneg$HLADR,k = 2)
 # get cut point
 post <- fit2$posterior[, 1]
@@ -806,7 +811,8 @@ idx <- which.min(abs(post - 0.5))
 cut_point_HLADR <- counts_EGFRneg$HLADR[idx]
 cut_point_HLADR
 
-png(filename = paste0(out_folder,"S5C_HLADR_tumor_cell_EGFRmutated.png"),width = 1000, height = 500,units = "px")
+Cairo::CairoPNG(filename = paste0(out_folder,"S5C_HLADR_tumor_cell_EGFRmutated.png"),width = 1000, height = 500,units = "px")
+Cairo::CairoPNG(filename = paste0(out_folder,"S5C_HLADR_tumor_cell_EGFRmutated.png"),width = 1000, height = 500,units = "px")
 par(mfrow = c(1,2))
 LSD::heatscatter(x = counts_EGFR$Ecad, y = counts_EGFR$HLADR,main = "EGFR mutated")
 abline(h = cut_point_HLADR, lty = 2, lwd = 5)
