@@ -1,0 +1,388 @@
+---
+title: "MOFA - Data preparation"
+author: "Bruno Palau"
+date: "2025-10-01"
+output: html_document
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+# Set path
+if (Sys.info()["sysname"] == "Darwin"){
+  mount_path <- "/Volumes/"
+} else if (Sys.info()["sysname"] == "Linux"){
+  mount_path <- "/mnt/"
+} else {
+  stop("Operating system is not supported")
+}
+library(dplyr)
+library(tidyverse)
+
+DATA_PATH <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/"
+MOFA_INPUT_PATH <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/MOFA/"
+```
+
+# RNA
+we read in the batch corrected vst corrected RNA counts
+```{r}
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(stringr)
+library(purrr)
+library(dplyr)
+
+# --- Load and clean RNA data ---
+RNA_raw <- read.delim(paste0(mount_path, "/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/RNAseq/vstcounts_adj.txt"), sep = "\t")
+
+RNA_raw <- RNA_raw %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("sample_id") %>%
+  mutate(
+    sample_id = str_split_i(sample_id, ".FIXT", 1),
+    Immucan_id = gsub("\\.", "_", sample_id)
+  ) %>%
+  dplyr::select(-sample_id)
+
+# --- Select most variable genes ---
+n_genes <- 1000  # adjust as needed
+
+gene_vars <- apply(RNA_raw %>% dplyr::select(-Immucan_id), 2, var, na.rm = TRUE)
+top_genes <- names(sort(gene_vars, decreasing = TRUE))[1:n_genes]
+
+RNA_filtered <- RNA_raw[, c("Immucan_id", top_genes)]
+
+# --- Map Ensembl IDs to gene symbols ---
+ensembl_ids <- str_split_i(top_genes, pattern = "\\.", 1)
+
+gene_symbols <- mapIds(
+  org.Hs.eg.db,
+  keys = ensembl_ids,
+  column = "SYMBOL",
+  keytype = "ENSEMBL",
+  multiVals = "first"
+)
+
+# Fallback: if mapping fails, keep original Ensembl
+final_names <- gene_symbols
+missing <- is.na(final_names)
+final_names[missing] <- top_genes[missing]
+
+# Apply name mapping (excluding Immucan_id column)
+colnames(RNA_filtered)[-1] <- final_names
+
+# --- Save final file ---
+write.csv(RNA_filtered, paste0(MOFA_INPUT_PATH, "/RNA_named.csv"), row.names = FALSE)
+
+```
+
+
+# interactions
+```{r}
+files <- list.files(DATA_PATH, full.names = TRUE, pattern = "interactions")
+
+# IF interactions or minor celltype interactions for IMC
+files <- files[grepl("_IF|minor", files)]
+
+list_df <- lapply(files, function(x){
+  df <- read.csv(x) 
+  if ("immucan_id" %in% colnames(df)){
+    df <- df %>%
+      dplyr::rename(Immucan_id = immucan_id)
+  }
+  if (grepl("normalized", x)){
+    colnames(df)[colnames(df) != "Immucan_id"] <- paste0(colnames(df)[colnames(df) != "Immucan_id"], "_norm_", str_split_i(str_split_i(basename(x), "_", -1), "\\.", 1))
+  }else{
+    colnames(df)[colnames(df) != "Immucan_id"] <- paste0(colnames(df)[colnames(df) != "Immucan_id"], "_", str_split_i(str_split_i(basename(x), "_", -1), "\\.", 1))
+  }
+  return (df)
+})
+
+# Combine by column "SampleID", keep all sample IDs (full outer join)
+combined_df <- purrr::reduce(list_df, function(x, y) full_join(x, y, by = "Immucan_id")) %>%
+  mutate(Immucan_id = gsub("\\-", "_", Immucan_id))
+
+bad_features <- colnames(combined_df)[colSums(is.na(combined_df) | combined_df == 0) >= 170]
+
+combined_df <- combined_df %>%
+  dplyr::select(-all_of(bad_features))
+
+# 1. Compute feature–feature correlation matrix
+corr_matrix <- cor(combined_df %>%
+                     dplyr::select(-Immucan_id), use = "pairwise.complete.obs")
+
+
+# 2. Convert to distance matrix for clustering
+dist_matrix <- as.dist(1 - abs(corr_matrix))  # use absolute correlation
+
+# 3. Hierarchical clustering
+hc <- hclust(dist_matrix, method = "average")
+
+# 4. Cut tree at correlation threshold (e.g. 0.9 → height = 0.1)
+clusters <- cutree(hc, h = 0.2)
+
+# Save cluster assignment for downstream mapping
+cluster_map <- tibble(
+  feature = names(clusters),
+  cluster_id = as.integer(clusters)
+)
+
+# Save to disk
+write.csv(cluster_map, file = paste0(MOFA_INPUT_PATH, "/V6_minor_clusters_interactions.csv"), row.names = FALSE)
+
+# 5. Pick one representative per cluster
+selected_features <- sapply(unique(clusters), function(cl) {
+  members <- names(clusters[clusters == cl])
+  members[1]  # pick the first (or use more logic, e.g. highest variance)
+})
+
+combined_df <- combined_df[,c("Immucan_id", selected_features)]
+
+write.csv(combined_df, paste0(MOFA_INPUT_PATH, "/interactions.csv"))
+```
+
+# fractions
+```{r}
+files <- list.files(DATA_PATH, full.names = TRUE, pattern = "fractions")
+
+list_df <- lapply(files, function(x){
+  df <- read.csv(x) 
+  if ("immucan_id" %in% colnames(df)){
+    df <- df %>%
+      dplyr::rename(Immucan_id = immucan_id)
+  }
+  if (grepl("stroma", x)){
+    colnames(df)[colnames(df) != "Immucan_id"] <- paste0(colnames(df)[colnames(df) != "Immucan_id"], "_stroma_", str_split_i(str_split_i(basename(x), "_", -1), "\\.", 1))
+  }else{
+    colnames(df)[colnames(df) != "Immucan_id"] <- paste0(colnames(df)[colnames(df) != "Immucan_id"], "_tumor_", str_split_i(str_split_i(basename(x), "_", -1), "\\.", 1))
+  }
+  return (df)
+})
+
+# Combine by column "SampleID", keep all sample IDs (full outer join)
+combined_df <- purrr::reduce(list_df, function(x, y) full_join(x, y, by = "Immucan_id"))%>%
+  mutate(Immucan_id = gsub("\\-", "_", Immucan_id))
+
+
+# 1. Compute feature–feature correlation matrix
+corr_matrix <- cor(combined_df %>%
+                     dplyr::select(-Immucan_id), use = "pairwise.complete.obs")
+
+
+# 2. Convert to distance matrix for clustering
+dist_matrix <- as.dist(1 - abs(corr_matrix))  # use absolute correlation
+
+# 3. Hierarchical clustering
+hc <- hclust(dist_matrix, method = "average")
+
+# 4. Cut tree at correlation threshold (e.g. 0.9 → height = 0.1)
+clusters <- cutree(hc, h = 0.2)
+
+# Save cluster assignment for downstream mapping
+cluster_map <- tibble(
+  feature = names(clusters),
+  cluster_id = as.integer(clusters)
+)
+
+# Save to disk
+write.csv(cluster_map, file = paste0(MOFA_INPUT_PATH, "/V6_minor_clusters_fractions.csv"), row.names = FALSE)
+
+# 5. Pick one representative per cluster
+selected_features <- sapply(unique(clusters), function(cl) {
+  members <- names(clusters[clusters == cl])
+  members[1]  # pick the first (or use more logic, e.g. highest variance)
+})
+
+combined_df <- combined_df[,c("Immucan_id", selected_features)]
+
+
+
+write.csv(combined_df, paste0(MOFA_INPUT_PATH, "/fractions.csv"))
+```
+
+
+# densities
+```{r}
+files <- list.files(DATA_PATH, full.names = TRUE, pattern = "density")
+
+# IF interactions or minor celltype interactions for IMC
+files <- files[grepl("_IF|minor", files)]
+
+list_df <- lapply(files, function(x){
+  df <- read.csv(x) 
+  if ("immucan_id" %in% colnames(df)){
+    df <- df %>%
+      dplyr::rename(Immucan_id = immucan_id)
+  }
+  if (grepl("minor", x)){
+    colnames(df)[colnames(df) != "Immucan_id"] <- paste0(colnames(df)[colnames(df) != "Immucan_id"], "_minor_", str_split_i(str_split_i(basename(x), "_", -1), "\\.", 1))
+  }else{
+    colnames(df)[colnames(df) != "Immucan_id"] <- paste0(colnames(df)[colnames(df) != "Immucan_id"], "_", str_split_i(str_split_i(basename(x), "_", -1), "\\.", 1))
+  }
+  return (df)
+})
+
+# Combine by column "SampleID", keep all sample IDs (full outer join)
+combined_df <- purrr::reduce(list_df, function(x, y) full_join(x, y, by = "Immucan_id"))%>%
+  mutate(Immucan_id = gsub("\\-", "_", Immucan_id)) %>%
+  dplyr::select(-CD8_CD56_FOXP3_density_IF3)
+
+
+
+# 1. Compute feature–feature correlation matrix
+corr_matrix <- cor(combined_df %>%
+                     dplyr::select(-Immucan_id), use = "pairwise.complete.obs")
+
+
+# 2. Convert to distance matrix for clustering
+dist_matrix <- as.dist(1 - abs(corr_matrix))  # use absolute correlation
+
+# 3. Hierarchical clustering
+hc <- hclust(dist_matrix, method = "average")
+
+# 4. Cut tree at correlation threshold (e.g. 0.9 → height = 0.1)
+clusters <- cutree(hc, h = 0.2)
+
+# Save cluster assignment for downstream mapping
+cluster_map <- tibble(
+  feature = names(clusters),
+  cluster_id = as.integer(clusters)
+)
+
+# Save to disk
+write.csv(cluster_map, file = paste0(MOFA_INPUT_PATH, "/V6_minor_clusters_densities.csv"), row.names = FALSE)
+
+# 5. Pick one representative per cluster
+selected_features <- sapply(unique(clusters), function(cl) {
+  members <- names(clusters[clusters == cl])
+  members[1]  # pick the first (or use more logic, e.g. highest variance)
+})
+
+combined_df <- combined_df[,c("Immucan_id", selected_features)]
+
+write.csv(combined_df, paste0(MOFA_INPUT_PATH, "/densities.csv"))
+```
+
+
+
+# cellohood
+```{r}
+files <- list.files(DATA_PATH, full.names = TRUE, pattern = "cellohood")
+
+# only cellbased cellohood clusters
+files <- files[grepl("density", files)]
+
+list_df <- lapply(files, function(x){
+  df <- read.csv(x) 
+  if ("immucan_id" %in% colnames(df)){
+    df <- df %>%
+      dplyr::rename(Immucan_id = immucan_id)
+  }
+  if (grepl("cellbased", x)){
+    colnames(df)[colnames(df) != "Immucan_id"] <- paste0(colnames(df)[colnames(df) != "Immucan_id"], "_cellbased_", str_split_i(str_split_i(basename(x), "_", -1), "\\.", 1))
+  }else{
+    colnames(df)[colnames(df) != "Immucan_id"] <- paste0(colnames(df)[colnames(df) != "Immucan_id"], "_", str_split_i(str_split_i(basename(x), "_", -1), "\\.", 1))
+  }
+  return (df)
+})
+
+# Combine by column "SampleID", keep all sample IDs (full outer join)
+combined_df <- purrr::reduce(list_df, function(x, y) full_join(x, y, by = "Immucan_id"))%>%
+  mutate(Immucan_id = gsub("\\-", "_", Immucan_id))
+
+colnames(combined_df) <- sub("_cellbased_p1$", "_P1",colnames(combined_df))
+colnames(combined_df) <- sub("_cellbased_p2$", "_P2",colnames(combined_df))
+
+write.csv(combined_df, paste0(MOFA_INPUT_PATH, "/cellohood.csv"))
+```
+
+# expressions
+```{r}
+files <- list.files(DATA_PATH, full.names = TRUE, pattern = "marker_expr")
+
+list_df <- lapply(files, function(x){
+  df <- read.csv(x) 
+  if ("immucan_id" %in% colnames(df)){
+    df <- df %>%
+      dplyr::rename(Immucan_id = immucan_id)
+  }
+  colnames(df)[colnames(df) != "Immucan_id"] <- paste0(colnames(df)[colnames(df) != "Immucan_id"], "_", str_split_i(str_split_i(basename(x), "_", -1), "\\.", 1))
+  return (df)
+})
+
+# Combine by column "SampleID", keep all sample IDs (full outer join)
+combined_df <- purrr::reduce(list_df, function(x, y) full_join(x, y, by = "Immucan_id"))%>%
+  mutate(Immucan_id = gsub("\\-", "_", Immucan_id))
+
+
+
+# 1. Compute feature–feature correlation matrix
+corr_matrix <- cor(combined_df %>%
+                     dplyr::select(-Immucan_id), use = "pairwise.complete.obs")
+
+
+# 2. Convert to distance matrix for clustering
+dist_matrix <- as.dist(1 - abs(corr_matrix))  # use absolute correlation
+
+# 3. Hierarchical clustering
+hc <- hclust(dist_matrix, method = "average")
+
+# 4. Cut tree at correlation threshold (e.g. 0.9 → height = 0.1)
+clusters <- cutree(hc, h = 0.2)
+
+# Save cluster assignment for downstream mapping
+cluster_map <- tibble(
+  feature = names(clusters),
+  cluster_id = as.integer(clusters)
+)
+
+# Save to disk
+write.csv(cluster_map, file = paste0(MOFA_INPUT_PATH, "/V6_minor_clusters_expressions.csv"), row.names = FALSE)
+
+
+# 5. Pick one representative per cluster
+selected_features <- sapply(unique(clusters), function(cl) {
+  members <- names(clusters[clusters == cl])
+  members[1]  # pick the first (or use more logic, e.g. highest variance)
+})
+
+combined_df <- combined_df[,c("Immucan_id", selected_features)]
+
+write.csv(combined_df, paste0(MOFA_INPUT_PATH, "/expressions.csv"))
+```
+
+# Binary
+## driver mutations and scores
+```{r}
+df <- read.csv(paste0(DATA_PATH, "/driver_mutations.csv"))
+
+
+driver_mutations <- df %>%
+  dplyr::rename(Immucan_id = immucan_id) %>%
+  mutate(across(
+    .cols = -Immucan_id,   # exclude Immucan_id column
+    .fns = ~ as.integer(as.logical(.))
+  ))%>%
+  mutate(Immucan_id = gsub("\\-", "_", Immucan_id))
+
+df <- read.csv(paste0(mount_path,"/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/all_traits.csv"))
+
+df <- df %>%
+  dplyr::rename(Immucan_id = immucan_id) %>%
+  dplyr::select(Immucan_id, TPS_score, CPS_score, TMB_score) %>%
+  mutate(TPS_score = ifelse(TPS_score == "positive", 1, 0),
+         CPS_score = ifelse(CPS_score == "positive", 1, 0),
+         TMB_score = ifelse(TMB_score == "high", 1, 0)) %>%
+  mutate(across(
+    .cols = -Immucan_id,   # exclude Immucan_id column
+    .fns = ~ as.integer(as.logical(.))
+  ))%>%
+  mutate(Immucan_id = gsub("\\-", "_", Immucan_id))
+
+binary <- driver_mutations %>%
+  full_join(df, "Immucan_id")
+
+write.csv(binary, paste0(MOFA_INPUT_PATH, "/binary.csv"))
+```

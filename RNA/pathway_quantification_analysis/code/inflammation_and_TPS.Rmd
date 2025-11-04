@@ -1,0 +1,174 @@
+
+```{r , echo=FALSE, include=FALSE}
+#remove NA
+ind_na <- which(is.na(clinical_data_all_traits$TPS_score))
+clinical_data_all_traits <- clinical_data_all_traits[-ind_na,]
+
+##reduce the clinical data to the samples with RNASeq data
+ind_av_samples <- which(clinical_data_all_traits$immucan_id %in% rownames(data))
+clinical_data_all_traits <- clinical_data_all_traits[ind_av_samples,]
+```
+
+
+## Compare inflammation quantification according to TMB
+
+```{r inflammation_quantif_tps, echo=FALSE, include=FALSE}
+clinical_data_all_traits_min <- clinical_data_all_traits[,c(2, 55)]
+
+pdf(paste0("../", GraphOutDir, "/", outputDirInflammation, "boxplot_inflammation_quantification_TPS_score.pdf"), height = 5)
+for (i in 1:length(list_files))
+{
+  data <- read.table(paste0(file="../",list_files[i]), header = TRUE)
+  #add info TPS status
+  data_NSCLC <- merge(data, clinical_data_all_traits_min, by.x = "row.names", by.y = "immucan_id")
+  
+  #method
+  method_name <- unlist(str_split(list_files[i], "_NSCLC2_"))[2]
+  
+  #comparison
+  my_comparisons <- list( c("high", "low") )
+  
+  p_NFkB <- ggplot(data_NSCLC, aes(x=TPS_score, y=NFkB)) + 
+    ylab("NFKB") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(colour = "darkgrey", size = 1, width = 0.15) +
+    ggtitle(glue::glue('NFKB quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 10)) +
+    stat_compare_means()
+ 
+    #MAPK
+  p_MAPK <- ggplot(data_NSCLC, aes(x=TPS_score, y=MAPK)) + 
+    ylab("MAPK") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(colour = "darkgrey", size = 1, width = 0.15) +
+    ggtitle(glue::glue('MAPK quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 9)) +
+    stat_compare_means()
+  
+  #JAK-STAT
+  p_JAK_STAT <- ggplot(data_NSCLC, aes(x=TPS_score, y=JAK.STAT)) + 
+    ylab("JAK-STAT") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(colour = "darkgrey", size = 1, width = 0.15) +
+    ggtitle(glue::glue('JAK-STAT quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 8)) +
+    stat_compare_means()
+  
+  print(ggarrange(p_NFkB, p_MAPK, p_JAK_STAT, 
+                  labels = c("A", "B", "C"),
+                  ncol = 3, nrow = 1) ) 
+}
+dev.off()
+```
+
+
+
+## Compare inflammation quantification according to TMB for adeno
+
+```{r inflammation_quantif_tps_adeno, echo=FALSE, include=FALSE}
+#subset to adeno
+clinical_data_all_traits_adeno <- clinical_data_all_traits[ which(clinical_data_all_traits$simple_histology == "Adenocarcinoma"), ]
+clinical_data_all_traits_adeno_min <- clinical_data_all_traits_adeno[,c(2, 55)]
+
+pdf(paste0("../", GraphOutDir, "/", outputDirInflammation, "boxplot_inflammation_quantification_TPS_score_in_adeno.pdf"), height = 5)
+for (i in 1:length(list_files))
+{
+  data <- read.table(paste0(file="../",list_files[i]), header = TRUE)
+  
+  #add info TPS status
+  data_NSCLC <- merge(data, clinical_data_all_traits_adeno_min, by.x = "row.names", by.y = "immucan_id")
+  
+  #method
+  method_name <- unlist(str_split(list_files[i], "_NSCLC2_"))[2]
+  
+  #comparison
+  my_comparisons <- list( c("high", "low") )
+  
+  p_NFkB <- ggplot(data_NSCLC, aes(x=TPS_score, y=NFkB)) + 
+    ylab("NFKB") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(colour = "darkgrey", size = 1, width = 0.15) +
+    ggtitle(glue::glue('NFKB quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 10)) +
+    stat_compare_means()
+  
+  #MAPK
+  p_MAPK <- ggplot(data_NSCLC, aes(x=TPS_score, y=MAPK)) + 
+    ylab("MAPK") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(colour = "darkgrey", size = 1, width = 0.15) +
+    ggtitle(glue::glue('MAPK quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 9)) +
+    stat_compare_means()
+  
+  #JAK-STAT
+  p_JAK_STAT <- ggplot(data_NSCLC, aes(x=TPS_score, y=JAK.STAT)) + 
+    ylab("JAK-STAT") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(colour = "darkgrey", size = 1, width = 0.15) +
+    ggtitle(glue::glue('JAK-STAT quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 8)) +
+    stat_compare_means()
+  
+  print(ggarrange(p_NFkB, p_MAPK, p_JAK_STAT, 
+                  labels = c("A", "B", "C"),
+                  ncol = 3, nrow = 1) ) 
+}
+dev.off()
+```
+
+
+
+## Compare inflammation quantification according to TMB for squamous
+
+```{r inflammation_quantif_tps_squamous, echo=FALSE, include=FALSE}
+#subset to squamous
+clinical_data_all_traits_squamous <- clinical_data_all_traits[ which(clinical_data_all_traits$simple_histology == "Squamous cell carcinoma"), ]
+clinical_data_all_traits_squamous_min <- clinical_data_all_traits_squamous[,c(2, 55)]
+
+pdf(paste0("../", GraphOutDir, "/", outputDirInflammation, "boxplot_inflammation_quantification_TPS_score_in_squamous.pdf"), height = 5)
+for (i in 1:length(list_files)) 
+{
+  data <- read.table(paste0(file="../",list_files[i]), header = TRUE)
+  
+  #add info TPS status
+  data_NSCLC <- merge(data, clinical_data_all_traits_squamous_min, by.x = "row.names", by.y = "immucan_id")
+  
+  #method
+  method_name <- unlist(str_split(list_files[i], "_NSCLC2_"))[2]
+  
+  #comparison
+  my_comparisons <- list( c("high", "low") )
+  
+  p_NFkB <- ggplot(data_NSCLC, aes(x=TPS_score, y=NFkB)) + 
+    ylab("NFKB") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(colour = "darkgrey", size = 1, width = 0.15) +
+    ggtitle(glue::glue('NFKB quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 10)) +
+    stat_compare_means()
+  
+  #MAPK
+  p_MAPK <- ggplot(data_NSCLC, aes(x=TPS_score, y=MAPK)) + 
+    ylab("MAPK") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(colour = "darkgrey", size = 1, width = 0.15) +
+    ggtitle(glue::glue('MAPK quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 9)) +
+    stat_compare_means()
+  
+  #JAK-STAT
+  p_JAK_STAT <- ggplot(data_NSCLC, aes(x=TPS_score, y=JAK.STAT)) + 
+    ylab("JAK-STAT") +
+    geom_boxplot() + theme(axis.text.x=element_text(angle=90, hjust=1)) +
+    geom_jitter(colour = "darkgrey", size = 1, width = 0.15) +
+    ggtitle(glue::glue('JAK-STAT quantification by {method_name}')) +
+    theme(plot.title = element_text(size = 8)) +
+    stat_compare_means()
+  
+  print(ggarrange(p_NFkB, p_MAPK, p_JAK_STAT, 
+                  labels = c("A", "B", "C"),
+                  ncol = 3, nrow = 1) ) 
+}
+dev.off()
+```

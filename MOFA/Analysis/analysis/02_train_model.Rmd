@@ -1,0 +1,228 @@
+---
+title: "MOFA - Training"
+author: "Bruno Palau"
+date: "2025-10-01"
+output: html_document
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+# Set path
+if (Sys.info()["sysname"] == "Darwin"){
+  mount_path <- "/Volumes/"
+} else if (Sys.info()["sysname"] == "Linux"){
+  mount_path <- "/mnt/"
+} else {
+  stop("Operating system is not supported")
+}
+
+# Load libraries
+library(MOFA2)
+library(reticulate)
+# Potentially need to set the conda environment to use
+#use_condaenv("MOFA")
+
+
+library(dplyr)
+library(readr)
+library(stringr)
+
+
+MOFA_INPUT_PATH <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/MOFA/"
+CLINICAL_PATH <- "/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv"
+```
+
+
+# read in data
+
+```{r}
+# clinical data
+clinical <- read.csv(CLINICAL_PATH) %>%
+  dplyr::rename(Immucan_id = immucan_id) %>%
+  mutate(Immucan_id = gsub("-", "_", Immucan_id))
+
+# Helper function to z-score normalize
+zscore <- function(mat) {
+  t(scale(t(mat)))
+}
+
+# 1. Read data
+cellohood <- read.csv(paste0(MOFA_INPUT_PATH, "/cellohood.csv"), row.names = 1)
+densities <- read.csv(paste0(MOFA_INPUT_PATH, "/densities.csv"), row.names = 1)
+expressions <- read.csv(paste0(MOFA_INPUT_PATH, "/expressions.csv"), row.names = 1)
+interactions <- read.csv(paste0(MOFA_INPUT_PATH, "/interactions.csv"), row.names = 1)
+binary <- read.csv(paste0(MOFA_INPUT_PATH, "/binary.csv"), row.names = 1)
+RNA <- read.csv(paste0(MOFA_INPUT_PATH, "/RNA_named.csv"))
+
+# 2. Set rownames from the first column (if applicable)
+set_rownames <- function(df) {
+  rownames(df) <- df$Immucan_id
+  df$Immucan_id <- NULL
+  return(df)
+}
+
+cellohood <- set_rownames(cellohood)
+densities <- set_rownames(densities)
+expressions <- set_rownames(expressions)
+interactions <- set_rownames(interactions)
+binary <- set_rownames(binary)
+RNA <- set_rownames(RNA)
+```
+
+
+```{r}
+preprocess_view <- function(df, 
+                            log_transform = FALSE, 
+                            arcsin_transform = FALSE, 
+                            zscore_transform = TRUE,
+                            filter_histology = FALSE) {
+  mat <- as.matrix(df)
+  
+  if (filter_histology){
+    mat <- mat[rownames(mat) %in% (clinical %>%
+                 filter(simple_histology %in% c("Adenocarcinoma")) %>%
+                 pull(Immucan_id)),]
+  }
+  
+  # Optional log1p transform (for counts)
+  if (log_transform) {
+    mat <- log1p(mat)
+  }
+  
+  # Optional arcsin sqrt transform (for proportions)
+  if (arcsin_transform) {
+    mat <- asin(sqrt(mat))
+  }
+  
+  
+  # Optional z-scoring
+  if (zscore_transform) {
+    mat <- scale(mat)
+  }
+  
+  # Transpose to features x samples
+  mat <- t(mat)
+  return(mat)
+}
+
+filter_histology <- FALSE
+views <- list(
+  Cellohood       = preprocess_view(cellohood, log_transform = TRUE, filter_histology=filter_histology),
+  Densities       = preprocess_view(densities, log_transform = TRUE, filter_histology=filter_histology),
+  Interactions    = preprocess_view(interactions, filter_histology=filter_histology),
+  Expressions     = preprocess_view(expressions, filter_histology=filter_histology),
+  RNA             = preprocess_view(RNA, filter_histology=filter_histology),
+  BINARY = preprocess_view(binary, zscore_transform = FALSE, filter_histology=filter_histology)
+)
+
+lapply(views, dim)
+```
+
+
+```{r}
+# 4. Align samples across all views using union instead of intersection
+all_samples <- Reduce(union, lapply(views, colnames))
+
+# Fill in missing columns (samples) with NA
+views <- lapply(views, function(mat) {
+  missing <- setdiff(all_samples, colnames(mat))
+  if (length(missing) > 0) {
+    empty_mat <- matrix(NA, nrow = nrow(mat), ncol = length(missing),
+                        dimnames = list(rownames(mat), missing))
+    mat <- cbind(mat, empty_mat)
+  }
+  # Reorder columns to match the union order
+  mat[, all_samples]
+})
+```
+
+
+#MOFA
+
+```{r}
+# 5. Define likelihoods per view
+# Gaussian for continuous, Bernoulli for binary
+likelihoods <- c(
+  "gaussian",   # Cellohood
+  "gaussian",   # Densities
+  "gaussian",   # Interactions
+  "gaussian",   # Expressions (IMC)
+  "gaussian",   # RNA
+  "bernoulli"   # binary
+)
+
+# 6. Create MOFA object
+mofa <- create_mofa(views)
+
+# 7. Prepare options
+data_opts <- get_default_data_options(mofa)
+model_opts <- get_default_model_options(mofa)
+model_opts$num_factors <- 6
+training_opts <- get_default_training_options(mofa)
+training_opts$maxiter <- 1000
+
+# Assign likelihoods
+model_opts$likelihoods <- likelihoods
+
+```
+
+```{r}
+# 8. Prepare and train MOFA
+mofa <- prepare_mofa(
+  object = mofa,
+  data_options = data_opts,
+  model_options = model_opts,
+  training_options = training_opts
+)
+
+reticulate::use_condaenv("MOFA")
+
+# 9. Run MOFA
+model_path <- file.path(paste0(MOFA_INPUT_PATH, "/mofa_V6_minor.rds"))
+mofa_trained <- run_mofa(mofa, use_basilisk = FALSE)
+
+saveRDS(mofa_trained, model_path)
+
+```
+
+# add clinical data
+```{r}
+model <- readRDS(model_path)
+
+factors <- get_factors(model, as.data.frame = TRUE) %>%
+  pivot_wider(names_from = "factor", values_from = "value") %>%
+  dplyr::select(-c(group)) %>%
+  dplyr::rename(Immucan_id = sample)
+
+data <- get_data(model, as.data.frame = TRUE) %>%
+  pivot_wider(names_from = "feature", values_from = "value") %>%
+  dplyr::select(-c(group, view)) %>%
+  group_by(sample) %>%
+  summarise_all(base::sum, na.rm = TRUE) %>%
+  tibble::column_to_rownames("sample")
+
+
+fact_clin <- merge(clinical, factors, by = "Immucan_id")
+
+rownames(clinical) <- clinical$Immucan_id
+clinical <- clinical %>%
+  dplyr::select(-Immucan_id)
+
+# Get sample names from the MOFA object
+model_samples <- samples_names(model)[[1]]  # assuming only 1 group
+
+# Subset and reorder clinical data
+clinical <- clinical[model_samples, , drop = FALSE] %>%
+  mutate(sample = rownames(.))
+
+samples_metadata(model) <- clinical
+
+
+saveRDS(model, model_path)
+
+```
+
+
+
