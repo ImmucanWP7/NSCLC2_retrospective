@@ -301,6 +301,8 @@ plot_top_feature_heatmap <- function(model, views, view_order, view_colors, mode
   # test to change names
   feature_names <- gsub(pattern = "_P1|_p1|_p1_p1", replacement = "_IMC1",feature_names)
   feature_names <- gsub(pattern = "_P2|_p2|_p2_p2", replacement = "_IMC2",feature_names)
+  feature_names <- gsub(pattern = "_density", replacement = "",feature_names)
+  feature_names <- gsub(pattern = "_minor", replacement = "",feature_names)
   
   feature_priority <- top_features %>%
     group_by(feature_id) %>%

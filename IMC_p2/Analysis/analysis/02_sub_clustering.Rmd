@@ -48,8 +48,8 @@ markers <- list()
 
 #functional markers for T cells
 markers[["Tcells"]] <- rownames(sce)[grepl(pattern = "CD7$|CD8|FOXP3|Bcl2|GATA3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",rownames(sce))]
-markers[["CD8"]] <- rownames(sce)[grepl(pattern = "CD7$|PD1|Bcl2|GATA3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",rownames(sce))]
-markers[["CD4"]] <- rownames(sce)[grepl(pattern = "CD7$|PD1|Bcl2|GATA3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",rownames(sce))]
+markers[["CD8"]] <- rownames(sce)[grepl(pattern = "CD7$|Bcl2|GATA3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",rownames(sce))]
+markers[["CD4"]] <- rownames(sce)[grepl(pattern = "CD7$|Bcl2|GATA3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",rownames(sce))]
 markers[["Treg"]] <- rownames(sce)[grepl(pattern = "CD7$|Bcl2|GATA3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",rownames(sce))]
 
 

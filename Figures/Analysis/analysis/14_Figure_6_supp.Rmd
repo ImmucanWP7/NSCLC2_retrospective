@@ -104,7 +104,8 @@ for (f in unique(weights$factor)) {
 
 
 
-## plot heatmap (C5)
+## plot heatmap
+
 ```{r, fig.height=8, fig.width=8}
 
 library(ComplexHeatmap)
@@ -240,11 +241,11 @@ temp <- factors %>%
               rownames_to_column("Immucan_id"), by = "Immucan_id")
 
 ggplot(temp %>%
-         mutate(is_LCNEC = simple_histology == "LCNEC"), aes(x = is_LCNEC, y = Factor5)) +
+         mutate(is_LCNEC = simple_histology == "LCNEC"), aes(x = is_LCNEC, y = Factor4)) +
   geom_boxplot() +
   stat_compare_means(method = "t.test")  # adds p-value from t-test
 
-ggplot(temp, aes(x = simple_histology, y = Factor5)) +
+ggplot(temp, aes(x = simple_histology, y = Factor4)) +
   geom_boxplot() +
   stat_compare_means(method = "t.test")
 
@@ -268,7 +269,7 @@ temp <- temp %>%
 # Define shapes: triangle (17), square (15), circle (16)
 shape_values <- c("LCNEC" = 8, "Other" = 0, "LUSC/LUAD/Adenosquamous/Unknown" = 16)
 
-gg <- ggplot(temp, aes(x = hist_group, y = Factor5, fill = hist_group)) +
+gg <- ggplot(temp, aes(x = hist_group, y = Factor4, fill = hist_group)) +
   geom_boxplot(outlier.shape = NA, alpha = 0.8) +
   geom_jitter(aes(shape = shape_group), width = 0.2, alpha = 0.6, size = 2) +
   scale_shape_manual(values = shape_values, name = "Histology") +
@@ -287,7 +288,7 @@ gg <- ggplot(temp, aes(x = hist_group, y = Factor5, fill = hist_group)) +
     
     #legend.position = "bottom"
   ) +
-  labs(y = "Factor5")+
+  labs(y = "Factor4")+
   coord_cartesian(ylim = c(-4,5))
 gg
 
@@ -295,6 +296,77 @@ ggsave(paste0(out_path,"/S6B_Factor5_LCNEC_OTHER.pdf"), plot = gg,device = "pdf"
 ```
 
 # S6C supp: Factor1 Survival analysis
+
+## overall
+```{r}
+## survival analysis
+library(survminer)
+library(survivalAnalysis)
+library(survival)
+
+factors <- get_factors(model, as.data.frame = TRUE) %>%
+  dplyr::select(- group) %>%
+  pivot_wider(names_from = "factor", values_from = value) %>%
+  column_to_rownames("sample")
+
+clin <- samples_metadata(model)
+cur_dat <- factors %>%
+  rownames_to_column("sample") %>%
+  full_join(clin, by = "sample")
+
+p.list <- list()
+for (i in names(factors)) {
+    surv_ob <- Surv(cur_dat$time_to_event,cur_dat$censoring)
+    p.list[[i]] <- coxph( as.formula(paste0("surv_ob ~ ",i)),
+                          data = cur_dat)
+  # }
+}
+
+df <- data.frame(HR = unlist(lapply(p.list, function(x){summary(x)$coefficients[,"exp(coef)"]})),
+                 p.value = unlist(lapply(p.list, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 lower_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "lower .95"]})),
+                 upper_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "upper .95"]}))) 
+
+
+custom_order <- c("Factor10", "Factor9", "Factor8", "Factor7", "Factor6", "Factor5", "Factor4", "Factor3", "Factor2", "Factor1")
+
+
+library(dplyr)
+library(ggplot2)
+
+# ------------------------------------------------------------------
+# 1.  Pull out the Factor 1 row from each data-frame
+# ------------------------------------------------------------------
+plot_df <- df %>% 
+  select( HR, lower_conf, upper_conf, p.value) %>%
+  mutate(Cohort = rownames(df))
+
+# ------------------------------------------------------------------
+# 2.  Forest plot on a log scale
+# ------------------------------------------------------------------
+p1 <- ggplot(plot_df, aes(y = Cohort, x = HR, col = Cohort)) +
+  geom_point(size = 3) +
+  geom_errorbarh(aes(xmin = lower_conf, xmax = upper_conf), height = 0.25) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  scale_x_log10() +
+  labs(
+    x = "HR",
+    y = NULL,
+    title = "Factor 1",
+    subtitle = sprintf(
+      "LUAD p = %.3g   |   LUSC p = %.3g",
+      plot_df$p.value[plot_df$Cohort == "LUAD"],
+      plot_df$p.value[plot_df$Cohort == "LUSC"]
+    )
+  ) +
+  theme_minimal(base_size = 11)+
+  scale_color_manual(values = c("LUAD" = "blue", "LUSC" = "orange"))
+
+print(plot_df)
+
+p1
+ggsave(paste0(out_path,"/S6C_Factor1_LUAD_LUSC.pdf"), plot = p1, device = "pdf", width = 4, height = 3)
+```
 ## LUAD/LUSC
 ```{r}
 ## survival analysis

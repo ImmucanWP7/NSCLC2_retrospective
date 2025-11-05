@@ -37,8 +37,15 @@ traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"
 median(traits$time_to_event)/365*12
 ```
 
+# clinical table
 ```{r}
-traits %>% filter(simple_stage == "IV")
+table(traits$gender)/nrow(traits)
+table(traits$simple_stage)/nrow(traits)
+
+table(traits$curative_surgery)/nrow(traits)
+table(traits$smoking_status)/nrow(traits)
+table(traits$death)/nrow(traits)
+
 ```
 
 
