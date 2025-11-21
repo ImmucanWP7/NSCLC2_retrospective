@@ -89,6 +89,11 @@ ggsave(plot = p, paste0(out_folder,"S2A_IMC_mIF_cell_type_correlation.pdf"),
        device = "pdf", 
        height = 5,
        width = 6)
+
+# reprting n
+dens_dat %>%
+  select(immucan_id,Tumor__IMC1, Tumor__IMC2) %>%
+  summarise(across(-immucan_id, ~sum(!is.na(.))))
 ```
 
 ```{r}
@@ -129,6 +134,11 @@ ggsave(plot = p,
        device = "pdf", 
        height = 7,
        width = 4.5)
+
+# reporting n
+d2 %>%
+  pivot_longer(cols = c(Neutrophil__IMC2,PMN_MDSC__IMC2, MDSC__IMC2)) %>%
+  distinct(immucan_id)
 ```
 
 
@@ -176,7 +186,6 @@ dat_long %>%
           match = IMC == IF) %>%
   filter(match == TRUE) %>% arrange(correlation) %>%
   summarise(mean_cor = mean(abs(correlation)))
-
 ```
 
 
@@ -242,6 +251,19 @@ ggsave(plot = p, paste0(out_folder,"S2C_IMC_mIF_cell_type_correlation.pdf"),
        device = "pdf", 
        height = 7,
        width = 6.5)
+
+# reporting n
+dens_dat %>%
+  pivot_longer(-immucan_id) %>%
+  filter(!is.na(value)) %>%
+  mutate(tech = str_split_i(name,"__",2)) %>%
+  select(immucan_id,tech) %>%
+  distinct() %>%
+  group_by(immucan_id) %>%
+  dplyr::count(tech) %>%
+  summarise(total = sum(n)) %>%
+  filter(total  == 5)
+
 ```
 
 
