@@ -131,6 +131,15 @@ ggsave(filename = paste0(out_folder,"S3B_Xcell_across_TCGA_stages_within_LUAD.pd
        device = "pdf",
        width = 10,
        height = 6)
+
+# reporting n
+tcga %>%
+  pivot_longer(-c(PATIENT_ID, stage)) %>%
+  mutate(stage = as.character(stage)) %>%
+  select(PATIENT_ID,stage) %>%
+  distinct() %>%
+  group_by(stage) %>%
+  dplyr::count(stage)
 ```
 
 # deconvolution of RNAseq
@@ -647,6 +656,14 @@ ggsave(filename = paste0(out_folder,"S3C_linear_model_cell_type_densitie_LUSC_fo
        device = "pdf",
        width = 15,
        height = 3.75)
+
+# reporting n
+dens_dat %>%
+  pivot_longer(-immucan_id) %>%
+    left_join(clin_dat,"immucan_id") %>%
+  filter(simple_histology == "Squamous cell carcinoma") %>%
+  select(immucan_id,name, value,simple_stage) %>%
+  distinct(immucan_id)
 ```
 
 ## major cell types changes
