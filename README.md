@@ -7,6 +7,8 @@ A preprint of the publication can be found on MedRxiv: [Preprint](https://www.me
 The code uses R and was run under R 4.2.2. with BioConductor version 3.16. For R installation please follow instructions [here](https://cran.r-project.org/) and for Bioconductor [here](https://bioconductor.org/).
 Numerous libraries need to be installed. They can be found at the beginning of each script.
 
+Typically, installation will take 1-2 hours when starting from scratch. Computations were performed on ubuntu 22.04 with 16 cores and 128 gb of RAM. While some of the functions can be run on smaller systems, the computations can be heavy and are parallelized. Parallelization parameters should be adapted to available system resources. The processing of the mIF and IMC data will run for about 1 day each on the machine specified above. The processing of the tableReports for WES and RNAseq counts will typically run 1-2 hours.
+
 # Data
 
 The data is currently in the process of being deposited and will be available as follows: 
