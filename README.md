@@ -10,11 +10,11 @@ Numerous libraries need to be installed. They can be found at the beginning of e
 # Data
 
 The data is currently in the process of being deposited and will be available as follows: 
-IMC via [IDR](https://idr.openmicroscopy.org/)
-mIF via [IDR](https://idr.openmicroscopy.org/)
-[WES](https://ega-archive.org/)
-[RNAseq](https://ega-archive.org/)
-clinical data: will be provided upon request from EORTC, the owner of the clinical data according to [sharing policies](https://www.eortc.org/app/uploads/2023/06/L-01-POL-01.pdf). Request can be submitted [here](https://www.eortc.be/services/forms/erp/request.aspx) 
+- IMC via [IDR](https://idr.openmicroscopy.org/)
+- mIF via [IDR](https://idr.openmicroscopy.org/)
+- [WES](https://ega-archive.org/)
+- [RNAseq](https://ega-archive.org/)
+- clinical data: will be provided upon request from EORTC, the owner of the clinical data according to [sharing policies](https://www.eortc.org/app/uploads/2023/06/L-01-POL-01.pdf). Request can be submitted [here](https://www.eortc.be/services/forms/erp/request.aspx) 
 
 # Usage
 Typically each subfolder from this repository contains numebered analysis scripts. These should be run in the order or numbering as they depend on each other. Additionally, in most scripts a variable called "mount_path" is set, which defines a parent directory under which the data should be stored. This variable can be modified locally (set to the respective path of the downloaded data) in order to run the script.
