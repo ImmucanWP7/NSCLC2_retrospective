@@ -1,0 +1,321 @@
+---
+title: "MOFA bootstrapping"
+author: "Daniel Schulz"
+date: "2026-01-20"
+output: html_document
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+
+# Set path
+if (Sys.info()["sysname"] == "Darwin"){
+  mount_path <- "/Volumes/"
+} else if (Sys.info()["sysname"] == "Linux"){
+  mount_path <- "/mnt/"
+} else {
+  stop("Operating system is not supported")
+}
+
+# Load libraries
+library(MOFA2)
+library(reticulate)
+# Potentially need to set the conda environment to use
+#use_condaenv("MOFA")
+
+
+library(dplyr)
+library(readr)
+library(stringr)
+
+
+MOFA_INPUT_PATH <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/MOFA/"
+CLINICAL_PATH <- "/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Revision"
+```
+
+
+# read in data
+
+```{r}
+# clinical data
+clinical <- read.csv(CLINICAL_PATH) %>%
+  dplyr::rename(Immucan_id = immucan_id) %>%
+  mutate(Immucan_id = gsub("-", "_", Immucan_id))
+
+# Helper function to z-score normalize
+zscore <- function(mat) {
+  t(scale(t(mat)))
+}
+
+# 1. Read data
+cellohood <- read.csv(paste0(MOFA_INPUT_PATH, "/cellohood.csv"), row.names = 1)
+densities <- read.csv(paste0(MOFA_INPUT_PATH, "/densities.csv"), row.names = 1)
+expressions <- read.csv(paste0(MOFA_INPUT_PATH, "/expressions.csv"), row.names = 1)
+interactions <- read.csv(paste0(MOFA_INPUT_PATH, "/interactions.csv"), row.names = 1)
+binary <- read.csv(paste0(MOFA_INPUT_PATH, "/binary.csv"), row.names = 1)
+RNA <- read.csv(paste0(MOFA_INPUT_PATH, "/RNA_named.csv"))
+
+# 2. Set rownames from the first column (if applicable)
+set_rownames <- function(df) {
+  rownames(df) <- df$Immucan_id
+  df$Immucan_id <- NULL
+  return(df)
+}
+
+cellohood <- set_rownames(cellohood)
+densities <- set_rownames(densities)
+expressions <- set_rownames(expressions)
+interactions <- set_rownames(interactions)
+binary <- set_rownames(binary)
+RNA <- set_rownames(RNA)
+```
+
+helper function
+```{r}
+preprocess_view <- function(df, 
+                            log_transform = FALSE, 
+                            arcsin_transform = FALSE, 
+                            zscore_transform = TRUE,
+                            filter_histology = FALSE) {
+  mat <- as.matrix(df)
+  
+  if (filter_histology){
+    mat <- mat[rownames(mat) %in% (clinical %>%
+                 filter(simple_histology %in% c("Adenocarcinoma")) %>%
+                 pull(Immucan_id)),]
+  }
+  
+  # Optional log1p transform (for counts)
+  if (log_transform) {
+    mat <- log1p(mat)
+  }
+  
+  # Optional arcsin sqrt transform (for proportions)
+  if (arcsin_transform) {
+    mat <- asin(sqrt(mat))
+  }
+  
+  
+  # Optional z-scoring
+  if (zscore_transform) {
+    mat <- scale(mat)
+  }
+  
+  # Transpose to features x samples
+  mat <- t(mat)
+  return(mat)
+}
+
+```
+
+
+# generate subsamples of patients
+```{r}
+all_pats <- Reduce(union,c(rownames(cellohood),rownames(densities),rownames(expressions),rownames(interactions),rownames(binary),rownames(RNA)))
+
+set.seed(1235)
+pats <- lapply(1:100, function(x){
+  sample(all_pats,size = 0.8*length(all_pats), replace = FALSE)
+})
+names(pats) <- paste0("b",1:100)
+```
+
+
+```{r}
+reticulate::use_condaenv("mofa_env")
+b_list <- list()
+for (i in paste0("b",1:100)) {
+
+  filter_histology <- FALSE
+  
+  # we will filter each table by the selected sample of patients
+  views <- list(
+    Cellohood       = preprocess_view(cellohood[rownames(cellohood) %in% pats[[i]],], log_transform = TRUE, filter_histology=filter_histology),
+    Densities       = preprocess_view(densities[ rownames(densities) %in% pats[[i]],], log_transform = TRUE, filter_histology=filter_histology),
+    Interactions    = preprocess_view(interactions[ rownames(interactions) %in% pats[[i]],], filter_histology=filter_histology),
+    Expressions     = preprocess_view(expressions[ rownames(expressions) %in% pats[[i]],], filter_histology=filter_histology),
+    RNA             = preprocess_view(RNA[rownames(RNA) %in% pats[[i]],], filter_histology=filter_histology),
+    BINARY = preprocess_view(binary[rownames(binary) %in% pats[[i]],], zscore_transform = FALSE, filter_histology=filter_histology)
+  )
+  
+  
+  # 4. Align samples across all views using union instead of intersection
+  all_samples <- Reduce(union, lapply(views, colnames))
+  
+  # Fill in missing columns (samples) with NA
+  views <- lapply(views, function(mat) {
+    missing <- setdiff(all_samples, colnames(mat))
+    if (length(missing) > 0) {
+      empty_mat <- matrix(NA, nrow = nrow(mat), ncol = length(missing),
+                          dimnames = list(rownames(mat), missing))
+      mat <- cbind(mat, empty_mat)
+    }
+    # Reorder columns to match the union order
+    mat[, all_samples]
+  })
+  
+  # 5. Define likelihoods per view
+  # Gaussian for continuous, Bernoulli for binary
+  likelihoods <- c(
+    "gaussian",   # Cellohood
+    "gaussian",   # Densities
+    "gaussian",   # Interactions
+    "gaussian",   # Expressions (IMC)
+    "gaussian",   # RNA
+    "bernoulli"   # binary
+  )
+  
+  # 6. Create MOFA object
+  mofa <- create_mofa(views)
+  
+  # 7. Prepare options
+  data_opts <- get_default_data_options(mofa)
+  model_opts <- get_default_model_options(mofa)
+  model_opts$num_factors <- 6
+  training_opts <- get_default_training_options(mofa)
+  training_opts$maxiter <- 1000
+  
+  # Assign likelihoods
+  model_opts$likelihoods <- likelihoods
+  
+  
+  # 8. Prepare and train MOFA
+  mofa <- prepare_mofa(
+    object = mofa,
+    data_options = data_opts,
+    model_options = model_opts,
+    training_options = training_opts
+  )
+  
+  # 9. Run MOFA
+  mofa_trained <- run_mofa(mofa, use_basilisk = FALSE)
+  b_list[[i]] <- MOFA2::get_factors(mofa_trained)
+  #saveRDS(mofa_trained, model_path)
+}
+
+saveRDS(b_list,"/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/MOFA/bootstrapped_factor_list.rds")
+```
+
+# correlation of factors
+
+we will use our original trained model with 100% of patients. factors can rotate
+and thus do not necessarily have to rotate across runs. we will for each
+bootstrap we will now correlate theeach factor with the original model and name
+them based on the max absolute correlation. This will show if similar factors
+where on average found across bootstrap runs.
+
+```{r}
+model <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/MOFA/mofa_V6_minor.rds")
+org <- get_factors(model)
+
+library(ggplot2)
+library(tidyverse)
+
+# we will check precisely how well factors where the same via diagonale
+b_diag <- lapply(b_list, function(x){
+  cur_org <- as.data.frame(org)[rownames(as.data.frame(x)),]
+  colnames(cur_org) <- c(paste0("LF",c(1:6)))
+  cur_bstrp <- as.data.frame(x)
+  cor_dat <- cor(cur_org,cur_bstrp)
+  
+  diag_match <- abs(diag(cor_dat))
+  return(diag_match)
+})
+cur_dat <- do.call(rbind,b_diag)
+cur_dat <- as.data.frame(cur_dat)
+colnames(cur_dat) <-  c(paste0("LF",c(1:6)))
+cur_dat %>%
+  pivot_longer(cols = everything()) %>%
+  ggplot(aes(x = name, y = value))+
+  geom_boxplot()+
+  theme_bw()+
+  ylab("Correlation LFs with bootstrapped LFs")+
+  xlab("Factor correlation")
+
+# we see that LF1, LF2 and L3 are mostly recovered with good median correlation.
+# For the factors that explain less variance the correlation across bootstraps
+# is small with the original factors
+
+```
+
+# Best matching original LF
+Factor ordering is not necessarily stable in MOFA. Meaning, in a bootstrapped sample LF4 could resemble LF6 in the full data.
+For this we will test if the maximum correlations between the original LFs per patient and the bootstrapped LFs.
+
+```{r}
+b_out <- lapply(b_list, function(x){
+  cur_org <- as.data.frame(org)[rownames(as.data.frame(x)),]
+  colnames(cur_org) <- c(paste0("LF",c(1:6)))
+  cur_bstrp <- as.data.frame(x)
+  cor_dat <- cor(cur_org,cur_bstrp)
+  
+  cur_cor <- apply(cor_dat, 1, function(x) (max(abs(x))))
+  return(cur_cor)
+})
+
+# how robust
+cur_dat <- do.call(rbind,b_out)
+cur_dat %>%
+  as.data.frame() %>%
+  pivot_longer(cols = everything()) %>%
+  ggplot(aes(x = name, y = value))+
+  geom_boxplot()+
+  theme_bw()+
+  ylab("Correlation LFs with bootstrapped LFs")+
+  xlab("LFs from all data")
+```
+
+# Best matching original LF
+Factor ordering is not necessarily stable in MOFA. Meaning, in a bootstrapped sample LF4 could resemble LF6 in the full data.
+For this we will test if the maximum correlations between the original LFs per patient and the bootstrapped LFs.
+
+```{r}
+b_out <- lapply(b_list, function(x){
+  cur_org <- as.data.frame(org)[rownames(as.data.frame(x)),]
+  colnames(cur_org) <- c(paste0("LF",c(1:6)))
+  cur_bstrp <- as.data.frame(x)
+  cor_dat <- cor(cur_org,cur_bstrp)
+  cur_cor <- apply(cor_dat, 2, function(x) (max(abs(x))))
+  return(cur_cor)
+})
+
+# how robust
+cur_dat <- do.call(rbind,b_out)
+cur_dat <- as.data.frame(cur_dat)
+colnames(cur_dat) <-  c(paste0("LF",c(1:6)))
+
+p1 <- cur_dat %>%
+  as.data.frame() %>%
+  pivot_longer(cols = everything()) %>%
+  ggplot(aes(x = name, y = value))+
+  geom_boxplot()+
+  theme_bw()+
+  ylab("max correlation with any original LF")+
+  xlab("LFs from botstrapped data data")
+
+p1
+ggsave(plot = p1,
+       filename = file.path(out_folder,"bootstraps_to_LF_correspondence.pdf"),
+       device = "pdf",
+       width = 5,
+       height = 4)
+```
+
+
+# MOFA model factor correlation
+the mofa factors do not correlate with each other
+
+
+```{r}
+org
+cur_org <- as.data.frame(org)
+colnames(cur_org) <- c(paste0("LF",c(1:6)))
+pdf(file = file.path(out_folder,"LF_correlation.pdf"),
+    width = 4,
+    height = 4)
+pheatmap::pheatmap(cor(cur_org,cur_org),cluster_rows = FALSE,cluster_cols = FALSE,main = "Latent factor correlation")
+dev.off()
+```
+
+

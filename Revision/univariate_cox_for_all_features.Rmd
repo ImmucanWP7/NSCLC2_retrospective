@@ -1,0 +1,660 @@
+---
+title: "feature association with survival"
+author: "Daniel Schulz"
+date: "2026-01-20"
+output: html_document
+---
+
+In this script we will select all features that are associated with survival in a univariate fashion.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+In this script we will use the many features coming from the interactions counts of IMC and IF and run them through a LASSO to identify significant features for survival.
+NOTE: running LASSO on the continuous data (transformed from caret, log or not-transformed) does not result in any significant association. However, dichotomizing the data reveals some hits which we will investigate further.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+```{r}
+library(SingleCellExperiment)
+library(tidyverse)
+library(imcRtools)
+library(distances)
+library(fastDummies)
+library(survminer)
+library(survivalAnalysis)
+library(glmnet)
+library(ComplexHeatmap)
+library(caret)
+library(survival)
+library(broom)
+library(survminer)
+library(ggplot2)
+library(scater)
+```
+
+data
+```{r}
+mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
+
+dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
+cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
+IMC1 <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/cell-pair_interactions_celltypes_minor_directional_P1.csv"))
+IMC2 <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/cell-pair_interactions_celltypes_minor_directional_P2.csv"))
+IF1 <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/cell-cell-pair_interactions_directional_IF1.csv")) 
+IF2 <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/cell-cell-pair_interactions_directional_IF2.csv"))
+IF3 <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/cell-cell-pair_interactions_directional_IF3.csv"))
+
+# select the 1000 most variable genes - also the ones used for mofa
+RNA <- read.csv(paste0(mount_path, "Figures/scores_for_sharing/MOFA/RNA_named.csv"))
+
+traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
+```
+
+# merge data
+
+Note, we lost 13 patients do to one of the modalities missing
+```{r}
+colnames(IMC1) <- c("immucan_id",paste0(colnames(IMC1[,-1]),"_IMC1"))
+colnames(IMC2) <- c("immucan_id",paste0(colnames(IMC2[,-1]),"_IMC2"))
+colnames(IF1) <- c("immucan_id",paste0(colnames(IF1[,-1]),"_IF1"))
+colnames(IF2) <- c("immucan_id",paste0(colnames(IF2[,-1]),"_IF2"))
+colnames(IF3) <- c("immucan_id",paste0(colnames(IF3[,-1]),"_IF3"))
+
+dat <- plyr::join_all(list(IMC1, IMC2, IF1, IF2, IF3, dens_dat,cello_dat), by='immucan_id', type='left')
+dim(dat)
+```
+
+# Filtering
+
+```{r}
+# we will remove columns with more than 25% of NAs
+filt_dat <- apply(dat[,-1],2,function(x) sum(is.na(x)))
+rm_cols <- names(filt_dat[filt_dat > 190/4])
+
+dat <- dat %>%
+  select(!all_of(rm_cols))
+
+#we will now remove all columns with more thnan 50% of 0 after setting NAs to 0
+dat <- dat %>%
+  mutate(across(.cols = -immucan_id, ~ ifelse(is.na(.), 0,.)))
+filt_dat <- apply(dat[,-1],2,function(x) sum(x == 0))
+
+rm_cols <- names(filt_dat[filt_dat > 190/2])
+dat <- dat %>%
+  select(!all_of(rm_cols))
+
+
+dim(dat)
+```
+
+# Univariate COX for continuous features - overall
+
+```{r, fig.height=10}
+cur_traits <-traits %>%
+  select(immucan_id,TPS, CPS, TMB,TP53,EGFR, KRAS,STK11,CDKN2A,PIK3CA, censoring,time_to_event)
+cur_traits <- cur_traits %>%
+  mutate(across(.cols = c(TP53,EGFR, KRAS, STK11,CDKN2A,PIK3CA),.fns = ~ ifelse(. == TRUE,1,0)))
+res <- left_join(dat,cur_traits,by = "immucan_id")
+
+
+res <- res %>%
+  select(immucan_id,censoring,time_to_event,everything())
+
+p_list <- lapply(res[,-c(1:3)], function(x){
+   coxph( Surv(time_to_event, censoring) ~  x ,data = res)
+})
+
+RNA <- RNA %>%
+  rename(immucan_id = Immucan_id) %>%
+  mutate(immucan_id = gsub("_","-",immucan_id))
+RNA <- left_join(RNA, cur_traits %>% select(immucan_id,censoring, time_to_event),by = "immucan_id")
+RNA <- RNA %>%
+  select(immucan_id, censoring,time_to_event, everything())
+p_list_RNA <- lapply(RNA[,-c(1:3)], function(x){
+   coxph( Surv(time_to_event, censoring) ~ x ,data = RNA)
+})
+  
+df <- data.frame(HR = unlist(lapply(p_list, function(x){summary(x)$coefficients[,"exp(coef)"]})),
+                 p.value = unlist(lapply(p_list, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 lower_conf = unlist(lapply(p_list, function(x){summary(x)$conf.int[, "lower .95"]})),
+                 upper_conf = unlist(lapply(p_list, function(x){summary(x)$conf.int[, "upper .95"]}))) 
+df <- df %>%
+  mutate(feature = rownames(df))
+df_RNA <- data.frame(HR = unlist(lapply(p_list_RNA, function(x){summary(x)$coefficients[,"exp(coef)"]})),
+                 p.value = unlist(lapply(p_list_RNA, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 lower_conf = unlist(lapply(p_list_RNA, function(x){summary(x)$conf.int[, "lower .95"]})),
+                 upper_conf = unlist(lapply(p_list_RNA, function(x){summary(x)$conf.int[, "upper .95"]}))) 
+
+df_RNA <- df_RNA %>%
+  mutate(feature = paste0(rownames(df_RNA),"_RNA"))
+
+# investigate only features that pass FDR here
+out <- df %>%
+  mutate(FDR = p.adjust(p = p.value,method = "BH")) %>%
+  filter(FDR < 0.1)
+out_RNA <- df_RNA %>%
+  mutate(FDR = p.adjust(p = p.value,method = "BH")) %>%
+  filter(FDR < 0.1)
+
+
+res_out <- res %>%
+  select(immucan_id,censoring, time_to_event,all_of(out$feature)) %>%
+  mutate(across(.cols = all_of(out$feature),.fns = ~ as.factor(ntile(.,n = 2))))
+
+p_list_final <- lapply(res_out[,-c(1:3)], function(x){
+   coxph( Surv(time_to_event, censoring) ~  x ,data = res_out)
+})
+
+res_out_RNA <- RNA %>%
+  select(immucan_id,censoring, time_to_event,all_of(out_RNA$feature)) %>%
+  mutate(across(.cols = all_of(out_RNA$feature),.fns = ~ as.factor(ntile(.,n = 2))))
+
+p_list_final <- lapply(res_out[,-c(1:3)], function(x){
+   coxph( Surv(time_to_event, censoring) ~  x ,data = res_out)
+})
+p_list_final_RNA <- lapply(res_out_RNA[,-c(1:3)], function(x){
+   coxph( Surv(time_to_event, censoring) ~  x ,data = res_out_RNA)
+})
+  
+df_2 <- data.frame(HR = unlist(lapply(p_list_final, function(x){summary(x)$coefficients[,"exp(coef)"]})),
+                 p.value = unlist(lapply(p_list_final, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 lower_conf = unlist(lapply(p_list_final, function(x){summary(x)$conf.int[, "lower .95"]})),
+                 upper_conf = unlist(lapply(p_list_final, function(x){summary(x)$conf.int[, "upper .95"]}))) 
+df_2_RNA <- data.frame(HR = unlist(lapply(p_list_final_RNA, function(x){summary(x)$coefficients[,"exp(coef)"]})),
+                 p.value = unlist(lapply(p_list_final_RNA, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 lower_conf = unlist(lapply(p_list_final_RNA, function(x){summary(x)$conf.int[, "lower .95"]})),
+                 upper_conf = unlist(lapply(p_list_final_RNA, function(x){summary(x)$conf.int[, "upper .95"]}))) 
+
+df_2 <- rbind(df_2, df_2_RNA)
+
+df_2 %>%
+  mutate(feature = rownames(df_2),
+         sig = as.factor(p.value < 0.05)) %>%
+  ggplot(aes(x = HR,y = feature, col = sig))+
+  geom_point(size = 2)+
+  geom_errorbar(aes(xmin=lower_conf, xmax = upper_conf),lwd =1,width = 0.3)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust= 1))+
+  #scale_y_discrete(labels = function(x) str_split_i(x,"_",2))+
+  scale_x_log10()+
+  theme_bw()+
+  geom_vline(xintercept = 1,linetype = "dashed")+
+  geom_text(aes(label = paste0("p : ",round(p.value,digits = 3))),
+            col = "black",
+            vjust = -1,
+            inherit.aes = TRUE)+
+  scale_color_manual(values = c("TRUE" = "blue", "FALSE" = "orange"))+
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.position = "none",
+        axis.title.y = element_blank(),
+        plot.title = element_text(hjust = 0.5))+
+  ggtitle("HR for low infiltration ratio")
+```
+
+```{r}
+feat_dat <- rbind(df, df_RNA)
+
+feat_pval <- feat_dat %>%
+  filter(p.value < 0.05) %>%
+  mutate(modality = gsub("^.*_", "", feature),
+         data_type = ifelse(grepl("\\.",feature),"interaction",""),
+         data_type = ifelse(grepl("cello",feature),"CN",data_type),
+         data_type = ifelse(grepl("density",feature),"density",data_type),
+         data_type = ifelse(grepl("RNA",feature),"RNA",data_type),
+         data_type = ifelse(grepl("TP53|EGFR|KRAS|STK11|PIK3CA|CDKN2A|TMB",feature),"WES",data_type),
+         data_type = ifelse(grepl("TPS|CPS",feature),"PDL1",data_type))
+
+feat_fdr <- feat_dat %>%
+  mutate(FDR = p.adjust(p = p.value,method = "BH")) %>%
+  filter(FDR < 0.1) %>%
+  mutate(modality = gsub("^.*_", "", feature),
+         data_type = ifelse(grepl("\\.",feature),"interaction",""),
+         data_type = ifelse(grepl("cello",feature),"CN",data_type),
+         data_type = ifelse(grepl("density",feature),"density",data_type),
+         data_type = ifelse(grepl("RNA",feature),"RNA",data_type),
+         data_type = ifelse(grepl("TP53|EGFR|KRAS|STK11|PIK3CA|CDKN2A|TMB",feature),"WES",data_type),
+         data_type = ifelse(grepl("TPS|CPS",feature),"PDL1",data_type))
+
+feat_abundance <- feat_dat %>%
+  mutate(modality = gsub("^.*_", "", feature),
+         data_type = ifelse(grepl("\\.",feature),"interaction",""),
+         data_type = ifelse(grepl("cello",feature),"CN",data_type),
+         data_type = ifelse(grepl("density",feature),"density",data_type),
+         data_type = ifelse(grepl("RNA",feature),"RNA",data_type),
+         data_type = ifelse(grepl("TP53|EGFR|KRAS|STK11|PIK3CA|CDKN2A|TMB",feature),"WES",data_type),
+         data_type = ifelse(grepl("TPS|CPS",feature),"PDL1",data_type))
+
+table(feat_pval$data_type)
+table(feat_fdr$data_type)
+table(feat_abundance$data_type)
+
+plot_dat_pval <- table(feat_pval$data_type)/table(feat_abundance$data_type)[c(1:3,5,6)]
+plot_dat_fdr <- table(feat_fdr$data_type)/table(feat_abundance$data_type)[c(3,5)]
+
+df_RNA[(rownames(df_RNA) %in% c("ADGRF5","C1orf116","PHGDH","MYBL2","CENPF","KIF18B","BIRC5","FOXM1","TPX2","TROAP")),]
+```
+
+__we cannot find any of the ten genes found with LF1 from MOFA when just searching for gene expression associated with survival. so we need MOFA because it identifies data structure based on all modalities and not just RNA or others.__
+
+# Univariate COX for continuous features - LUAD
+
+```{r, fig.height=10}
+cur_traits <-traits %>%
+  select(immucan_id,TPS, CPS, TMB,TP53,EGFR, KRAS,STK11,CDKN2A,PIK3CA, censoring,time_to_event)
+cur_traits <- cur_traits %>%
+  mutate(across(.cols = c(TP53,EGFR, KRAS, STK11,CDKN2A,PIK3CA),.fns = ~ ifelse(. == TRUE,1,0)))
+res <- left_join(dat,cur_traits,by = "immucan_id")
+
+LUAD_samples <- traits %>%
+  filter(simple_histology == "Adenocarcinoma") %>%
+  pull(immucan_id)
+
+res <- res %>%
+  select(immucan_id,censoring,time_to_event,everything()) %>%
+  filter(immucan_id %in% LUAD_samples)
+
+
+p_list <- lapply(res[,-c(1:3)], function(x){
+   coxph( Surv(time_to_event, censoring) ~  x ,data = res)
+})
+
+  
+df <- data.frame(HR = unlist(lapply(p_list, function(x){summary(x)$coefficients[,"exp(coef)"]})),
+                 p.value = unlist(lapply(p_list, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 lower_conf = unlist(lapply(p_list, function(x){summary(x)$conf.int[, "lower .95"]})),
+                 upper_conf = unlist(lapply(p_list, function(x){summary(x)$conf.int[, "upper .95"]}))) 
+  
+out <- df %>%
+  mutate(FDR = p.adjust(p = p.value,method = "BH")) %>%
+  filter(FDR < 0.1)
+out$feature <- rownames(out)
+
+res_out <- res %>% 
+  select(immucan_id,censoring, time_to_event,all_of(out$feature)) %>%
+  mutate(across(.cols = all_of(out$feature),.fns = ~ as.factor(ntile(.,n = 2))))
+
+p_list_final <- lapply(res_out[,-c(1:3)], function(x){
+   coxph( Surv(time_to_event, censoring) ~  x ,data = res_out)
+})
+
+  
+df_2 <- data.frame(HR = unlist(lapply(p_list_final, function(x){summary(x)$coefficients[,"exp(coef)"]})),
+                 p.value = unlist(lapply(p_list_final, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 lower_conf = unlist(lapply(p_list_final, function(x){summary(x)$conf.int[, "lower .95"]})),
+                 upper_conf = unlist(lapply(p_list_final, function(x){summary(x)$conf.int[, "upper .95"]}))) 
+
+
+df_2 %>%
+  mutate(feature = rownames(df_2),
+         sig = as.factor(p.value < 0.05)) %>%
+  ggplot(aes(x = HR,y = feature, col = sig))+
+  geom_point(size = 2)+
+  geom_errorbar(aes(xmin=lower_conf, xmax = upper_conf),lwd =1,width = 0.3)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust= 1))+
+  #scale_y_discrete(labels = function(x) str_split_i(x,"_",2))+
+  scale_x_log10()+
+  theme_bw()+
+  geom_vline(xintercept = 1,linetype = "dashed")+
+  geom_text(aes(label = paste0("p : ",round(p.value,digits = 3))),
+            col = "black",
+            vjust = -1,
+            inherit.aes = TRUE)+
+  scale_color_manual(values = c("TRUE" = "blue", "FALSE" = "orange"))+
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.position = "none",
+        axis.title.y = element_blank(),
+        plot.title = element_text(hjust = 0.5))+
+  ggtitle("HR for low infiltration ratio")
+```
+
+# Univariate COX for continuous features - LUSC
+
+```{r, fig.height=10}
+cur_traits <-traits %>%
+  select(immucan_id,TPS, CPS, TMB,TP53,EGFR, KRAS,STK11,CDKN2A,PIK3CA, censoring,time_to_event)
+cur_traits <- cur_traits %>%
+  mutate(across(.cols = c(TP53,EGFR, KRAS, STK11,CDKN2A,PIK3CA),.fns = ~ ifelse(. == TRUE,1,0)))
+res <- left_join(dat,cur_traits,by = "immucan_id")
+
+LUSC_samples <- traits %>%
+  filter(simple_histology == "Squamous cell carcinoma") %>%
+  pull(immucan_id)
+
+res <- res %>%
+  select(immucan_id,censoring,time_to_event,everything()) %>%
+  filter(immucan_id %in% LUSC_samples)
+
+
+p_list <- lapply(res[,-c(1:3)], function(x){
+   coxph( Surv(time_to_event, censoring) ~  x ,data = res)
+})
+
+  
+df <- data.frame(HR = unlist(lapply(p_list, function(x){summary(x)$coefficients[,"exp(coef)"]})),
+                 p.value = unlist(lapply(p_list, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 lower_conf = unlist(lapply(p_list, function(x){summary(x)$conf.int[, "lower .95"]})),
+                 upper_conf = unlist(lapply(p_list, function(x){summary(x)$conf.int[, "upper .95"]}))) 
+  
+out <- df %>%
+  mutate(FDR = p.adjust(p = p.value,method = "BH")) %>%
+  filter(FDR < 0.1)
+out$feature <- rownames(out)
+
+res_out <- res %>% 
+  select(immucan_id,censoring, time_to_event,all_of(out$feature)) %>%
+  mutate(across(.cols = all_of(out$feature),.fns = ~ as.factor(ntile(.,n = 2))))
+
+p_list_final <- lapply(res_out[,-c(1:3)], function(x){
+   coxph( Surv(time_to_event, censoring) ~  x ,data = res_out)
+})
+
+  
+df_2 <- data.frame(HR = unlist(lapply(p_list_final, function(x){summary(x)$coefficients[,"exp(coef)"]})),
+                 p.value = unlist(lapply(p_list_final, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 lower_conf = unlist(lapply(p_list_final, function(x){summary(x)$conf.int[, "lower .95"]})),
+                 upper_conf = unlist(lapply(p_list_final, function(x){summary(x)$conf.int[, "upper .95"]}))) 
+
+
+df_2 %>%
+  mutate(feature = rownames(df_2),
+         sig = as.factor(p.value < 0.05)) %>%
+  ggplot(aes(x = HR,y = feature, col = sig))+
+  geom_point(size = 2)+
+  geom_errorbar(aes(xmin=lower_conf, xmax = upper_conf),lwd =1,width = 0.3)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust= 1))+
+  #scale_y_discrete(labels = function(x) str_split_i(x,"_",2))+
+  scale_x_log10()+
+  theme_bw()+
+  geom_vline(xintercept = 1,linetype = "dashed")+
+  geom_text(aes(label = paste0("p : ",round(p.value,digits = 3))),
+            col = "black",
+            vjust = -1,
+            inherit.aes = TRUE)+
+  scale_color_manual(values = c("TRUE" = "blue", "FALSE" = "orange"))+
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.position = "none",
+        axis.title.y = element_blank(),
+        plot.title = element_text(hjust = 0.5))+
+  ggtitle("HR for low infiltration ratio")
+```
+
+
+# Univariate COX for dichotomized features
+
+```{r, fig.height=10}
+cur_traits <- traits %>%
+  select(immucan_id,TPS, CPS, TMB,TP53,EGFR, KRAS,STK11,CDKN2A,PIK3CA, censoring,time_to_event)
+cur_traits <- cur_traits %>%
+  mutate(across(.cols = c(TP53,EGFR, KRAS, STK11,CDKN2A,PIK3CA),.fns = ~ ifelse(. == TRUE,1,0)))
+res <- left_join(dat,cur_traits,by = "immucan_id")
+
+LUAD_samples <- traits %>%
+  filter(simple_histology == "Squamous cell carcinoma") %>%
+  pull(immucan_id)
+
+res <- res %>%
+  select(immucan_id,censoring,time_to_event,everything()) %>%
+   mutate(across(.cols = -c(immucan_id,censoring, time_to_event),.fns = ~ as.factor(ntile(.,n = 2)))) %>%
+  filter(immucan_id %in% LUAD_samples)
+
+
+
+p_list <- lapply(res[,-c(1:3)], function(x){
+   coxph( Surv(time_to_event, censoring) ~  x ,data = res)
+})
+
+  
+df <- data.frame(HR = unlist(lapply(p_list, function(x){summary(x)$coefficients[,"exp(coef)"]})),
+                 p.value = unlist(lapply(p_list, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 lower_conf = unlist(lapply(p_list, function(x){summary(x)$conf.int[, "lower .95"]})),
+                 upper_conf = unlist(lapply(p_list, function(x){summary(x)$conf.int[, "upper .95"]}))) 
+  
+df %>%
+  filter(p.value < 0.05) %>%
+  arrange(HR)
+out <- df %>%
+  mutate(FDR = p.adjust(p = p.value,method = "BH")) %>%
+  arrange(FDR)
+  filter(FDR < 0.1)
+out$feature <- rownames(out)
+
+
+
+df_2 %>%
+  mutate(feature = rownames(df_2),
+         sig = as.factor(p.value < 0.05)) %>%
+  ggplot(aes(x = HR,y = feature, col = sig))+
+  geom_point(size = 2)+
+  geom_errorbar(aes(xmin=lower_conf, xmax = upper_conf),lwd =1,width = 0.3)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust= 1))+
+  #scale_y_discrete(labels = function(x) str_split_i(x,"_",2))+
+  scale_x_log10()+
+  theme_bw()+
+  geom_vline(xintercept = 1,linetype = "dashed")+
+  geom_text(aes(label = paste0("p : ",round(p.value,digits = 3))),
+            col = "black",
+            vjust = -1,
+            inherit.aes = TRUE)+
+  scale_color_manual(values = c("TRUE" = "blue", "FALSE" = "orange"))+
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.position = "none",
+        axis.title.y = element_blank(),
+        plot.title = element_text(hjust = 0.5))+
+  ggtitle("HR for low infiltration ratio")
+```
+
+
+
+# LASSO on dichotomozed data
+
+```{r}
+clin_dat <- read_csv("O:/projects/immucan/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+df <- as.data.frame(apply(dat, 2, function(x) ntile(x,2)))
+rownames(df) <- rownames(dat)
+
+
+time <- clin_dat %>%
+  filter(immucan_id %in% rownames(df)) %>%
+  pull(time_to_event)
+censoring <- clin_dat %>%
+  filter(immucan_id %in% rownames(df)) %>%
+  pull(censoring)
+
+
+y <-  survival::Surv(time, censoring)
+
+# generate folds for the cross validation
+nfolds <- 5
+set.seed(2135)
+foldids <- sample(rep(1:nfolds, length.out = nrow(df)))  # Assign each observation to one of 5 folds
+
+
+#determine lambda
+set.seed(12354)
+cv.fit <- cv.glmnet(as.matrix(df),y, family = "cox", alpha = 1, foldid = foldids)
+lambda.min <- cv.fit$lambda.min
+plot(cv.fit)
+set.seed(2351)
+fit <- glmnet(as.matrix(df), survival::Surv(time, censoring),lambda = lambda.min, family = "cox", alpha = 1)
+
+
+
+# find coefficients at minimum lambda
+Coefficients <- coef(fit)
+
+Lasso_coefs <- as.data.frame(as.matrix(Coefficients))
+Lasso_coefs <- Lasso_coefs %>%
+  mutate(feature = rownames(Lasso_coefs),
+         coef = s0,
+         s0 = NULL) %>%
+  filter(coef != 0,
+         !grepl("smoking|simple_",feature))
+sig_var_LASSO <- as.vector(Lasso_coefs$feature)
+
+DT::datatable(Lasso_coefs)
+```
+
+# Test LASSO features in multivariate model {.tabset}
+Note: the features extracted from LASSO are extracted based on a univariate model. Here we will build multivariate models and only keep those features that are significant in a multivariate model.
+```{r,results='asis',fig.height=5, fig.width=21}
+df_text <- as.data.frame(apply(df, 2, function(x) ifelse(x == 1,"low","high")))
+df_text$immucan_id <- rownames(df)
+
+# function to generate the header for the plotting with tabset
+catHeader <- function(text = "", level = 3) {
+    cat(paste0("\n\n", 
+               paste(rep("#", level), collapse = ""), 
+               " ", text, "\n"))
+}
+
+sig_var_LASSO_in_cox <- vector()
+
+p.list <- list()
+hr.list <- list()
+factor.list <- list()
+for (i in sig_var_LASSO) {
+
+  plot_dat <- left_join(clin_dat,df_text,"immucan_id")
+
+  plot_dat <- plot_dat %>%
+    filter(!is.na(!!as.name(i)))
+
+  
+  plot_dat[,i] <- factor(pull(plot_dat,var = i),levels = c("low","high"))
+
+
+  res <- plot_dat %>%
+  analyse_multivariate(vars(time_to_event, censoring),
+                       c("simple_stage","simple_histology","smoking_status","adjuvant_treatment","neo_adjuvant_treatment",i))
+
+
+
+  pval <- res$summaryAsFrame %>%
+    filter(grepl(i,factor.id)) %>%
+    pull(p)
+  if(round(pval,digits = 3) < 0.05 ) {
+    sig_var_LASSO_in_cox <- c(sig_var_LASSO_in_cox,paste0(i))
+  }
+  
+  p.list[[i]] <- forest_plot(res)
+  hr.list[[i]] <- res$summaryAsFrame$HR
+  factor.list[[i]] <- res$summaryAsFrame$factor.name
+  p.list[[i]] <- list(p.list[[i]],i)
+}
+
+for(i in seq_along(p.list)){
+    tmp <- p.list[[i]]
+    # As you want to use tabset level here has to be lower than 
+    # parent level (ie, parent is 1, so here you have to use 2)
+    catHeader(tmp[[2]], 2)
+    print(tmp[[1]])
+}
+
+```
+
+#{}
+
+# multivariate cox for top features
+
+```{r, fig.height=10}
+HRs <- data.frame(HRs = unlist(hr.list),
+                  factor.ids = unlist(factor.list)) %>%
+  filter(!grepl("smoking|simple|adjuvant",factor.ids))
+top_hrs <- HRs %>%
+  arrange(HRs) %>%
+  pull(factor.ids)
+
+#top_hrs <- top_hrs[c(1:2,(length(top_hrs)-1):length(top_hrs))]
+
+clin_dat <- read_csv("O:/projects/immucan/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+
+clin_dat <- df_text %>%
+  select(immucan_id,top_hrs) %>%
+  left_join(clin_dat,by = "immucan_id") %>%
+  filter(simple_histology != "unknown")
+
+time_to_event <- clin_dat %>%
+  filter(immucan_id %in% df_text$immucan_id) %>%
+  pull(time_to_event)
+censoring <- clin_dat %>%
+  filter(immucan_id %in% df_text$immucan_id) %>%
+  pull(censoring)
+
+
+y <- Surv(time_to_event, censoring)
+p <- ggforest(coxph(formula(c(paste0("y ~",  "simple_stage +" , "simple_histology + " , "smoking_status +" , "adjuvant_treatment +" , "neo_adjuvant_treatment +" ), paste0(top_hrs,collapse = "+"))) ,data = as.data.frame(clin_dat)))
+p
+```
+
+# clustering on selected features
+```{r}
+top_hrs <- HRs %>%
+  arrange(HRs) %>%
+  pull(factor.ids)
+
+#top_hrs <- top_hrs[c(1:2,(length(top_hrs)-1):length(top_hrs))]
+#top_hrs <- top_hrs[c(1:5,(length(top_hrs)-4):length(top_hrs))]
+
+
+plot_dat <- dat %>%
+  select(all_of(top_hrs))
+
+set.seed(12345)
+cur_clust <- kmeans(plot_dat,centers = 3)
+
+plot_dat$kmeans_cluster <- cur_clust$cluster[rownames(plot_dat)]
+
+clin_dat <- read_csv("O:/projects/immucan/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+clin_dat$clusters <- as.factor(cur_clust$cluster[clin_dat$immucan_id])
+clin_dat <- clin_dat %>%
+  filter(simple_histology != "unknown")
+
+p <- ggforest(coxph(Surv(time_to_event, censoring) ~ simple_stage + simple_histology + smoking_status + adjuvant_treatment + neo_adjuvant_treatment + clusters,data = as.data.frame(clin_dat)))
+p
+table(clin_dat$censoring,clin_dat$clusters)
+```
+
+## cluster heatmap
+```{r}
+library(pheatmap)
+mat <- plot_dat %>%
+  pivot_longer(cols = top_hrs) %>%
+  group_by(name, kmeans_cluster, .drop = FALSE) %>%
+  summarise(cluster_mean = mean(value)) %>%
+  pivot_wider(id_cols = name,values_from = cluster_mean,names_from = kmeans_cluster)
+mat_names <- mat$name
+mat$name <- NULL
+mat <- as.matrix(mat)
+rownames(mat) <- mat_names
+
+pheatmap(mat,color = viridis::viridis(100),cluster_rows = TRUE,clustering_method = "ward.D2")
+
+pheatmap(mat,scale = "row",color = colorRampPalette(c("dark blue", "white", "dark red"))(100),cluster_rows = TRUE,clustering_method = "ward.D2")
+
+most_different <- c("mregDC.CD4_IMC2","CD8_GB.Tumor_IF2","HLADR.Tumor_IMC1","B.Tumor_IF1","CD8.Tumor_IMC1")
+```
+
+
+## Kaplan Meier
+
+```{r, fig.height=6}
+clin_dat <- read_csv("O:/projects/immucan/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+
+clin_dat$cluster <- cur_clust$cluster[clin_dat$immucan_id]
+
+surv_fit <- survfit(Surv(time_to_event, censoring) ~ cluster, data = clin_dat)
+
+ggsurv <- ggsurvplot(surv_fit, data = clin_dat, risk.table = TRUE, pval = TRUE)
+ggsurv$plot <- ggsurv$plot + 
+theme(legend.position = "none")
+ggsurv
+```

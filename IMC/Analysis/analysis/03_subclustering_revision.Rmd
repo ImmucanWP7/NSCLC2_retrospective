@@ -1,0 +1,407 @@
+---
+title: "Untitled"
+author: "Daniel Schulz"
+date: "2026-01-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# paths
+```{r}
+mount_path <- paste0("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/IMC/Panel_1/")
+```
+
+```{r}
+library(SingleCellExperiment)
+library(imcRtools)
+library(cytomapper)
+library(tidyverse)
+library(dittoSeq)
+library(viridis)
+library(doParallel)
+library(BiocParallel)
+library(BiocNeighbors)
+library(scran)
+library(bluster)
+library(scater)
+library(cowplot)
+```
+
+```{r}
+sce <- readRDS(paste0(mount_path,"Rout/sce.rds"))
+sce$cell_id <- colnames(sce)
+```
+
+```{r determine markers for clustering}
+markers <- list()
+# we will not subcluters "uncertain" cells as the merging will be very difficult. we may inspect this at a later time point again
+
+#functional markers for T cells
+markers[["lymphocytes"]] <- rownames(sce)[grepl(pattern = "CD3|CD20$|CD27|CD45RA|CD45RO|LAG3|PD1|CD7|GrzB|FOXP3|ICOS|Ki67|TCF7|VISTA|CD40|HLADR|CD38",rownames(sce))]
+
+markers[["Tcells"]] <- rownames(sce)[grepl(pattern = "CD27|LAG3|PD1|CD7|GrzB|ICOS|Ki67|TCF7|CD38",rownames(sce))]
+
+
+good_markers <- rownames(sce)[!grepl("DNA|Histone",rownames(sce))]
+```
+
+# update positivity
+we will select thresholds below
+```{r}
+sce$PD1_pos <- assay(sce, "exprs")["PD1",] > 1
+sce$GrzB_pos <- assay(sce, "exprs")["GrzB",] > 2
+sce$Ki67_pos <- assay(sce, "exprs")["Ki67",] > 1
+sce$TCF7_pos <- assay(sce, "exprs")["TCF7",] >1.5
+sce$PDL1_pos <- assay(sce, "exprs")["PDL1",] >1.3
+```
+
+# merge BnT and CD8/CD4
+all BnT cells that have CD8 expression will be merged with CD8 T cells for subclsutering
+all BnT cells with no CD8 expression and CD4 expression will be merged with CD8 T cells for subclsutering
+```{r}
+cur_sce <- sce[,sce$celltypes == "BnT"]
+BnT_CD8_ids <- cur_sce[,which(assay(cur_sce,"exprs")["CD8a",]>2)]$cell_id
+BnT_CD4_ids <- cur_sce[,which(assay(cur_sce,"exprs")["CD8a",]<2 & assay(cur_sce,"exprs")["CD4",] > 1)]$cell_id
+```
+
+# UMAP
+```{r, fig.height=15, fig.width=20}
+sce <- runUMAP(sce,
+               exprs_values = "exprs", 
+               subset_row = rownames(sce)[!grepl("DNA|Histone",rownames(sce))],
+               name = "UMAP",
+               external_neighbors = TRUE, BNPARAM = AnnoyParam(),
+               BPPARAM = MulticoreParam(workers = 12))
+
+dittoDimPlot(sce,var = "celltypes",reduction.use = "UMAP",do.label = TRUE)+
+  scale_color_manual(values = metadata(sce)$colour_vectors$celltypes)
+dittoDimPlot(sce,var = "celltypes_minor",reduction.use = "UMAP",do.label = TRUE)+
+  scale_color_manual(values = metadata(sce)$colour_vectors$celltypes_minor)
+```
+
+# cluster sweeps
+
+```{r, include=FALSE, eval=FALSE}
+
+# cluster sweeps with Rphenoannoy
+library(Rphenoannoy)
+for (x in c("CD4","CD8")) {
+    cur_sce <- sce[,sce$celltypes %in% x]
+#this code potentially add all BnT_CD8 cells. however we have many markers then that are not relevant for clustering CD8 T cells and will therefore not do it
+  # if(x == "CD4"){
+  #   cur_sce <- sce[,c(ids,BnT_CD4_ids)]
+  # } else if (x == "CD8"){
+  #   cur_sce <- sce[,c(ids,BnT_CD8_ids)]
+  # }
+ 
+mat <- t(assay(cur_sce, "exprs")[markers$Tcells,])
+set.seed(12345)
+out_30 <- Rphenoannoy(threshold = ,mat, k = 30)
+set.seed(12345)
+out_50 <- Rphenoannoy(threshold = ,mat, k = 50)
+set.seed(12345)
+out_70 <- Rphenoannoy(threshold = ,mat, k = 70)
+set.seed(12345)
+out_90 <- Rphenoannoy(threshold = ,mat, k = 90)
+set.seed(12345)
+out_110 <- Rphenoannoy(threshold = ,mat, k = 110)
+set.seed(12345)
+out_130 <- Rphenoannoy(threshold = ,mat, k = 130)
+
+cur_sce$out_30 <- factor(membership(out_30[[2]]))
+cur_sce$out_50 <- factor(membership(out_50[[2]]))
+cur_sce$out_70 <- factor(membership(out_70[[2]]))
+cur_sce$out_90 <- factor(membership(out_90[[2]]))
+cur_sce$out_110 <- factor(membership(out_110[[2]]))
+cur_sce$out_130 <- factor(membership(out_130[[2]]))
+
+saveRDS(cur_sce, paste0(mount_path,"Rout/subclustering/",x,".rds"))
+}
+
+```
+
+# cluster evaluation
+here we will use 
+- silhouette width -> larger values indicate cells being cluster to cells from the same cluster
+- RMSD -> dispersion of cells within each cluster -> large values indicate candidates for subclustering. RMSD corresponds to the root mean of the squared distances (RMSD = sqrt(WCSS/n)) where n is the number of points. WCSS is not scaled to the size of the clusters, RMSD basically returns the average distance to centroid for a cluster 
+- number of clusters
+
+currently not using systematically
+- adjusted rand index -> higher values indicate overlap between clustering
+
+
+```{r, fig.height=8, fig.width=6}
+# create necessary directory first
+if (!dir.exists(paste0(mount_path, "Rout/subclustering/plots"))) {
+  dir.create(paste0(mount_path, "Rout/subclustering/plots"))
+}
+
+
+files <- list.files(paste0(mount_path,"Rout/subclustering"), full.names = TRUE, pattern = "*.rds")
+
+for (x in files){
+
+  cur_sce <- readRDS(x)
+  cts <- gsub(".rds","",basename(x))
+  
+  combinations <- list(out_30 = cur_sce$out_30,
+                       out_50 = cur_sce$out_50,
+                       out_70 = cur_sce$out_70,
+                       out_90 = cur_sce$out_90,
+                       out_110 = cur_sce$out_110,
+                       out_130 = cur_sce$out_130)
+
+  mat <- t(assay(cur_sce, "exprs")[markers[["Tcells"]],])  
+  
+  # silhouette width
+  sil <- vapply(combinations, 
+                function(x) mean(approxSilhouette(mat, x)$width), 
+                0)
+  
+  names(sil) <- gsub("out_","",names(sil))
+  
+  # RMSD  
+  rmsd <- lapply(combinations, 
+                 function(x) clusterRMSD(mat,x))
+  rmsd <- lapply(rmsd,sum)
+  unlist(rmsd)
+  
+  # number of clusters per k
+  cluster_numbers <- lapply(combinations, 
+                            function(x) length(unique(x)))
+  
+  # generate output table
+  cur_dat <- data.frame(silhouette = sil,
+                        k = names(sil),
+                        rmsd = unlist(rmsd),
+                        n = unlist(cluster_numbers))
+  rownames(cur_dat) <- NULL
+  
+  # plots
+  sil_plot <- ggplot(cur_dat,aes(x = factor(k, levels = c(30, 50, 70, 90, 110, 130)),y = silhouette)) +
+    geom_point() +geom_line()+
+    theme_classic(base_size = 15) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    xlab("k") +
+    ylab("Average silhouette width")+
+    ggtitle(cts)
+
+  rmsd_plot <- cur_dat %>%
+    ggplot(aes(x = factor(k, levels = c("30", "50", "70","90", "110", "130")),y = rmsd))+
+    geom_point()+geom_line()+
+    theme_classic(base_size = 15) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    xlab("k") +
+    ylab("RMSD")+
+    ggtitle(cts)
+  
+  cluster_n_plot <- cur_dat %>%
+    ggplot(aes(x = factor(k, levels = c(30, 50, 70, 90, 110, 130)),y = n))+
+    geom_point()+ geom_line()+
+    theme_classic(base_size = 15) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    xlab("k") +
+    ylab("cluster number")+
+    ggtitle(cts)
+  
+  p <- cowplot::plot_grid(sil_plot,rmsd_plot, cluster_n_plot, ncol = 1)
+  p
+  
+   ggsave(filename = paste0(mount_path,"Rout/subclustering/plots/",gsub(".rds","",basename(x)),"_cluster_evaluation",".png"),p)
+  
+}
+```
+
+# meta clustering
+
+we will select k=110 for CD4 and CD8 T cells
+
+```{r}
+total_cells <- as.data.frame((table(sce$immucan_id)))
+colnames(total_cells) <- c("immucan_id", "total_cell_number")
+library(factoextra)
+library(NbClust)
+sces <- list.files(paste0(mount_path,"Rout/subclustering"), full.names = TRUE, pattern = "*.rds")
+
+p.list <- list()
+h_list <- list()
+abund_list <- list()
+for (i in sces) {
+  cur_sce <- readRDS(i)
+  cur_name <- gsub(".rds","",basename(i))
+  # total cells per cluster and fraction of patients with at least 1 % of cells belonging to that cluster
+  abund <- as.data.frame(unclass(table(cur_sce$out_110, cur_sce$immucan_id))) 
+  abund <- abund %>%
+    mutate(cluster = paste0(cur_name,"_",rownames(abund))) %>%
+    pivot_longer(-cluster, names_to =  "immucan_id") %>%
+    left_join(total_cells,"immucan_id") %>%
+    group_by(cluster) %>%
+    mutate(cluster_sum = sum(value)) %>%
+    group_by(immucan_id) %>%
+    mutate(frac = round(value/total_cell_number,digits = 3)) %>%
+    group_by(cluster) %>%
+    mutate(cut_off = sum(frac > 0.01)) %>%
+    ungroup() 
+  
+  abund_list[[paste0(cur_name)]] <- abund %>%
+    ggplot(aes(x = cluster,y = frac)) +
+    geom_boxplot()+
+    theme_bw()+
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+    geom_hline(yintercept = 0.01, col = "red")+
+    geom_text(aes(label = cut_off,y = max(frac)), col = "red")
+  
+
+  mean_sce <- aggregateAcrossCells(cur_sce,ids=cur_sce$cluster,statistics = "mean")
+  assay(mean_sce,"exprs") <- asinh(counts(mean_sce))
+  meta_mat <- t(assay(mean_sce[markers[[cur_name]],],"exprs"))
+  #meta_mat <- scale(meta_mat)
+
+  # meta clustering
+  set.seed(12356)
+  hc_sil <- fviz_nbclust(scale(meta_mat), hcut, diss = dist(meta_mat,method = "euclidian"),hc_method = "ward.D2", method = "silhouette",k.max = nrow(meta_mat)-1, print.summary = TRUE)$data
+  set.seed(12356)
+  km_sil <- fviz_nbclust(scale(meta_mat), kmeans, method = "silhouette",k.max = nrow(meta_mat)-1, print.summary = TRUE)$data
+    set.seed(12356)
+  hc_wss <- fviz_nbclust(scale(meta_mat), hcut, diss = dist(meta_mat,method = "euclidian"),hc_method = "ward.D2", method = "wss",k.max = nrow(meta_mat)-1, print.summary = TRUE)$data
+  set.seed(12356)
+  km_wss <- fviz_nbclust(scale(meta_mat), kmeans, method = "wss",k.max = nrow(meta_mat)-1, print.summary = TRUE)$data
+  
+  p.list[[paste0(cur_name)]] <- data.frame(cluster = hc_sil$clusters,
+                                           hc_sil = hc_sil$y,
+                                           km_sil = km_sil$y,
+                                           hc_wss = hc_wss$y,
+                                           km_wss = km_wss$y)
+  
+  # plot heatmap
+  set.seed(12356)
+  h_list[[paste0(cur_name)]] <- dittoSeq::dittoHeatmap(mean_sce,genes =markers[[cur_name]], assay = "exprs",
+                                                       annot.by = c("cluster"),
+                                                       cluster_cols = TRUE,
+                                                       cluster_rows = TRUE, 
+                                                       clustering_distance_rows = "euclidean",
+                                                       clustering_distance_cols = "euclidean",
+                                                       clustering_method = "ward.D2",
+                                                       show_colnames = TRUE,
+                                                       heatmap.colors = colorRampPalette(c("dark blue", "white", "dark red"))(100),
+                                                       breaks = seq(-3, 3, length.out = 101))
+  
+}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# cluster evalution CD8
+
+for CD8 we will use 90 nearest neighbors
+```{r, fig.height=10, fig.width=15}
+CD8_sce <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/IMC/Panel_1/Rout/subclustering/CD8.rds")
+set.seed(1235)
+CD8_sce <- runUMAP(CD8_sce,
+                   exprs_values = "exprs", 
+                   subset_row = markers$lymphocytes,
+                   name = "UMAP",
+                   external_neighbors = TRUE, BNPARAM = AnnoyParam(),
+                   BPPARAM = MulticoreParam(workers = 12))
+
+p1 <- dittoDimPlot(CD8_sce,var = "out_90",reduction.use = "UMAP",do.label = TRUE)
+p2 <- dittoDimPlot(CD8_sce,var = "celltypes_minor",reduction.use = "UMAP",do.label = TRUE)+
+  scale_color_manual(values = metadata(CD8_sce)$colour_vectors$celltypes_minor)
+cowplot::plot_grid(p1,p2, ncol=2)
+
+
+# heatmap
+mean_sce <- aggregateAcrossCells(CD8_sce,ids=CD8_sce$out_90,statistics = "mean")
+assay(mean_sce,"exprs") <- asinh(counts(mean_sce))
+meta_mat <- t(assay(mean_sce[markers$lymphocytes,],"exprs"))
+#meta_mat <- scale(meta_mat)
+
+dittoSeq::dittoHeatmap(mean_sce,
+                       genes = markers$,
+                       assay = "exprs",
+                       annot.by = c("out_90"),
+                       cluster_cols = TRUE,
+                       cluster_rows = TRUE,
+                       show_colnames = TRUE,
+                       heatmap.colors = colorRampPalette(c("dark blue", "white", "dark red"))(100),
+                       breaks = seq(-3, 3, length.out = 101))
+
+
+
+  set.seed(12356)
+  hc_sil <- fviz_nbclust(scale(meta_mat), hcut, method = "silhouette",k.max = nrow(meta_mat)-1, print.summary = TRUE)$data
+  set.seed(12356)
+  km_sil <- fviz_nbclust(scale(meta_mat), kmeans, method = "silhouette",k.max = nrow(meta_mat)-1, print.summary = TRUE)$data
+  set.seed(12356)
+  hc_wss <- fviz_nbclust(scale(meta_mat), hcut, method = "wss",k.max = nrow(meta_mat)-1, print.summary = TRUE)$data
+  set.seed(12356)
+  km_wss <- fviz_nbclust(scale(meta_mat), kmeans, method = "wss",k.max = nrow(meta_mat)-1, print.summary = TRUE)$data
+  
+  p.list[[paste0(cur_name)]] <- data.frame(cluster = hc_sil$clusters,
+                                           hc_sil = hc_sil$y,
+                                           km_sil = km_sil$y,
+                                           hc_wss = hc_wss$y,
+                                           km_wss = km_wss$y)
+
+# overlap with celltypes_minor
+
+CD8_sce_samp <- CD8_sce[,sample(colnames(CD8_sce),size = 20000, replace = FALSE)]
+set.seed(12356)
+dittoSeq::dittoHeatmap(CD8_sce_samp,
+                       genes = markers$lymphocytes,
+                       assay = "exprs",
+                       annot.by = c( "out_90", "celltypes_minor"),
+                       cluster_cols = FALSE,
+                       cluster_rows = TRUE,
+                       show_colnames = FALSE,
+                       heatmap.colors = colorRampPalette(c("dark blue", "white", "dark red"))(100),
+                       breaks = seq(-3, 3, length.out = 101))
+
+```
+
+
+```{r}
+mean_sce <- aggregateAcrossCells(CD8_sce,ids=CD8_sce$celltypes_minor,statistics = "mean")
+assay(mean_sce,"exprs") <- asinh(counts(mean_sce))
+meta_mat <- t(assay(mean_sce[markers$lymphocytes,],"exprs"))
+#meta_mat <- scale(meta_mat)
+
+dittoSeq::dittoHeatmap(mean_sce,
+                       genes = markers$lymphocytes,
+                       assay = "exprs",
+                       annot.by = c("celltypes_minor"),
+                       cluster_cols = TRUE,
+                       cluster_rows = TRUE,
+                       show_colnames = TRUE,
+                       heatmap.colors = colorRampPalette(c("dark blue", "white", "dark red"))(100),
+                       breaks = seq(-3, 3, length.out = 101))
+```
+

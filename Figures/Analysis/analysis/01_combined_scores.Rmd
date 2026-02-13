@@ -35,7 +35,6 @@ library(SingleCellExperiment)
 
 ```{r}
 mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
-old_mount <- "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/"
 out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/"
 
 if (!dir.exists(out_folder)) {
@@ -429,7 +428,7 @@ IF1 interactions were calculated as done by the imcRtools::countInteractions fun
 
 Note: here we will read in the data from a different repo
 ```{r}
-int_files <- list.files(paste0(old_mount,"IF/Rout/IF1_features/interaction_counts_20241113/"), full.names = TRUE)
+int_files <- list.files(paste0(mount_path,"IF/Rout/IF1_features/interaction_counts_20241113/"), full.names = TRUE)
 
 int_list <- lapply(int_files, read.csv)
 int_list[[1]]
@@ -521,7 +520,7 @@ write.csv(dat,file = paste0(out_folder,"celltype_fractions_stroma_compartment_IF
 
 ## IF2 interactions
 ```{r}
-int_files <- list.files(paste0(old_mount,"IF/Rout/IF2_features/interaction_counts_20241113"), full.names = TRUE)
+int_files <- list.files(paste0(mount_path,"IF/Rout/IF2_features/interaction_counts_20241113"), full.names = TRUE)
 
 int_list <- lapply(int_files, read.csv)
 int_list[[1]]
@@ -535,6 +534,8 @@ directional_dat <- dat %>%
 
 write.csv(directional_dat,file = paste0(out_folder,"cell-cell-pair_interactions_directional_IF2",".csv"), row.names = FALSE, quote = FALSE)
 ```
+
+# data Features IF3
 
 ## IF3 cell type densisities
 ```{r}
@@ -567,8 +568,6 @@ write.csv(dat,file = paste0(out_folder,"celltypes_abundances_IF3.csv"), row.name
 ```
 
 
-# data Features IF3
-
 ## IF3 tumor compartment fractions
 ```{r}
 IF3 <- read_csv(paste0(mount_path,"data/IF/Rout/IF3_features/IF3_cell_type_fraction_tumor_compartment.csv"))
@@ -595,7 +594,7 @@ write.csv(dat,file = paste0(out_folder,"celltype_fractions_stroma_compartment_IF
 
 ## IF3 interactions
 ```{r}
-int_files <- list.files(paste0(old_mount,"IF//Rout/IF3_features/interaction_counts_20241113"), full.names = TRUE)
+int_files <- list.files(paste0(mount_path,"IF//Rout/IF3_features/interaction_counts_20241113"), full.names = TRUE)
 
 int_list <- lapply(int_files, read.csv)
 int_list[[1]]
@@ -615,7 +614,7 @@ write.csv(directional_dat,file = paste0(out_folder,"cell-cell-pair_interactions_
 # cello hood Panel 1
 we will also read this in from the old location
 ```{r}
-df <- read.csv(paste0(old_mount,"Figures/scores_for_sharing/Panel1_NSCLC_cc.csv"))
+df <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/Panel1_NSCLC_cc.csv"))
 
 df <- df %>%
   mutate(cell_id = paste0(SampleId,"_",ROI,"_",ObjectNumber))
@@ -680,7 +679,7 @@ write.csv(cellohood_abundances_p1,file = paste0(out_folder,"cellohood_abundaces_
 # cello hood Panel 2
 
 ```{r}
-df <- read.csv(paste0(old_mount,"Figures/scores_for_sharing/Panel2_NSCLC_cc.csv"))
+df <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/Panel2_NSCLC_cc.csv"))
 
 df <- df %>%
   mutate(cell_id = paste0(SampleId,"_",ROI,"_",ObjectNumber))

@@ -1,0 +1,413 @@
+---
+title: "oncoplot"
+author: "Daniel Schulz"
+date: "2026-02-10"
+output: html_document
+---
+
+in this script we will read in the vcf files, clean them and merge them. The original code to read the vcfs was written for a snakeMake pipeline by Sergi Beneyto and adapted here for a pure R script.
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# read file
+```{r}
+data_mut <- read_csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/Rout/20260210_mutations_all.csv")
+```
+
+# filtering
+
+min VAF: 5%
+ref VAF: < 1%
+min coverage: 100 reads
+
+```{r}
+VAF <- 0.05
+ref_VAF <- 0.01
+min_cov <- 100
+disruptive_variants <- TRUE
+```
+
+# selected genes for NSCLC 
+
+```{r}
+genes_sel <- c("KRAS", "EGFR", "BRAF", "MET", "ALK", "ROS", "RET", "NTRK", "NRG1", "FGFR1", "FGFR2", "HRAS", "NRAS", "MAP2K1", "ERBB2", "ROS1", "PIK3CA", "NTRK1", "STK11")
+genes_sup <- c("TP53", "KEAP1","STK11","RB1","CDKN2A", "CDKN2B","NKX2", "NF1")
+
+genes_sel <- c(genes_sel, genes_sup)
+```
+
+
+# Filtering
+
+```{r}
+cur_dat <- data_mut %>%
+  filter(gt_AF > VAF,
+         gt_DP > min_cov,
+         if(disruptive_variants == TRUE) FILTER_type == "keep" else FILTER_type %in% c("keep", "remove"))
+```
+
+# Metadata
+```{r}
+# Prepare meta data
+clin_dat <- read_csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+
+data_meta <- as.data.frame(clin_dat)
+rownames(data_meta) <- data_meta[["immucan_id"]]
+data_meta
+
+```
+
+# Oncoprint selected genes
+no cosmic filter
+```{r}
+# Prepare plot data
+data_plot <- cur_dat %>% 
+  filter(gene %in% genes_sel) %>%
+  select(immucan_id, gene, type) %>%
+  group_by(gene, immucan_id) %>%
+  dplyr::count(type) %>%
+  mutate(type = ifelse(n >= 2, paste0(type,"s"), type),
+         type = ifelse(type == "stop_gaineds", "stops_gained", type)) %>%
+  ungroup() %>%
+  select(-n) %>%
+  distinct() %>%
+  pivot_wider(names_from = immucan_id,values_from = type,values_fn = function(x) paste(x, collapse = " & ")) %>%
+  as.data.frame()
+
+# add patients with no mutation back
+missing_pats <- unique(data_mut$immucan_id)[!unique(data_mut$immucan_id) %in% colnames(data_plot)]
+no_mut <- as.data.frame(matrix(nrow = nrow(data_plot),ncol = length(missing_pats)))
+colnames(no_mut) <- missing_pats
+rownames(no_mut) <- rownames(data_plot)
+
+data_plot <- cbind(data_plot,no_mut)
+
+unique(unique(unlist(sapply(data_plot, unique))))
+
+rownames(data_plot) <- data_plot[["gene"]]
+data_plot[["gene"]] <- NULL
+
+data_mut %>% filter(grepl("stop_gaineds", type))
+```
+
+
+
+```{r fig.width=20, fig.height=8}
+col_meta <- c("gender", "Histology", "simple_stage", "smoking_status", "age_dicho")
+
+# Define colors
+Stage_col = setNames(c("palevioletred3","darkseagreen3","dodgerblue", "darkblue"),c("I","II","III","IV"))
+Stage_col_num = setNames(c("palevioletred3","darkseagreen3","dodgerblue", "darkblue"),c("1","2","3", "4"))
+hist_col_2= setNames(c("blue","orange"),c("LUAD","LUSC"))
+hist_col_3 = setNames(c("blue","orange", "gray40"),c("LUAD","LUSC","Other"))
+# smoking
+smoking_status_col_3 <- setNames(c("blue", "lightblue", "cyan3"),sort(c("Current","Former", "Never")))
+smoking_status_col_4 <- setNames(c("blue", "lightblue", "cyan3", "gray40"),sort(c("Current","Former", "Never", "Unknown")))
+
+data_meta <- data_meta %>%
+  mutate(Histology = LUAD_vs_LUSC,
+         Histology = ifelse(is.na(LUAD_vs_LUSC),"Other", ifelse(Histology == "Adenocarcinoma", "LUAD", "LUSC")),
+         smoking_status = ifelse(is.na(smoking_status),"Unknown",smoking_status),
+         smoking_status = ifelse(smoking_status == "Ex-smoker", "Former", smoking_status),
+         smoking_status = ifelse(smoking_status == "Current smoker", "Current", smoking_status),
+         smoking_status = ifelse(smoking_status == "Non-smoker", "Never", smoking_status))
+
+
+col_list <- list(gender = c("Male" = "#6f50a1", "Female" = "#0d6d64"),
+               Histology =hist_col_3,
+               simple_stage = Stage_col,
+               smoking_status = smoking_status_col_4,
+               age_dicho = c("low" = "blue3", "high" = "red4")
+               )
+
+# drivers
+# mutations: KRAS
+KRAS_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+EGFR_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+PIK3CA_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+STK11_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+KEAP1_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+BRAF_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+RET_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+MET_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+ROS1_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+TP53_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+
+
+
+## Define alteration functions
+alt_predef <- unique(unlist(sapply(data_plot, unique)))
+#alt_predef <- alt_predef[c(1,3:length(alt_predef))]
+alt_predef <- alt_predef[!is.na(alt_predef)]
+alt_predef <- setNames( pals::alphabet(n = length(alt_predef)),alt_predef)
+alt_predef
+```
+
+
+```{r}
+
+col_fun1 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[1]), col = "white"))}
+col_fun2 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[2]), col = "white"))}
+col_fun3<- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[3]), col = "white"))}
+col_fun4 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[4]), col = "white"))}
+col_fun5 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[5]), col = "white"))}
+col_fun6 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[6]), col = "white"))}
+col_fun7 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[7]), col = "white"))}
+col_fun8 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[8]), col = "white"))}
+col_fun9 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[9]), col = "white"))}
+col_fun10 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[10]), col = "white"))}
+col_fun11 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[11]), col = "white"))}
+col_fun12 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[12]), col = "white"))}
+col_fun13 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[13]), col = "white"))}
+col_fun14 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[14]), col = "white"))}
+col_fun15 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[15]), col = "white"))}
+col_fun16 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[16]), col = "white"))}
+col_fun17 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[17]), col = "white"))}
+col_fun18 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[18]), col = "white"))}
+col_fun19 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[19]), col = "white"))}
+
+alt_fun_predef <- list(col_fun1,col_fun2,col_fun3,col_fun4,col_fun5,col_fun6,col_fun7,col_fun8
+                       ,col_fun9
+                       ,col_fun10
+                       ,col_fun11
+                       ,col_fun12
+                       ,col_fun13
+                       ,col_fun14
+                       ,col_fun15
+                       ,col_fun16
+                       ,col_fun17
+                       ,col_fun18
+                       ,col_fun19
+                       )
+
+names(alt_fun_predef) <- names(alt_predef)
+
+background_fun <- list(
+      background = function(...) NULL
+    )
+
+alt_fun <- append(background_fun, alt_fun_predef)
+
+# note: currently we have not all clinical data yet. we will subset the data to plot to only contain those we have clinical data for and fix this later
+cur_pats <- intersect(colnames(data_plot),clin_dat$immucan_id)
+data_plot <- data_plot %>%
+  select(all_of(cur_pats))
+
+# Annotation
+df_top <- as.data.frame(data_meta[, col_meta])
+rownames(df_top) <- data_meta$immucan_id
+df_top <- df_top[colnames(data_plot), ]
+
+
+data_plot[is.na(data_plot)] <- ""
+```
+
+
+```{r fig.width=20, fig.height=10}
+library(ComplexHeatmap)
+
+top_annotation = HeatmapAnnotation(
+      cbar = anno_oncoprint_barplot(),
+      df = df_top,
+      col = col_list,
+      annotation_name_side = "left",
+      annotation_legend_param = list(title_gp = gpar(fontsize = 12),
+                                     labels_gp = gpar(fontsize = 12))
+      , annotation_name_gp= gpar(fontsize = 12)
+    )
+ht <- ComplexHeatmap::oncoPrint(data_plot,
+                    #, get_type = get_type_fun
+                    , alter_fun = alt_fun
+                    #, alter_fun_is_vectorized = FALSE
+                    #, col = setNames(names(alt_predef), alt_predef)
+                    , col = alt_predef
+                    , remove_empty_columns = FALSE
+                    , remove_empty_rows = FALSE
+                    , top_annotation = top_annotation
+                    , row_names_gp = gpar(fontsize = 12)
+                    #, heatmap_legend_param = list(legend_gp = gpar(fontsize = 12))
+  )
+ht
+pdf(file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_4/oncoprint_selected_genes_20260210.pdf",width = 10,height = 9)
+draw(ht,
+    heatmap_legend_side = "bottom"
+    ,annotation_legend_side = "bottom"
+    ,padding = unit(c(2, 5, 2, 2), "mm"))
+dev.off()
+```
+
+
+# Oncoprint COSMIC genes
+
+```{r}
+# Prepare plot data
+data_plot <- cur_dat %>% 
+  filter(gene %in% genes_sel,
+         COSMIC == TRUE) %>%
+  select(immucan_id, gene, type) %>%
+  group_by(gene, immucan_id) %>%
+  dplyr::count(type) %>%
+  mutate(type = ifelse(n >= 2, paste0(type,"s"), type),
+         type = ifelse(type == "stop_gaineds", "stops_gained", type)) %>%
+  ungroup() %>%
+  select(-n) %>%
+  distinct() %>%
+  pivot_wider(names_from = immucan_id,values_from = type,values_fn = function(x) paste(x, collapse = " & ")) %>%
+  as.data.frame()
+
+# add patients with no mutation back
+missing_pats <- unique(data_mut$immucan_id)[!unique(data_mut$immucan_id) %in% colnames(data_plot)]
+no_mut <- as.data.frame(matrix(nrow = nrow(data_plot),ncol = length(missing_pats)))
+colnames(no_mut) <- missing_pats
+rownames(no_mut) <- rownames(data_plot)
+
+data_plot <- cbind(data_plot,no_mut)
+
+unique(unique(unlist(sapply(data_plot, unique))))
+
+rownames(data_plot) <- data_plot[["gene"]]
+data_plot[["gene"]] <- NULL
+
+data_mut %>% filter(grepl("stop_gaineds", type))
+```
+
+
+
+```{r fig.width=20, fig.height=8}
+## Define alteration functions
+alt_predef <- unique(unlist(sapply(data_plot, unique)))
+#alt_predef <- alt_predef[c(1,3:length(alt_predef))]
+alt_predef <- alt_predef[!is.na(alt_predef)]
+alt_predef <- setNames( pals::alphabet(n = length(alt_predef)),alt_predef)
+alt_predef
+```
+
+
+```{r}
+
+col_fun1 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[1]), col = "white"))}
+col_fun2 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[2]), col = "white"))}
+col_fun3<- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[3]), col = "white"))}
+col_fun4 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[4]), col = "white"))}
+col_fun5 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[5]), col = "white"))}
+col_fun6 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[6]), col = "white"))}
+col_fun7 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[7]), col = "white"))}
+col_fun8 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[8]), col = "white"))}
+col_fun9 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[9]), col = "white"))}
+col_fun10 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[10]), col = "white"))}
+col_fun11 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[11]), col = "white"))}
+col_fun12 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[12]), col = "white"))}
+col_fun13 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[13]), col = "white"))}
+col_fun14 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[14]), col = "white"))}
+col_fun15 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[15]), col = "white"))}
+col_fun16 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[16]), col = "white"))}
+col_fun17 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[17]), col = "white"))}
+col_fun18 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[18]), col = "white"))}
+col_fun19 <- function(x,y,w,h) {
+    grid.rect(x, y, w, h,gp = gpar(fill = unname(alt_predef[19]), col = "white"))}
+
+alt_fun_predef <- list(col_fun1,col_fun2,col_fun3,col_fun4,col_fun5,col_fun6,col_fun7,col_fun8
+                       ,col_fun9
+                       ,col_fun10
+                       ,col_fun11
+                       ,col_fun12
+                       ,col_fun13
+                       ,col_fun14
+                       ,col_fun15
+                       ,col_fun16
+                       ,col_fun17
+                       ,col_fun18
+                       ,col_fun19
+                       )
+
+names(alt_fun_predef) <- names(alt_predef)
+
+background_fun <- list(
+      background = function(...) NULL
+    )
+
+alt_fun <- append(background_fun, alt_fun_predef)
+
+# note: currently we have not all clinical data yet. we will subset the data to plot to only contain those we have clinical data for and fix this later
+cur_pats <- intersect(colnames(data_plot),clin_dat$immucan_id)
+data_plot <- data_plot %>%
+  select(all_of(cur_pats))
+
+# Annotation
+df_top <- as.data.frame(data_meta[, col_meta])
+rownames(df_top) <- data_meta$immucan_id
+df_top <- df_top[colnames(data_plot), ]
+
+
+data_plot[is.na(data_plot)] <- ""
+```
+
+
+```{r fig.width=20, fig.height=10}
+top_annotation = HeatmapAnnotation(
+      cbar = anno_oncoprint_barplot(),
+      df = df_top,
+      col = col_list,
+      annotation_name_side = "left",
+      annotation_legend_param = list(title_gp = gpar(fontsize = 12),
+                                     labels_gp = gpar(fontsize = 12))
+      , annotation_name_gp= gpar(fontsize = 12)
+    )
+ht <- ComplexHeatmap::oncoPrint(data_plot,
+                    #, get_type = get_type_fun
+                    , alter_fun = alt_fun
+                    #, alter_fun_is_vectorized = FALSE
+                    #, col = setNames(names(alt_predef), alt_predef)
+                    , col = alt_predef
+                    , remove_empty_columns = FALSE
+                    , remove_empty_rows = FALSE
+                    , top_annotation = top_annotation
+                    , row_names_gp = gpar(fontsize = 12)
+                    #, heatmap_legend_param = list(legend_gp = gpar(fontsize = 12))
+  )
+ht
+pdf(file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_4/4A_oncoprint_COSMIC_20260210.pdf",width = 10,height = 9)
+draw(ht,
+    heatmap_legend_side = "bottom"
+    ,annotation_legend_side = "bottom"
+    ,padding = unit(c(2, 5, 2, 2), "mm"))
+dev.off()
+```

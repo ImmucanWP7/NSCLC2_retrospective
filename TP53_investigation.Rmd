@@ -1,0 +1,235 @@
+---
+title: "mutation frequency investigation"
+author: "Daniel Schulz"
+date: "2026-01-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r setup, include = FALSE}
+library(pander)
+library(ggplot2)
+theme_set(theme_minimal())
+```
+  
+# Introduction
+
+Whole exome sequencing data was processed by the "vegan-pipelin" for calling and annotation of genomic variants.  
+  
+In this notebook variants are filtered by following criteria:  
+    - Only variants that passed "vegan" quality control are kept ("PASS" filter)
+    - Only variants with a VAF of > 10% and a minimum of 3 reads covering the mutated allele are kept for analysis.
+    - A selection of genes are taken from [this review](https://doi.org/10.1038/s41568-019-0179-8 (2019))
+    - Only variants included in the COSMIC data base as annotated by the "vegan-pipeline" are kept for further analysis
+    - Variants are further filtered to only include functionally relevant alterations for downstream analysis
+
+
+
+# Libraries
+```{r loading_libraries, message=FALSE}
+library(data.table)
+library(dplyr)
+library(ComplexHeatmap)
+library(tidyr)
+library(ggtext)
+```
+
+# Variables and directories
+```{r}
+# The folowing firectories need to change according to the setup
+mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/"
+path_output <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/Rout/"
+
+
+#following directories are set automatically
+path_data_clin <- file.path( "/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+path_data_tmb <- file.path("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/tmb")
+path_vegan <-file.path("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/tableReports") # results of main vegan run
+
+
+# Define driver Genes
+Genes_driver <- c("KRAS", "EGFR", "BRAF", "MET", "ALK", "ROS", "RET", "NTRK", "NRG1", "FGFR1", "FGFR2", "HRAS", "NRAS", "MAP2K1", "ERBB2", "ROS1", "PIK3CA", "NTRK1", "STK11")
+Genes_sup <- c("TP53", "KEAP1","STK11","RB1","CDKN2A", "CDKN2B","NKX2", "NF1")
+
+genes_sel <- c(Genes_driver, Genes_sup)
+```
+
+
+# Main Program with Plots and Results
+
+## Load data
+
+### Clinical
+
+```{r clinical_data}
+data_clin <- fread(path_data_clin)
+data_clin
+```
+
+### VeganID to IMMUcanID
+```{r}
+vegan_lookup <- list.files(path_vegan, pattern = "design.csv", full.names = T)
+vegan_lookup <- lapply(vegan_lookup, fread)
+vegan_lookup <- do.call("rbind", vegan_lookup)
+vegan_lookup[["immucan_id"]] <- gsub("-FIXT.*", "", vegan_lookup[["PAIR_ID"]])
+vegan_lookup
+```
+
+
+### TMB
+
+```{r}
+data_tmb <- list.files(path_data_tmb, pattern = "tmb.txt", recursive = T, full.names = T)
+data_tmb <- lapply(data_tmb, function(x){
+  name <- gsub("_Mutect2.*", "", 
+               gsub(".*tmb/", "", x)
+               )
+  data_tmp <- read.delim(x) %>%
+    separate(col = 1, sep = "=", into = c("a", "b")) %>%
+    filter(a == "TMB")
+  
+  data_tmp <- data_tmp[,"b",drop=T]
+  data_tmp <- as.numeric(gsub(" ", "", data_tmp))
+
+  
+  names(data_tmp) <- name
+  
+  return(data_tmp)
+  
+  
+})
+
+data_tmb <-unlist(data_tmb)
+
+data_tmb <- data.frame(TUMOR_ID = names(data_tmb),
+           TMB = data_tmb)
+
+data_tmb <- merge(data_tmb, vegan_lookup, all.x = T, by = "TUMOR_ID")
+
+data_tmb
+```
+
+### Combine meta-data per sample
+```{r}
+data_meta <- merge(data_clin, data_tmb, by="immucan_id") # TMB data
+data_meta
+```
+
+```{r}
+data_mut <- list.files(path = path_vegan, 
+                       pattern = "Mutect2_filtered_pass_norm_COSMIC_CancerHotspots_GnomAD_dbNSFP.tsv",
+                       recursive = T,
+                       full.names = T)
+
+
+data_mut <- lapply(data_mut, function(path){
+  
+  name <- gsub("_.*", "", 
+               gsub(".*tableReports/", "", path)
+               )
+  data_tmp <- fread(path)
+  colnames(data_tmp) <- c(colnames(data_tmp)[1:14],"AD","DP","AF")
+  data_tmp$TUMOR_ID <- name
+  
+  return(data_tmp)
+  
+})
+
+data_mut <- do.call("rbind", data_mut)
+
+data_mut <- merge(data_mut, data_meta, all.x = T, by = "TUMOR_ID")
+data_mut <-  as.data.frame(data_mut)
+
+# Format some column names
+#colnames(data_mut) <- gsub("ANN\\[0\\]\\.", "", colnames(data_mut))
+data_mut <- data_mut %>%
+  transform(AF = as.numeric(AF),
+            DP = as.numeric(DP))
+
+hist(data_mut$AF)
+```
+
+# TP53
+select all patients that do have TP53 mutation and those that do not
+```{r}
+TP53_pos <- data_mut %>%
+  filter(Gene == "TP53") %>%
+  pull(immucan_id)
+
+data_mut %>%
+  mutate(TP53_pos_patients = ifelse(immucan_id %in% TP53_pos,"TP53_mutated", "TP53_wildtype")) %>%
+  ggplot(aes(x = TP53_pos_patients,y = DP))+
+  geom_boxplot()+
+  scale_y_log10()
+
+
+data_mut %>%
+  mutate(TP53_pos_patients = ifelse(immucan_id %in% TP53_pos,"TP53_mutated", "TP53_wildtype")) %>%
+  ggplot(aes(x = TP53_pos_patients,y = DP))+
+  geom_boxplot()+
+  scale_y_log10()
+
+data_mut %>%
+  mutate(TP53_pos_patients = ifelse(immucan_id %in% TP53_pos,"TP53_mutated", "TP53_wildtype")) %>%
+  ggplot(aes(x = TP53_pos_patients,y = DP))+
+  geom_boxplot()+
+  scale_y_log10()
+
+```
+
+Y220C mutation
+
+```{r}
+data_mut %>%
+  filter(Gene == "TP53",
+         grepl("220",HGVS_C)) 
+
+NSCLC1 <- read.csv("/mnt/immucan_volume/processed_data/NSCLC_cohort/output/WES/Rout/mutations_all.csv")
+NSCLC1 %>%
+  filter(gene == "TP53")
+         grepl("818",HGVS_C)) 
+```
+
+# PON files
+all evidence points towards the fact that there are potentially more TP53 variations in the PONs and this will generate uncertainty for the variant caller.
+We will check how many sites in the PONs overlap TP53 -> how many mutations were detected for TP53 in the PON?
+Then repeat for KRAS.
+If there are significantly more for TP53 then this supports that the idea that variants will not be called in the tumor if they are already in the PON.
+```{r}
+library(VariantAnnotation)
+library(GenomicRanges)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(org.Hs.eg.db)
+pon_f <- readVcf("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/PONs/pon_female.vcf.gz", genome = "hg38")
+pon_m <-readVcf("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/PONs/pon_male.vcf.gz", genome = "hg38")
+
+
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+genes_gr <- genes(txdb)
+
+tp53_id <- mapIds(org.Hs.eg.db, "TP53", "ENTREZID", "SYMBOL")
+kras_id <- mapIds(org.Hs.eg.db, "KRAS", "ENTREZID", "SYMBOL")
+
+tp53_gr <- genes_gr[names(genes_gr) == tp53_id]
+kras_gr <- genes_gr[names(genes_gr) == kras_id]
+
+c(
+  female_tp53 = length(subsetByOverlaps(rowRanges(pon_f), tp53_gr)),
+  male_tp53   = length(subsetByOverlaps(rowRanges(pon_m), tp53_gr)),
+  female_kras = length(subsetByOverlaps(rowRanges(pon_f), kras_gr)),
+  male_kras   = length(subsetByOverlaps(rowRanges(pon_m), kras_gr))
+)
+
+seqlevels(rowRanges(pon_f))[1:5]
+seqlevels(tp53_gr)
+seqlevels(pon_f)
+
+length(rowRanges(pon_f))
+length(rowRanges(pon_m))
+table(seqnames(rowRanges(pon_f)))
+table(seqnames(rowRanges(pon_m)))
+```
+

@@ -153,6 +153,7 @@ unique(dat_t$immucan_id)
 dat_t
 dat <- left_join(dat_t,clin_dat[,c("immucan_id","simple_stage", "simple_histology")],"immucan_id")
 
+dim(dat)
 
 sigs <- dat_t %>%
   pivot_longer(-immucan_id) %>%
@@ -189,7 +190,7 @@ p2 <- dat_t %>%
   pivot_longer(-immucan_id) %>%
   mutate(tech = str_split_i(name,"__",2)) %>%
   left_join(clin_dat,"immucan_id") %>%
-  filter(simple_histology == "Squamous cell carcinoma") %>%
+  filter(simple_histology == "Adenocarcinoma") %>%
   select(immucan_id,name, value,simple_stage, tech) %>%
   mutate(stage = ifelse(simple_stage == "I",1,NA),
          stage = ifelse(simple_stage == "II",2,stage),
@@ -197,8 +198,8 @@ p2 <- dat_t %>%
          stage = ifelse(simple_stage == "IV",4,stage),
          stage = as.numeric(as.factor(stage)),
          name = gsub(pattern = "density_",replacement = "",x = name)) %>%
-  #filter(name %in% summary_dat$name,
-  #       stage != 4) %>%
+  filter(#name %in% summary_dat$name,
+         stage != 4) %>%
   ggplot(aes(x = name,y = log10(value+1),fill=as.factor(stage))) +
   geom_boxplot(outliers = FALSE)+
   geom_jitter(aes(col = as.factor(stage)),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+

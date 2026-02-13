@@ -1,0 +1,295 @@
+---
+title: "mutation calling from vcf"
+author: "Daniel Schulz"
+date: "2026-02-10"
+output: html_document
+---
+
+in this script we will read in the vcf files, clean them and merge them. The original code to read the vcfs was written for a snakeMake pipeline by Sergi Beneyto and adapted here for a pure R script.
+
+the data was downloaded from the ftp using:
+`mget *_vs_IMMU-NSCLC*/design.csv`
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(ggtext)
+```
+
+# selected genes for NSCLC 
+
+```{r}
+genes_sel <- c("KRAS", "EGFR", "BRAF", "MET", "ALK", "ROS", "RET", "NTRK", "NRG1", "FGFR1", "FGFR2", "HRAS", "NRAS", "MAP2K1", "ERBB2", "ROS1", "PIK3CA", "NTRK1", "STK11")
+genes_sup <- c("TP53", "KEAP1","STK11","RB1","CDKN2A", "CDKN2B","NKX2", "NF1")
+
+genes_sel <- c(genes_sel, genes_sup)
+```
+
+# availability of data vcf
+```{r}
+vcf_files <- list.files("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/vcf_mutect2/", pattern = "COSMIC_CancerHotspots_GnomAD_dbNSFP_#_.*.vcf.gz$")
+
+# exclude PON files
+vcf_files <- vcf_files[!grepl("_PON_", vcf_files)]
+
+# get unique patient ids
+vcf_samps <- str_split_i(vcf_files, "-DNA",1)
+
+# samples
+cat("unique number of WES samples with vcf files",length(vcf_samps), "\n")
+
+
+# duplicated samples
+cat("duplicated samples: \n")
+vcf_samps[duplicated(vcf_samps)]
+
+# patient samples
+vcf_pats <- str_split_i(vcf_samps,"-FIXT",1)
+cat("duplicated patients: \n")
+vcf_pats[duplicated(vcf_pats)]
+```
+
+# design files availabe
+```{r}
+cur_files <- list.files("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/design",pattern = "*.design.csv")
+des_files <- str_split_i(cur_files,"-FIXT",1)
+
+cat("unique number of patients for which design files are available",length(unique(des_files)),"\n")
+
+# overlap with vcf files - 
+cat("are all patient found in design and vcf:",all(unique(des_files) %in% unique(vcf_pats)),"\n")
+# there is one extra design file for which the vcf is not available
+cat("patient for which no vcf is available:",unique(des_files)[!unique(des_files) %in% unique(vcf_pats)],"\n")
+cat("all vcf files do have a design file:",all(unique(vcf_pats) %in% unique(des_files)),"\n")
+# all TRUE
+```
+
+
+# Design matrix
+downloaded the design files from the vegan directory using: `mget *_vs_IMMU-NSCLC*/design.csv`
+```{r, warning=FALSE}
+cur_files <- list.files("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/design",pattern = "*.design.csv",full.names = TRUE)
+
+files <- lapply(cur_files, read.csv)
+lapply(files, colnames)
+cur_dat <- do.call(rbind, files)
+
+tumor_ids <- cur_dat$TUMOR_ID
+ref <- cur_dat$GERMLINE_ID
+```
+
+# read vcf files
+```{r, message=FALSE,results='hide'}
+library(vcfR)
+source("~/Git/NSCLC2_retrospective/WES/analysis/read_vcf.R")
+vcf_files <- list.files("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/vcf_mutect2/", pattern = "COSMIC_CancerHotspots_GnomAD_dbNSFP_#_.*.vcf.gz$", full.names = TRUE)
+
+
+vcf_list <- lapply(vcf_files, read_vcf)
+
+data_mut <- do.call(rbind, vcf_list)
+
+cat("did we find mutations for all patients:",all(des_files %in% unique(data_mut$immucan_id)))
+
+# separate allelic depth column
+data_mut <- data_mut %>%
+  separate(col = gt_AD,into = c("ref_counts","var_counts"),sep = ",")
+```
+
+## Functional filter
+
+```{r fig.height=15}
+data_plot <- data_mut %>% 
+  group_by(type) %>% 
+  dplyr::count() %>% 
+  as.data.frame()
+
+ggplot(data=data_plot, aes(x=reorder(type,-n), y=n)) +
+  geom_bar(stat="identity", fill="grey") +
+  theme(axis.text.x = element_markdown(angle = 90, vjust = 0.5, hjust=1), axis.title.x = element_blank()) +
+  scale_y_log10()
+```
+
+Keep following functional annotations
+
+```{r}
+data_mut <- data_mut %>%
+  mutate(type = ifelse(grepl("stop_gained",type),"stop_gained",type),
+         type = ifelse(grepl("stop_lost",type),"stop_lost",type),
+         type = ifelse(grepl("start_lost",type),"start_lost",type),
+         type = ifelse(grepl("frameshift_variant",type),"frameshift_variant",type),
+         type = ifelse(grepl("disruptive_inframe_deletion",type),"disruptive_inframe_deletion",type),
+         type = ifelse(grepl("splice_acceptor_variant",type),"splice_acceptor_variant",type),
+         type = ifelse(grepl("splice_donor_variant",type),"splice_donor_variant",type),
+         type = ifelse(grepl("missense_variant",type),"missense_variant",type),
+         type = gsub("intron_variant&|intron_variant|&intron_variant|&intron_variant&","", type),
+         type = gsub("conservative_inframe_deletion&|conservative_inframe_insertion&","", type),
+         type = gsub("synonymous_variant|&synonymous_variant","", type))
+unique(data_mut$type)
+
+# remove non effective mutations
+data_mut <- data_mut %>%
+  filter(type != "")
+
+data_plot <- data_mut %>% 
+  group_by(type) %>% 
+  dplyr::count() %>% 
+  as.data.frame()
+
+ggplot(data=data_plot, aes(x=reorder(type,-n), y=n)) +
+  geom_bar(stat="identity") +
+  theme(axis.text.x = element_markdown(angle = 90, vjust = 0.5, hjust=1), axis.title.x = element_blank()) +
+  scale_y_log10() +
+  ggtitle("Functions in green are kept for analysis")
+```
+
+
+```{r fig.height=13}
+unique(data_mut$type)
+keep_func = c("missense_variant", 
+              "stop_gained", 
+            #  "synonymous_variant", 
+            #  "downstream_gene_variant", 
+              "disruptive_inframe_insertion",
+            #  "upstream_gene_variant",
+              "frameshift_variant",
+            #  "intron_variant",
+            #  "non_coding_transcript_exon_variant",
+            #  "splice_donor_variant&intron_variant",
+              "disruptive_inframe_deletion",
+            #  "5_prime_UTR_variant",
+              "missense_variant&splice_region_variant",
+            #  "intergenic_region",
+              "stop_gained&splice_region_variant",
+              "start_lost",
+              "5_prime_UTR_premature_start_codon_gain_variant",
+              "conservative_inframe_deletion",
+              "frameshift_variant&stop_gained",
+            #  "3_prime_UTR_variant",
+            #  "splice_region_variant&intron_variant",
+            #  "splice_region_variant&synonymous_variant",
+              "stop_lost",
+            #  "splice_region_variant",
+              "conservative_inframe_insertion",
+            #  "splice_acceptor_variant&splice_region_variant&intron_variant",
+              "frameshift_variant&splice_region_variant",
+            #  "synonymous_variant",
+            #  "downstream_gene_variant",
+            #  "upstream_gene_variant",
+            #  "intron_variant",
+            #  "non_coding_transcript_exon_variant",
+            #  "splice_donor_variant&intron_variant",
+            #  "5_prime_UTR_variant",
+              "missense_variant&splice_region_variant",
+            #  "intergenic_region",
+              "stop_gained&splice_region_variant", #!
+            #  "3_prime_UTR_variant",
+            #  "splice_region_variant&intron_variant",
+            #  "splice_region_variant&synonymous_variant",
+              "splice_region_variant",
+            #  "splice_acceptor_variant&splice_region_variant&intron_variant",
+            #  "frameshift_variant&splice_region_variant",
+            #  "splice_donor_variant&missense_variant&splice_region_variant&intron_variant",
+            #  "splice_region_variant&non_coding_transcript_exon_variant",
+            #  "frameshift_variant&splice_donor_variant&splice_region_variant&intron_variant",
+            #  "stop_retained_variant",
+            #  "splice_acceptor_variant&intron_variant",
+              "stop_gained&disruptive_inframe_deletion",
+            #  "splice_acceptor_variant&splice_donor_variant&intron_variant",
+              "initiator_codon_variant",
+              "stop_lost&splice_region_variant", #!
+              "frameshift_variant&splice_acceptor_variant&splice_region_variant&intron_variant", #!
+              "splice_acceptor_variant&missense_variant&splice_region_variant&intron_variant", #!
+              "splice_acceptor_variant&disruptive_inframe_deletion&splice_region_variant&intron_variant", #!
+              "splice_acceptor_variant&conservative_inframe_deletion&splice_region_variant&intron_variant", #!
+              "splice_donor_variant&conservative_inframe_deletion&splice_region_variant&intron_variant", #!
+              "disruptive_inframe_deletion&splice_region_variant",
+            #  "splice_donor_variant&splice_region_variant&intron_variant",
+              "stop_lost&conservative_inframe_deletion",
+              "frameshift_variant&stop_lost",
+              "conservative_inframe_deletion&splice_region_variant",
+              "frameshift_variant&start_lost",
+              "splice_donor_variant&disruptive_inframe_deletion&splice_region_variant&intron_variant", #!
+              "start_lost&splice_region_variant",
+              "stop_gained&disruptive_inframe_insertion",
+              "splice_acceptor_variant&splice_donor_variant&disruptive_inframe_deletion&splice_region_variant&intron_variant", #!
+              "exon_loss_variant&splice_acceptor_variant&splice_donor_variant&splice_region_variant&intron_variant", #!
+              "disruptive_inframe_insertion&splice_region_variant",
+              "stop_gained&splice_donor_variant&splice_region_variant&intron_variant", #!
+              "bidirectional_gene_fusion",
+              "start_lost&conservative_inframe_deletion",
+            #  "splice_donor_variant&splice_region_variant&synonymous_variant&intron_variant",
+              "stop_lost&disruptive_inframe_deletion",
+              "stop_gained&splice_donor_variant&disruptive_inframe_deletion&splice_region_variant&intron_variant", #!
+              "stop_gained&conservative_inframe_insertion",
+              "frameshift_variant&stop_lost&splice_region_variant",
+            #  "splice_donor_variant&5_prime_UTR_variant&intron_variant",
+              "stop_lost&conservative_inframe_deletion&splice_region_variant",
+              "start_lost&conservative_inframe_insertion",
+            #  "splice_acceptor_variant&splice_region_variant&intron_variant&non_coding_transcript_exon_variant",
+              "frameshift_variant&start_lost&splice_region_variant",
+              "start_lost&disruptive_inframe_deletion",
+            #  "start_retained_variant",
+              "stop_gained&disruptive_inframe_insertion&splice_region_variant",
+              "stop_gained&disruptive_inframe_deletion&splice_region_variant",
+              "stop_lost&3_prime_UTR_truncation&exon_loss_variant&conservative_inframe_deletion&splice_region_variant",
+            #  "splice_region_variant&stop_retained_variant",
+              "stop_gained&splice_acceptor_variant&splice_region_variant&intron_variant", #!
+            #  "splice_acceptor_variant&splice_region_variant&5_prime_UTR_variant&intron_variant",
+            #  "splice_donor_variant&splice_region_variant&intron_variant&non_coding_transcript_exon_variant",
+              "frameshift_variant&stop_gained&splice_region_variant",
+              "stop_gained&conservative_inframe_insertion&splice_region_variant",
+              "start_lost&conservative_inframe_deletion&splice_region_variant"
+            )
+
+data_plot$keep <- ifelse(data_plot$type %in% keep_func,
+                         "keep",
+                         "remove"
+                         )
+
+data_plot$col_label <- ifelse(data_plot$keep == "keep", "darkgreen", "black")
+data_plot$xlabel <- glue::glue("<span style='color:{data_plot$col_label}'>{data_plot$type}</span>")
+
+ggplot(data=data_plot, aes(x=reorder(xlabel,-n), y=n, fill=keep)) +
+  geom_bar(stat="identity") +
+  theme(axis.text.x = element_markdown(angle = 90, vjust = 0.5, hjust=1), axis.title.x = element_blank()) +
+  scale_y_log10() +
+  scale_fill_manual(values = c("keep" = "darkgreen", "remove"="grey"), guide = FALSE ) +
+  ggtitle("Functions in green are kept for analysis")
+```
+ 
+```{r}
+data_mut$FILTER_type <- ifelse(data_mut$type %in% keep_func,
+                         "keep",
+                         "remove")
+```
+
+
+# QC
+
+## VAF 
+```{r}
+
+# cut off for ceoverage of 100 reads
+hist(data_mut$gt_DP, breaks = 100)
+abline(v = 100,col = "red")
+
+data_mut %>%
+  filter(gene %in% genes_sel,
+         FILTER_type == "keep",
+         ) %>%
+  ggplot(aes(x = gene,y = as.numeric(gt_AF)))+
+  geom_boxplot()+
+  geom_hline(yintercept = 0.05)+
+  theme(axis.text.x = element_text(angle = 90,vjust = 0.5,hjust = 1))
+
+```
+
+# save
+
+```{r}
+write.csv(x = data_mut,file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/Rout/20260210_mutations_all.csv",quote = FALSE,row.names = FALSE)
+```

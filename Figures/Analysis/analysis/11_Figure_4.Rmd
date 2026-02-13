@@ -292,7 +292,7 @@ p <- cur_dat %>%
   ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
   geom_point()+
   theme_bw()+
-  scale_colour_gradientn(colours = c("white","red"), 
+  scale_colour_gradientn(colours = c("blue","white","red"), 
                          values = rescale(c(round(min_down),0,round(max_up))),
                          guide = "colorbar", limits=c(round(min_down),round(max_up)))+
   scale_size(range = c(1,8))+

@@ -1,0 +1,917 @@
+---
+title: "Revision_Daniel"
+author: "Daniel Schulz"
+date: "2026-01-19"
+output: html_document
+---
+
+In this script we will investigate referee comments for revision
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(SingleCellExperiment)
+library(tidyverse)
+library(ggplot2)
+library(ComplexHeatmap)#
+library(pals)
+library(dendextend)
+```
+
+# abundance of CNs across patients
+
+How commen are the CNs?
+Do we observe them in each patient or are there very patient specific CNs
+Are some of the observed statistically significant differences based on outliers?
+
+```{r, fig.height=20, fig.width=20}
+# Create table with celltypes fractions
+mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
+cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
+cello_dens <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/cellohood_density_cellbased_p1.csv"))
+
+traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
+
+
+cello_dat <- cello_dens %>%
+  select(contains(c("immucan_id","CN")))
+
+cur_df <- cello_dat[,-1]/rowSums(cello_dat[,-1])
+cur_df$immucan_id <- cello_dat$immucan_id
+
+
+dat <- left_join(cur_df,traits,"immucan_id")
+
+# now we make a matix and cluster based on cell type fractions
+matrixrownames <- dat$immucan_id 
+
+# now we create a matrix from the data and cluster the data based on the cell fractions
+hm_dat = as.matrix(dat[,grepl("CN",colnames(dat))])
+
+rownames(hm_dat) <- as.character(matrixrownames)
+
+# calculate distance and then cluster images based on cluster fraction
+set.seed(1325)
+dd <- dist((hm_dat), method = "euclidean")
+hc <- hclust(dd, method = "ward.D2")
+row_sorted <- hc$labels
+
+
+mrownames <- traits$immucan_id
+traits <- as.matrix(traits)
+rownames(traits) <- mrownames
+traits <- data.frame(traits[row_sorted,])
+
+# generate the barplot. this is generated as the annotation for the heatmap of the Patient_ID that is generated below.
+hm_dat <- hm_dat[row_sorted,]
+colnames(hm_dat) <- paste0("CN_",colnames(hm_dat))
+# col vector for CN_knn30_15_minor_celltypes
+col_vec <- c(alphabet(n = 26),alphabet2(n = 10))
+col_vector = structure(col_vec,
+                       names= colnames(hm_dat))
+
+# generate dendrogram
+dend <- as.dendrogram(hc)
+#dend <- color_branches(dend, h = 1, col = glasbey(n = 5), groupLabels = TRUE) # `color_branches()` returns a dendrogram object
+#dend <- color_branches(dend, col = glasbey(n = 5),clusters = )
+
+metaclusters <- cutree(hc,h=0.8)[order.dendrogram(dend)]
+#define color vector 
+col_vector_metacluster <- structure(glasbey(n=length(unique(metaclusters))),
+                                    names = unique(metaclusters))
+
+dend <- dend %>% branches_attr_by_clusters(metaclusters,values = col_vector_metacluster)
+
+
+traits$metaclusters = metaclusters[traits$immucan_id]
+# 
+
+col_vector_Histology <- structure(c(glasbey()[6:11]), 
+                                 names = c("Adenocarcinoma", "Squamous cell carcinoma","Adenosquamous carcinoma","LCNEC","Other","unknown"))
+
+col_vector_simple_stage <- structure(c(glasbey()[12:15],glasbey()[16]), 
+                                 names = c("I", "II", "III","IV","Unknown"))
+
+col_vector_binary_stage <- structure(c("blue","red"), 
+                                 names = c("high_stage","low_stage"))
+
+col_vector_gender <- structure(c("purple","yellow"), 
+                                 names = c("Male","Female"))
+
+col_vector_Death <- structure(c("black","white"), 
+                                 names = c(1,0))
+
+col_vector_Smoker <- structure(glasbey()[5:7], 
+                                 names = c("Current smoker","Ex-smoker","Non-smoker"))
+
+ha <- rowAnnotation(Stage = traits[,c("simple_stage")],
+                    Histology = traits[,c("simple_histology")],
+                    Sex = traits[,"gender"],
+                    Death = traits[,"censoring"],
+                    Smoker = traits[,"smoking_status"],
+                    `Cell Type Proportion` =
+                      anno_barplot(hm_dat, 
+                                   gp=gpar(fill=col_vector),
+                                   bar_width = 1,
+                                   height = unit(25,"cm"),
+                                   width = unit(11,"cm"),
+                                   show_row_names = FALSE),
+                        col = list(Stage = col_vector_simple_stage,
+                                   Histology = col_vector_Histology,
+                                   Sex = col_vector_gender,
+                                   Death = col_vector_Death,
+                                   Smoker = col_vector_Smoker),
+                        show_legend = FALSE)
+
+
+
+
+# heatmap consisting of the patient_IDs. one color per patient
+h1 = Heatmap(traits[,c("metaclusters")], 
+             col = col_vector_metacluster, 
+             width = unit(0.5, "cm"), 
+             cluster_rows = dend,
+             row_dend_width = unit(1, "cm"),
+             height = unit(25, "cm"),
+             show_heatmap_legend = FALSE, 
+             heatmap_legend_param = list(title = "Stage"),
+             row_names_gp = gpar(cex=3),
+             show_row_names = TRUE,
+             right_annotation =  ha,
+             column_labels = "Metacluster")
+
+h1
+# add legend
+lgd1 <- Legend(labels = names(col_vector), 
+             title = "Cellohood 1", 
+             legend_gp = gpar(fill = col_vector),
+             ncol = 1)
+
+lgd2 <- Legend(labels = names(col_vector_metacluster),
+               legend_gp = gpar(fill = unname(col_vector_metacluster)),
+               title = "Metacluster",
+               ncol = 1)
+
+lgd3 <- Legend(labels = names(col_vector_simple_stage), 
+             legend_gp = gpar(fill = unname(col_vector_simple_stage)),
+             title = "Stage",
+             ncol = 1)
+
+lgd4 <- Legend(labels = names(col_vector_Histology), 
+             legend_gp = gpar(fill = unname(col_vector_Histology)),
+             title = "Histology",
+             ncol = 1)
+
+lgd5 <- Legend(labels = names(col_vector_gender), 
+             legend_gp = gpar(fill = unname(col_vector_gender)),
+             title = "Sex",
+             ncol = 1)
+
+lgd6 <- Legend(labels = names(col_vector_Death), 
+             legend_gp = gpar(fill = unname(col_vector_Death)),
+             title = "Death",
+             ncol = 1)
+
+
+lgd7 <- Legend(labels = names(col_vector_Smoker), 
+             legend_gp = gpar(fill = unname(col_vector_Smoker)),
+             title = "Smoker",
+             ncol = 1)
+
+pd = packLegend(lgd1, lgd2, lgd3, lgd4,lgd5,lgd6 , lgd7, direction = "vertical", max_height = unit(15, "cm"),
+    column_gap = unit(0.5, "cm"))
+
+# plot the data
+ht = grid.grabExpr(draw(h1))
+grid.newpage()
+pushViewport(viewport(x=unit(0.35,"npc"),y=unit(0.55,"npc"),angle = 270))
+grid.draw(ht)
+pushViewport(viewport(x = 0.5,y=0.9,angle = 90))
+grid.draw(pd)
+```
+
+distribution of CNs per patient
+```{r, fig.height=10, fig.width=  10}
+cur_df %>%
+  pivot_longer(cols = -immucan_id) %>%
+  #filter(name == "CN_35__cello1") %>%
+  ggplot(aes(x = value))+
+  geom_histogram()+
+  facet_wrap(.~name, scales = "free")
+```
+
+how many CNs are found at least in 10, 20, 30, 50 etc percent of patients
+We only count the CNs if they have a presence of 1 %
+
+```{r, fig.height=10}
+plot_dat <- left_join(cur_df, traits,"immucan_id")
+plot_dat <- plot_dat %>%
+  #filter(simple_histology == "Adenocarcinoma") %>%
+  select(contains(c("immucan_id","CN")))
+p.list <- list()
+for (i in c(seq(0.01,0.1,0.01))) {
+  p.list[[as.character(i)]] <- plot_dat %>%
+    
+    summarise(across(.cols = -immucan_id,.fns = function(x) x > i)) %>%
+    summarise(across(.cols = everything(),function(x) sum(x)/nrow(plot_dat)))
+
+}
+
+cur_dat <- do.call(rbind, p.list)
+
+cur_dat %>%
+  mutate(fraction = rownames(cur_dat)) %>%
+  pivot_longer(-fraction) %>%
+  #filter(name == "CN_5__cello1") %>%
+  ggplot(aes(x = fraction, y = value))+
+  geom_point()+
+  facet_wrap(.~name)+
+  geom_hline(yintercept = 0.5, col = "darkgreen")+
+  geom_hline(yintercept = 0.1, col = "red")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  xlab(label = "Minimal fraction the spatial cluster needs to be present in a patient")+
+  ylab("Fraction of patients with at least the minimal amount of the cluster")
+```
+LUSC
+```{r, fig.height=10}
+plot_dat <- left_join(cur_df, traits,"immucan_id")
+plot_dat <- plot_dat %>%
+  filter(simple_histology == "Squamous cell carcinoma") %>%
+  select(contains(c("immucan_id","CN")))
+p.list <- list()
+for (i in c(seq(0.01,0.1,0.01))) {
+  p.list[[as.character(i)]] <- plot_dat %>%
+    
+    summarise(across(.cols = -immucan_id,.fns = function(x) x > i)) %>%
+    summarise(across(.cols = everything(),function(x) sum(x)/nrow(plot_dat)))
+
+}
+
+cur_dat <- do.call(rbind, p.list)
+
+cur_dat %>%
+  mutate(fraction = rownames(cur_dat)) %>%
+  pivot_longer(-fraction) %>%
+  #filter(name == "CN_5__cello1") %>%
+  ggplot(aes(x = fraction, y = value))+
+  geom_point()+
+  facet_wrap(.~name)+
+  geom_hline(yintercept = 0.5, col = "darkgreen")+
+  geom_hline(yintercept = 0.1, col = "red")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  xlab(label = "Minimal fraction the spatial cluster needs to be present in a patient")+
+  ylab("Fraction of patients with at least the minimal amount of the cluster")
+```
+
+box plots
+```{r}
+plot_dat <- left_join(cur_df, traits,"immucan_id")
+w_test <- plot_dat %>%
+  select(contains(c("immucan_id","CN"))) %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(simple_histology %in% c("Adenocarcinoma","Squamous cell carcinoma")) %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(
+    # Wilcoxon test
+    test = map(data, ~ wilcox.test(value ~ simple_histology, data = .x)),
+    summary = map(test, broom::tidy),
+    
+    # Compute medians for fold change
+    medians = map(data, ~ .x %>%
+                    group_by(simple_histology) %>%
+                    summarise(median = median(value, na.rm = TRUE), .groups = "drop") %>%
+                    pivot_wider(names_from = simple_histology, values_from = median)
+                 ),
+    
+    # Compute fold change: TRUE / FALSE
+    #fold_change = map_dbl(medians, ~ .x$Adenocarinoma / .x$`Squamous cell carcinoma`)
+    LUAD_frac = map_dbl(medians, ~ .x$Adenocarcinoma),
+    LUSC_frac = map_dbl(medians, ~ .x$`Squamous cell carcinoma`)
+  ) %>%
+  select(name, summary, LUAD_frac, LUSC_frac) %>%
+  unnest(summary)
+
+w_test <- w_test %>%
+  mutate(test = "histology",
+         sig = p.value < 0.05) 
+
+w_test %>%
+  filter(sig == TRUE)
+```
+
+
+```{r, fig.height=8, fig.width=15}
+plot_dat %>%
+  filter(!is.na(LUAD_vs_LUSC)) %>%
+  pivot_longer(contains("CN")) %>%
+  mutate(value = value) %>%
+  ggplot(aes(x = name,y = value,fill = LUAD_vs_LUSC))+
+  geom_boxplot(outliers = FALSE)+
+  geom_jitter(aes(color = LUAD_vs_LUSC),position = position_jitterdodge(jitter.width = 0.2), size = 0.2)+
+  scale_fill_manual(values = alpha(c("red", "blue", "gray"),alpha = 0.6))+
+  scale_color_manual(values = c("red", "blue", "gray"))+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust = 1))+
+  coord_cartesian(ylim = c(0,0.25))
+```
+# fractions and densities for EGFR
+
+```{r, fig.height=8, fig.width=15}
+plot_dat <- left_join(cur_df, traits,"immucan_id")
+w_test <- plot_dat %>%
+  select(contains(c("immucan_id","CN"))) %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(simple_histology %in% c("Adenocarcinoma")) %>%
+  mutate(EGFR = ifelse(EGFR == TRUE, "mutated", "wildtype")) %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(
+    # Wilcoxon test
+    test = map(data, ~ wilcox.test(value ~ EGFR, data = .x)),
+    summary = map(test, broom::tidy),
+    
+    # Compute medians for fold change
+    medians = map(data, ~ .x %>%
+                    group_by(EGFR) %>%
+                    summarise(median = median(value, na.rm = TRUE), .groups = "drop") %>%
+                    pivot_wider(names_from = EGFR, values_from = median)
+                 ),
+    
+    # Compute fold change: TRUE / FALSE
+    #fold_change = map_dbl(medians, ~ .x$Adenocarinoma / .x$`Squamous cell carcinoma`)
+    mutated = map_dbl(medians, ~ .x$mutated),
+    wildtype = map_dbl(medians, ~ .x$wildtype)
+  ) %>%
+  select(name, summary, mutated, wildtype) %>%
+  unnest(summary)
+
+w_test <- w_test %>%
+  ungroup() %>%
+  mutate(test = "EGFR",
+         sig = p.value < 0.05,
+         FDR = p.adjust(p = p.value,method = "BH"),
+         FDR = ifelse(FDR < 0.1, "FDR < 0.1",""),
+         p.plot = ifelse(p.value < 0.001,"***",ifelse(p.value < 0.01, "**",ifelse(p.value < 0.05, "*","ns")))) 
+
+
+plot_dat %>%
+  filter(!is.na(EGFR)) %>%
+  pivot_longer(contains("CN")) %>%
+  ggplot(aes(x = name,y = value,fill = EGFR))+
+  geom_boxplot(outliers = FALSE)+
+  geom_jitter(aes(color = EGFR),position = position_jitterdodge(jitter.width = 0.2), size = 0.2)+
+  scale_fill_manual(values = alpha(c("red", "blue"),alpha = 0.6))+
+  scale_color_manual(values = c("red", "blue"))+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust = 1))+
+  coord_cartesian(ylim = c(0,0.25))
+
+
+# densities
+cello_dens <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/cellohood_density_cellbased_p1.csv"))
+
+traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
+dens <- left_join(cello_dens,traits,"immucan_id")
+
+
+w_test <- dens %>%
+  select(contains(c("immucan_id","CN"))) %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(simple_histology %in% c("Adenocarcinoma")) %>%
+  mutate(EGFR = ifelse(EGFR == TRUE, "mutated", "wildtype")) %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(
+    # Wilcoxon test
+    test = map(data, ~ wilcox.test(value ~ EGFR, data = .x)),
+    summary = map(test, broom::tidy),
+    
+    # Compute medians for fold change
+    medians = map(data, ~ .x %>%
+                    group_by(EGFR) %>%
+                    summarise(median = median(value, na.rm = TRUE), .groups = "drop") %>%
+                    pivot_wider(names_from = EGFR, values_from = median)
+                 ),
+    
+    # Compute fold change: TRUE / FALSE
+    #fold_change = map_dbl(medians, ~ .x$Adenocarinoma / .x$`Squamous cell carcinoma`)
+    mutated = map_dbl(medians, ~ .x$mutated),
+    wildtype = map_dbl(medians, ~ .x$wildtype)
+  ) %>%
+  select(name, summary, mutated, wildtype) %>%
+  unnest(summary)
+
+w_test <- w_test %>%
+  ungroup() %>%
+  mutate(test = "EGFR",
+         sig = p.value < 0.05,
+         FDR = p.adjust(p = p.value,method = "BH"),
+         FDR = ifelse(FDR < 0.1, "FDR < 0.1",""),
+         p.plot = ifelse(p.value < 0.001,"***",ifelse(p.value < 0.01, "**",ifelse(p.value < 0.05, "*","ns")))) 
+
+w_test %>%
+  filter(sig == TRUE)
+
+
+dens %>%
+  filter(!is.na(EGFR),
+         simple_histology == "Adenocarcinoma") %>%
+  pivot_longer(cols = contains("CN")) %>%
+  mutate(value = value + 0.1) %>%
+  ggplot(aes(x = name,y = value,fill = EGFR))+
+  geom_boxplot(outliers = FALSE)+
+  geom_jitter(aes(color = EGFR),position = position_jitterdodge(jitter.width = 0.2), size = 0.2)+
+  scale_fill_manual(values = alpha(c("red", "blue"),alpha = 0.6))+
+  scale_color_manual(values = c("red", "blue"))+
+  geom_text(data = w_test, aes(x = name,y=10000,label = p.plot), inherit.aes = FALSE,size = 4)+
+  geom_text(data = w_test, aes(x = name,y=14000,label = FDR), inherit.aes = FALSE,size = 2)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust = 1))+
+  ylab("Log10 density [mm2]")+
+  scale_y_log10()
+```
+
+patients with 10 cells per mm2
+100 cells mm2 
+```{r}
+dens %>%
+  pivot_longer(cols = contains("CN")) %>%
+  rowwise() %>%
+  mutate(min10 = value > 10,
+         min50 = value > 50,
+         min100 = value > 100) %>%
+  group_by(name) %>%
+  summarise(min_10 = sum(min10)/nrow(dens),
+            min_50 = sum(min50)/nrow(dens),
+            min_100 = sum(min100)/nrow(dens))
+  
+hist(log10(dens$CN_13), breaks = 100, main = "CN_13 density across samples")
+abline(v = 1, col = "red", lwd = 2)
+abline(v = 2, col = "blue", lwd = 2)
+
+hist(log10(dens$CN_17), breaks = 100, main = "CN_17 density across samples")
+abline(v = 1, col = "red", lwd = 2)
+abline(v = 2, col = "blue", lwd = 2)
+```
+
+# densities for histology
+```{r}
+dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
+w_test <- dens_dat %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(simple_histology %in% c("Adenocarcinoma","Squamous cell carcinoma")) %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(
+    # Wilcoxon test
+    test = map(data, ~ wilcox.test(value ~ simple_histology, data = .x)),
+    summary = map(test, broom::tidy),
+    
+    # Compute medians for fold change
+    medians = map(data, ~ .x %>%
+                    group_by(simple_histology) %>%
+                    summarise(median = median(value, na.rm = TRUE), .groups = "drop") %>%
+                    pivot_wider(names_from = simple_histology, values_from = median)
+                 ),
+    
+    # Compute fold change: TRUE / FALSE
+    #fold_change = map_dbl(medians, ~ .x$Adenocarinoma / .x$`Squamous cell carcinoma`)
+    LUAD_dens = map_dbl(medians, ~ .x$Adenocarcinoma),
+    LUSC_dens = map_dbl(medians, ~ .x$`Squamous cell carcinoma`)
+  ) %>%
+  select(name, summary, LUAD_dens, LUSC_dens) %>%
+  unnest(summary)
+
+w_test <- w_test %>%
+  mutate(test = "histology",
+         sig = p.value < 0.05) 
+
+sig_markers <- w_test %>%
+  filter(sig == TRUE) %>%
+  #filter(grepl("IF", name)) %>%
+  pull(name)
+```
+
+
+```{r, fig.width=15}
+histology <- dens_dat %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(simple_histology %in% c("Adenocarcinoma","Squamous cell carcinoma"),
+         name %in% sig_markers) %>%
+  ggplot(aes(x = name, y = value,fill = simple_histology))+
+  geom_boxplot(outliers = FALSE)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  scale_y_log10()
+```
+
+
+# densities for smoking
+```{r}
+dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
+w_test <- dens_dat %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(smoking_status %in% c("Current smoker","Non-smoker")) %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(
+    # Wilcoxon test
+    test = map(data, ~ wilcox.test(value ~ smoking_status, data = .x)),
+    summary = map(test, broom::tidy),
+    
+    # Compute medians for fold change
+    medians = map(data, ~ .x %>%
+                    group_by(smoking_status) %>%
+                    summarise(median = median(value, na.rm = TRUE), .groups = "drop") %>%
+                    pivot_wider(names_from = smoking_status, values_from = median)
+                 ),
+    
+    # Compute fold change: TRUE / FALSE
+    #fold_change = map_dbl(medians, ~ .x$Adenocarinoma / .x$`Squamous cell carcinoma`)
+    smoker = map_dbl(medians, ~ .x$`Current smoker`),
+    non_smoker = map_dbl(medians, ~ .x$`Non-smoker`)
+  ) %>%
+  select(name, summary, smoker, non_smoker) %>%
+  unnest(summary)
+
+w_test <- w_test %>%
+  mutate(test = "histology",
+         sig = p.value < 0.05) 
+
+sig_markers <- w_test %>%
+  filter(sig == TRUE) %>%
+  #filter(grepl("IF", name)) %>%
+  pull(name)
+```
+
+
+```{r, fig.width=15}
+smoking <- dens_dat %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(smoking_status %in% c("Current smoker","Non-smoker"),
+         name %in% sig_markers) %>%
+  ggplot(aes(x = name, y = value,fill = smoking_status))+
+  geom_boxplot(outliers = FALSE)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  scale_y_log10()
+```
+
+# densities for TPS
+```{r}
+dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
+w_test <- dens_dat %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(TPS_score %in% c("positive","negative")) %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(
+    # Wilcoxon test
+    test = map(data, ~ wilcox.test(value ~ TPS_score, data = .x)),
+    summary = map(test, broom::tidy),
+    
+    # Compute medians for fold change
+    medians = map(data, ~ .x %>%
+                    group_by(TPS_score) %>%
+                    summarise(median = median(value, na.rm = TRUE), .groups = "drop") %>%
+                    pivot_wider(names_from = TPS_score, values_from = median)
+                 ),
+    
+    # Compute fold change: TRUE / FALSE
+    #fold_change = map_dbl(medians, ~ .x$Adenocarinoma / .x$`Squamous cell carcinoma`)
+    positive = map_dbl(medians, ~ .x$positive),
+    negative = map_dbl(medians, ~ .x$negative)
+  ) %>%
+  select(name, summary, positive, negative) %>%
+  unnest(summary)
+
+w_test <- w_test %>%
+  mutate(test = "TPS",
+         sig = p.value < 0.05) 
+
+sig_markers <- w_test %>%
+  filter(sig == TRUE) %>%
+  #filter(grepl("IF", name)) %>%
+  pull(name)
+```
+
+
+```{r, fig.width=15}
+dens_dat %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(TPS_score %in% c("negative","positive"),
+         name %in% sig_markers,
+         grepl("IMC2", name)) %>%
+  ggplot(aes(x = name, y = value,fill = TPS_score))+
+  geom_boxplot(outliers = FALSE)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  scale_y_log10()
+```
+
+
+
+# densities for TPS
+```{r}
+dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
+w_test <- dens_dat %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(TPS_score %in% c("positive","negative")) %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(
+    # Wilcoxon test
+    test = map(data, ~ wilcox.test(value ~ TPS_score, data = .x)),
+    summary = map(test, broom::tidy),
+    
+    # Compute medians for fold change
+    medians = map(data, ~ .x %>%
+                    group_by(TPS_score) %>%
+                    summarise(median = median(value, na.rm = TRUE), .groups = "drop") %>%
+                    pivot_wider(names_from = TPS_score, values_from = median)
+                 ),
+    
+    # Compute fold change: TRUE / FALSE
+    #fold_change = map_dbl(medians, ~ .x$Adenocarinoma / .x$`Squamous cell carcinoma`)
+    positive = map_dbl(medians, ~ .x$positive),
+    negative = map_dbl(medians, ~ .x$negative)
+  ) %>%
+  select(name, summary, positive, negative) %>%
+  unnest(summary)
+
+w_test <- w_test %>%
+  mutate(test = "TPS",
+         sig = p.value < 0.05) 
+
+sig_markers <- w_test %>%
+  filter(sig == TRUE) %>%
+  #filter(grepl("IF", name)) %>%
+  pull(name)
+```
+
+
+```{r, fig.width=15}
+TPS <- dens_dat %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(TPS_score %in% c("negative","positive"),
+         name %in% sig_markers) %>%
+  ggplot(aes(x = name, y = value,fill = TPS_score))+
+  geom_boxplot(outliers = FALSE)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  scale_y_log10()
+```
+
+
+
+# densities for EGFR
+```{r}
+dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
+w_test <- dens_dat %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(EGFR %in% c(FALSE,TRUE),
+         simple_histology == "Adenocarcinoma") %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(
+    # Wilcoxon test
+    test = map(data, ~ wilcox.test(value ~ EGFR, data = .x)),
+    summary = map(test, broom::tidy),
+    
+    # Compute medians for fold change
+    medians = map(data, ~ .x %>%
+                    group_by(EGFR) %>%
+                    summarise(median = median(value, na.rm = TRUE), .groups = "drop") %>%
+                    pivot_wider(names_from = EGFR, values_from = median, names_prefix = "EGFR_")
+                 ),
+    
+    # Compute fold change: TRUE / FALSE
+    #fold_change = map_dbl(medians, ~ .x$Adenocarinoma / .x$`Squamous cell carcinoma`)
+    EGFR_TRUE = map_dbl(medians, ~ .x$EGFR_TRUE),
+    EGFR_FALSE = map_dbl(medians, ~ .x$EGFR_FALSE)
+  ) %>%
+  select(name, summary, EGFR_TRUE, EGFR_FALSE) %>%
+  unnest(summary)
+
+w_test <- w_test %>%
+  mutate(test = "EGFR",
+         sig = p.value < 0.05) 
+
+sig_markers <- w_test %>%
+  filter(sig == TRUE) %>%
+  #filter(grepl("IF", name)) %>%
+  pull(name)
+```
+
+
+```{r, fig.width=15}
+EGFR <- dens_dat %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(EGFR %in% c(FALSE,TRUE),
+         simple_histology == "Adenocarcinoma",
+         name %in% sig_markers) %>%
+  ggplot(aes(x = name, y = value,fill = EGFR))+
+  geom_boxplot(outliers = FALSE)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  scale_y_log10()
+```
+
+
+# densities for KRAS
+```{r}
+dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
+w_test <- dens_dat %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(KRAS %in% c(FALSE,TRUE),
+         simple_histology == "Adenocarcinoma") %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(
+    # Wilcoxon test
+    test = map(data, ~ wilcox.test(value ~ KRAS, data = .x)),
+    summary = map(test, broom::tidy),
+    
+    # Compute medians for fold change
+    medians = map(data, ~ .x %>%
+                    group_by(KRAS) %>%
+                    summarise(median = median(value, na.rm = TRUE), .groups = "drop") %>%
+                    pivot_wider(names_from = KRAS, values_from = median, names_prefix = "KRAS_")
+                 ),
+    
+    # Compute fold change: TRUE / FALSE
+    #fold_change = map_dbl(medians, ~ .x$Adenocarinoma / .x$`Squamous cell carcinoma`)
+    KRAS_TRUE = map_dbl(medians, ~ .x$KRAS_TRUE),
+    KRAS_FALSE = map_dbl(medians, ~ .x$KRAS_FALSE)
+  ) %>%
+  select(name, summary, KRAS_TRUE, KRAS_FALSE) %>%
+  unnest(summary)
+
+w_test <- w_test %>%
+  mutate(test = "KRAS",
+         sig = p.value < 0.05) 
+
+sig_markers <- w_test %>%
+  filter(sig == TRUE) %>%
+  #filter(grepl("IF", name)) %>%
+  pull(name)
+```
+
+
+```{r, fig.width=15}
+KRAS <- dens_dat %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(KRAS %in% c(FALSE,TRUE),
+         simple_histology == "Adenocarcinoma") %>%
+  filter(name %in% sig_markers) %>%
+  #filter(grepl("PDL1",name)) %>%
+  ggplot(aes(x = name, y = value,fill = KRAS))+
+  geom_boxplot(outliers = FALSE)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  scale_y_log10()
+```
+# densities for TP53_LUAD
+```{r}
+dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
+w_test <- dens_dat %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(TP53 %in% c(FALSE,TRUE),
+         simple_histology == "Adenocarcinoma") %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(
+    # Wilcoxon test
+    test = map(data, ~ wilcox.test(value ~ TP53, data = .x)),
+    summary = map(test, broom::tidy),
+    
+    # Compute medians for fold change
+    medians = map(data, ~ .x %>%
+                    group_by(TP53) %>%
+                    summarise(median = median(value, na.rm = TRUE), .groups = "drop") %>%
+                    pivot_wider(names_from = TP53, values_from = median, names_prefix = "TP53_")
+                 ),
+    
+    # Compute fold change: TRUE / FALSE
+    #fold_change = map_dbl(medians, ~ .x$Adenocarinoma / .x$`Squamous cell carcinoma`)
+    TP53_TRUE = map_dbl(medians, ~ .x$TP53_TRUE),
+    TP53_FALSE = map_dbl(medians, ~ .x$TP53_FALSE)
+  ) %>%
+  select(name, summary, TP53_TRUE, TP53_FALSE) %>%
+  unnest(summary)
+
+w_test <- w_test %>%
+  mutate(test = "TP53",
+         sig = p.value < 0.05) 
+
+sig_markers <- w_test %>%
+  filter(sig == TRUE) %>%
+  #filter(grepl("IF", name)) %>%
+  pull(name)
+```
+
+
+```{r, fig.width=15}
+TP53_LUAD <- dens_dat %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(TP53 %in% c(FALSE,TRUE),
+         simple_histology == "Adenocarcinoma") %>%
+  filter(name %in% sig_markers) %>%
+  #filter(grepl("PDL1",name)) %>%
+  ggplot(aes(x = name, y = value,fill = TP53))+
+  geom_boxplot(outliers = FALSE)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  scale_y_log10()
+```
+
+
+# densities for TP53_LUSC
+```{r}
+dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
+w_test <- dens_dat %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(TP53 %in% c(FALSE,TRUE),
+         simple_histology == "Squamous cell carcinoma") %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(
+    # Wilcoxon test
+    test = map(data, ~ wilcox.test(value ~ TP53, data = .x)),
+    summary = map(test, broom::tidy),
+    
+    # Compute medians for fold change
+    medians = map(data, ~ .x %>%
+                    group_by(TP53) %>%
+                    summarise(median = median(value, na.rm = TRUE), .groups = "drop") %>%
+                    pivot_wider(names_from = TP53, values_from = median, names_prefix = "TP53_")
+                 ),
+    
+    TP53_TRUE = map_dbl(medians, ~ .x$TP53_TRUE),
+    TP53_FALSE = map_dbl(medians, ~ .x$TP53_FALSE)
+  ) %>%
+  select(name, summary, TP53_TRUE, TP53_FALSE) %>%
+  unnest(summary)
+
+w_test <- w_test %>%
+  mutate(test = "TP53",
+         sig = p.value < 0.05) 
+
+sig_markers <- w_test %>%
+  filter(sig == TRUE) %>%
+  #filter(grepl("IF", name)) %>%
+  pull(name)
+```
+
+
+```{r, fig.width=15}
+TP53_LUSC <- dens_dat %>%
+  pivot_longer(cols = -immucan_id) %>%
+  left_join(traits,"immucan_id") %>%
+  filter(TP53 %in% c(FALSE,TRUE),
+         simple_histology == "Squamous cell carcinoma") %>%
+  filter(name %in% sig_markers) %>%
+  #filter(grepl("PDL1",name)) %>%
+  ggplot(aes(x = name, y = value,fill = TP53))+
+  geom_boxplot(outliers = FALSE)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  scale_y_log10()
+```
+
+#plots
+```{r, fig.height=10, fig.width=20}
+histology
+smoking
+TPS
+EGFR
+KRAS
+TP53_LUAD
+TP53_LUSC
+```
+
