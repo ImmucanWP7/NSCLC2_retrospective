@@ -104,8 +104,19 @@ write.csv(PDL1_score,file = paste0(out_folder,"PDL1_score",".csv"), row.names = 
 ```{r}
 # this is the old mutation file from before the VAF integration
 #mut_new <- read.csv(paste0(mount_path,"data/WES/data/Rout/NSCLC2_mutation_matrix.csv"))
-mut_new <- read.csv(paste0(mount_path,"data/WES/data/Rout/NSCLC2_mutation_matrix.csv"))
-mut_new <- mut_new[,-1]
+mut_new <- read.csv(paste0(mount_path,"data/WES/data/Rout/20260210_mutations_all.csv"))
+# Matrix
+mut_new <- mut_new %>%
+  filter(if_all(starts_with("FILTER_"), ~ . == "keep"),
+         COSMIC == TRUE) %>%
+  dplyr::rename(Gene = gene)
+
+mut_new <- mut_new %>%
+  group_by(immucan_id, Gene, .drop = FALSE) %>%
+  dplyr::count() %>%
+  pivot_wider(names_from = immucan_id, values_from = n, values_fill = 0) %>%
+  ungroup()
+
 
 mut_new <- mut_new %>%
   mutate(Gene_Name = Gene) %>%
