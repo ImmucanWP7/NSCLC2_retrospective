@@ -51,11 +51,22 @@ clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSC
 ```
 
 ## tmb
+we will export the new TMB scores. the new TMB scores are lower but correlate highly with the previous scores.
 ```{r}
-tmb <- read_csv(paste0(mount_path,"data/WES/data/Rout/NSCLC2_TMB.csv"))
+tmb2 <- read_tsv(paste0(mount_path,"data/WES/data/molecular_scores.tsv"))
+tmb2 <- tmb2 %>%
+  mutate(immucan_id = str_split_i(pattern = "-FIXT",tumor_sample_id,1))
+tmb1 <- read_csv(paste0(mount_path,"data/WES/data/Rout/NSCLC2_TMB.csv"))
 
-tmb <- tmb %>%
-  mutate(immucan_id = str_split_i(PAIR_ID,"-FIXT",1)) %>%
+TMB <- left_join(tmb1,tmb2,"immucan_id")
+
+TMB %>%
+  ggplot(aes(x = TMB,y = tmb))+
+  geom_point()+
+  geom_abline(slope = 1)
+tmb <- tmb2 %>%
+  mutate(immucan_id = str_split_i(pattern = "-FIXT",tumor_sample_id,1)) %>%
+  dplyr::rename(TMB = tmb) %>%
   select(immucan_id,TMB) %>%
   arrange(immucan_id) %>%
   mutate(TMB_score = ifelse(TMB > 10, "high","low"))
