@@ -1,0 +1,1057 @@
+---
+title: "GO in smokers"
+author: "Daniel Schulz"
+date: "2026-02-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tidyverse)
+library(ggpubr)
+library(SingleCellExperiment)
+library(edgeR)
+library(cowplot)
+library(ggrepel)
+library(igraph)
+library(ggraph)
+library(ggrepel)
+library(scales)
+library(ggnewscale)
+
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(dplyr)
+```
+
+```{r}
+mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_3_supp/"
+
+if (!dir.exists(out_folder)) {
+  dir.create(out_folder)
+}
+```
+
+# load data
+We will use the batch corrected protein coding gene counts to run differential expression analysis on
+```{r}
+RNA <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/RNAseq/rawcounts_filtered_adj.txt", sep = "\t")
+
+clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
+
+
+# variables
+head(RNA)
+```
+
+
+# prepare data
+```{r}
+colnames(RNA) <- gsub("\\.","-",colnames(RNA))
+colnames(RNA) <- str_split_i(colnames(RNA),"-FIXT",1)
+
+# generate metadata
+colnames(RNA) %in% traits$immucan_id
+meta <- traits %>% filter(immucan_id %in% colnames(RNA))
+```
+
+# current vs never smoking all data
+
+## differential abundance
+```{r}
+# rename
+cur_meta <- meta %>%
+  mutate(never_vs_current_smoker = ifelse(never_vs_current_smoker == "Non-smoker","Never", "Current"))
+table(cur_meta$never_vs_current_smoker)
+# subset RNA and metadata to contain only smokers and non-smokers
+cur_meta <- cur_meta %>% filter(!is.na(never_vs_current_smoker))
+
+
+
+group <- factor(cur_meta$never_vs_current_smoker, levels = c("Never", "Current"))
+y <- DGEList(counts = RNA[,cur_meta$immucan_id], group = group)
+
+
+keep <- filterByExpr(y, group = group)
+y <- y[keep, , keep.lib.sizes = FALSE]
+
+y <- calcNormFactors(y)
+design <- model.matrix(~ group)
+y <- estimateDisp(y, design)
+fit <- glmQLFit(y, design)
+
+qlf <- glmQLFTest(fit, coef = 2)
+results <- topTags(qlf, n = Inf)$table
+
+top_results <- topTags(qlf, n = 30)$table
+head(results)
+top_results
+```
+
+## get gene names
+```{r}
+# genecode annotations
+annot <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/annotations/gencode.v29.annotation.genes.txt", sep = "\t")
+#colnames(annot) <- c("gene_type","gene_id")
+annot_type <- annot[,c("gene_id", "gene_type", "gene_name")]
+
+results$gene_id <- rownames(results)
+results <- left_join(results, annot_type,by = "gene_id")
+top_results$gene_id <- rownames(top_results)
+top_results <- left_join(top_results, annot_type,by = "gene_id")
+```
+
+## Vulcano plots
+```{r}
+ggplot(results,aes(x = logFC,y = -log10(PValue))) +
+  geom_point()+
+  theme_bw()+
+  geom_label_repel(data = top_results,aes(x = logFC,y = -log10(PValue),label = gene_name))
+```
+
+
+## GO analysis
+we will rank genes by the F st
+```{r}
+gene_list <- results$F * sign(results$logFC)
+names(gene_list) <- results$gene_id
+names(gene_list) <- str_split_i(names(gene_list),"\\.",1)
+ranked_genes <- sort(gene_list, decreasing = TRUE)
+
+
+# Keep only mapped genes# genes
+ensembl2entrez <- bitr(
+  names(ranked_genes),
+  fromType = "ENSEMBL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+)
+
+# Keep only mapped genes
+ranked_genes <- ranked_genes[ensembl2entrez$ENSEMBL]
+
+
+
+# gsea_res <- GSEA(
+#   ranked_genes,
+#   OrgDb = org.Hs.eg.db,
+#   ont = "BP",          # Biological Process
+#   keyType = "ENTREZID",
+#   minGSSize = 10,
+#   maxGSSize = 500,
+#   pvalueCutoff = 0.05,
+#   verbose = TRUE
+# )
+# 
+# 
+# pathway="GO_BP"
+# term2gene <- read.delim("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/annotations/msigdbr/msigdbr_GO_BP_TERM2GENE.txt")
+# set.seed(1234)
+# res_GSEA <-    GSEA(geneList=ranked_genes,
+#                     pvalueCutoff= 1,
+#                     pAdjustMethod = "BH",
+#                     minGSSize = 10,
+#                     maxGSSize = 500,
+#                     TERM2GENE = term2gene,
+#                     seed = TRUE)
+# #save(res_GSEA, file=paste0(out.tables, "GSEA_", pathway, "_signedP_", comp, ".RData"))
+# res_GSEA_tb <- res_GSEA@result
+# 
+# 
+# 
+# dotplot(res_GSEA, showCategory=10, split=".sign") + facet_grid(.~.sign)
+
+gse <- gseGO(geneList=ranked_genes, 
+             ont ="ALL", 
+             keyType = "ENSEMBL",
+             minGSSize = 10, 
+             maxGSSize = 500, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+
+```
+
+## dotplot
+```{r, fig.height=10, fig.width=10}
+dotplot(gse, showCategory=10, split=".sign") + facet_grid(.~.sign)
+```
+
+
+# current vs never smoking LUAD
+
+## differential abundance
+```{r}
+# rename
+cur_meta <- meta %>%
+  mutate(never_vs_current_smoker = ifelse(never_vs_current_smoker == "Non-smoker","Never", "Current"))
+table(cur_meta$never_vs_current_smoker)
+# subset RNA and metadata to contain only smokers and non-smokers
+cur_meta <- cur_meta %>% filter(!is.na(never_vs_current_smoker))
+
+cur_meta <- cur_meta %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma")
+
+group <- factor(cur_meta$never_vs_current_smoker, levels = c("Never", "Current"))
+y <- DGEList(counts = RNA[,cur_meta$immucan_id], group = group)
+
+
+keep <- filterByExpr(y, group = group)
+y <- y[keep, , keep.lib.sizes = FALSE]
+
+y <- calcNormFactors(y)
+design <- model.matrix(~ group)
+y <- estimateDisp(y, design)
+fit <- glmQLFit(y, design)
+
+qlf <- glmQLFTest(fit, coef = 2)
+results <- topTags(qlf, n = Inf)$table
+
+top_results <- topTags(qlf, n = 30)$table
+head(results)
+top_results
+```
+
+## get gene names
+```{r}
+# genecode annotations
+annot <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/annotations/gencode.v29.annotation.genes.txt", sep = "\t")
+#colnames(annot) <- c("gene_type","gene_id")
+annot_type <- annot[,c("gene_id", "gene_type", "gene_name")]
+
+results$gene_id <- rownames(results)
+results <- left_join(results, annot_type,by = "gene_id")
+top_results$gene_id <- rownames(top_results)
+top_results <- left_join(top_results, annot_type,by = "gene_id")
+inf_genes <- results %>%
+  filter(gene_name %in% c("CXCL10", "CXCL9", "GZMB","GZMA","IL6","IRF1","STAT1","STAT3"))
+```
+
+## Vulcano plots
+```{r}
+ggplot(results,aes(x = logFC,y = -log10(PValue))) +
+  geom_point()+
+  theme_bw()+
+  geom_label_repel(data = top_results,aes(x = logFC,y = -log10(PValue),label = gene_name))
+
+ggplot(results,aes(x = logFC,y = -log10(PValue))) +
+  geom_point()+
+  theme_bw()+
+  geom_label_repel(data = inf_genes,aes(x = logFC,y = -log10(PValue),label = gene_name), col = "red",nudge_x = 0.5)
+```
+
+
+## GO analysis
+we will rank genes by the F st
+```{r}
+gene_list <- results$F * sign(results$logFC)
+names(gene_list) <- results$gene_id
+names(gene_list) <- str_split_i(names(gene_list),"\\.",1)
+ranked_genes <- sort(gene_list, decreasing = TRUE)
+
+
+# Keep only mapped genes# genes
+ensembl2entrez <- bitr(
+  names(ranked_genes),
+  fromType = "ENSEMBL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+)
+
+# Keep only mapped genes
+ranked_genes <- ranked_genes[ensembl2entrez$ENSEMBL]
+
+
+gse <- gseGO(geneList=ranked_genes, 
+             ont ="ALL", 
+             keyType = "ENSEMBL",
+             minGSSize = 10, 
+             maxGSSize = 500, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+
+# hallmark genes
+msig_hallmark <- msigdbr::msigdbr(
+  species = "Homo sapiens",
+  collection = "H")
+
+gseH <- GSEA(
+  ranked_genes,
+  #OrgDb = org.Hs.eg.db,
+  TERM2GENE = msig_hallmark[,c("gs_name","ensembl_gene")],
+  minGSSize = 10,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+```
+
+## dotplot
+```{r, fig.height=10, fig.width=10}
+dotplot(gse, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplot(gseH, showCategory=10, split=".sign") + facet_grid(.~.sign)
+```
+
+## individual scatter plots for hallmark gene sets
+
+```{r}
+inflam_genes <- msig_hallmark %>%
+  filter(gs_name == "HALLMARK_INFLAMMATORY_RESPONSE") %>%
+  pull(gene_symbol)
+
+tnf_genes <- msig_hallmark %>%
+  filter(gs_name == "HALLMARK_TNFA_SIGNALING_VIA_NFKB") %>%
+  pull(gene_symbol)
+
+infg_genes <- msig_hallmark %>%
+  filter(gs_name =="HALLMARK_INTERFERON_GAMMA_RESPONSE") %>%
+  pull(gene_symbol)
+
+il6_genes <- msig_hallmark %>%
+  filter(gs_name =="HALLMARK_IL6_JAK_STAT3_SIGNALING") %>%
+  pull(gene_symbol)
+
+
+ggplot(results %>%
+         filter(gene_name %in% inflam_genes),aes(x = logFC,y = -log10(PValue))) +
+  geom_point()+
+  theme_bw()+
+  ggtitle("inflammatory hallmark")
+ggplot(results %>%
+         filter(gene_name %in% tnf_genes),aes(x = logFC,y = -log10(PValue))) +
+  geom_point()+
+  theme_bw()+
+  ggtitle("tnf_genes hallmark")
+ggplot(results %>%
+         filter(gene_name %in% infg_genes),aes(x = logFC,y = -log10(PValue))) +
+  geom_point()+
+  theme_bw()+
+  ggtitle("infg_genes hallmark")
+ggplot(results %>%
+         filter(gene_name %in% il6_genes),aes(x = logFC,y = -log10(PValue))) +
+  geom_point()+
+  theme_bw()+
+  ggtitle("il6_genes hallmark")
+```
+
+## boxplots 
+
+```{r}
+RNA$gene_id <- rownames(RNA)
+df <- left_join(RNA, annot_type,by = "gene_id")
+df <- df %>%
+  pivot_longer(cols = -c(gene_id, gene_type, gene_name), names_to = "immucan_id") %>%
+  left_join(cur_meta, by= "immucan_id")
+df <- df %>%
+  mutate(hm_inflam = ifelse(gene_name %in% inflam_genes, TRUE, FALSE),
+         hm_tnf = ifelse(gene_name %in% tnf_genes, TRUE, FALSE),
+         hm_infg = ifelse(gene_name %in% inf_genes, TRUE, FALSE),
+         hm_il6 = ifelse(gene_name %in% il6_genes, TRUE, FALSE))
+
+```
+
+
+# LUAD vs LUSC sanity check
+## differential abundance
+```{r}
+# rename
+cur_meta <- meta %>%
+ filter(LUAD_vs_LUSC %in% c("Adenocarcinoma","Squamous cell carcinoma"))
+table(cur_meta$LUAD_vs_LUSC)
+
+cur_meta <- cur_meta %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma","LUAD","LUSC"))
+group <- factor(cur_meta$LUAD_vs_LUSC, levels = c("LUAD", "LUSC"))
+y <- DGEList(counts = RNA[,cur_meta$immucan_id], group = group)
+
+
+keep <- filterByExpr(y, group = group)
+y <- y[keep, , keep.lib.sizes = FALSE]
+
+y <- calcNormFactors(y)
+design <- model.matrix(~ group)
+y <- estimateDisp(y, design)
+fit <- glmQLFit(y, design)
+
+qlf <- glmQLFTest(fit, coef = 2)
+results <- topTags(qlf, n = Inf)$table
+
+top_results <- topTags(qlf, n = 30)$table
+head(results)
+top_results
+```
+
+## get gene names
+```{r}
+# genecode annotations
+annot <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/annotations/gencode.v29.annotation.genes.txt", sep = "\t")
+#colnames(annot) <- c("gene_type","gene_id")
+annot_type <- annot[,c("gene_id", "gene_type", "gene_name")]
+
+results$gene_id <- rownames(results)
+results <- left_join(results, annot_type,by = "gene_id")
+top_results$gene_id <- rownames(top_results)
+top_results <- left_join(top_results, annot_type,by = "gene_id")
+```
+
+## Vulcano plots
+```{r}
+ggplot(results,aes(x = logFC,y = -log10(PValue))) +
+  geom_point()+
+  theme_bw()+
+  geom_label_repel(data = top_results,aes(x = logFC,y = -log10(PValue),label = gene_name))
+```
+
+
+## GO analysis
+we will rank genes by the F st
+```{r}
+gene_list <- results$F * sign(results$logFC)
+names(gene_list) <- results$gene_id
+names(gene_list) <- str_split_i(names(gene_list),"\\.",1)
+ranked_genes <- sort(gene_list, decreasing = TRUE)
+
+
+# Keep only mapped genes# genes
+ensembl2entrez <- bitr(
+  names(ranked_genes),
+  fromType = "ENSEMBL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+)
+
+# Keep only mapped genes
+ranked_genes <- ranked_genes[ensembl2entrez$ENSEMBL]
+
+
+
+gse <- gseGO(geneList=ranked_genes, 
+             ont ="ALL", 
+             keyType = "ENSEMBL",
+             minGSSize = 10, 
+             maxGSSize = 500, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+
+msig_hallmark <- msigdbr::msigdbr(
+  species = "Homo sapiens",
+  collection = "H")
+
+gseH <- GSEA(
+  ranked_genes,
+  #OrgDb = org.Hs.eg.db,
+  TERM2GENE = msig_hallmark[,c("gs_name","ensembl_gene")],
+  minGSSize = 10,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+```
+
+## dotplot
+```{r, fig.height=10, fig.width=10}
+dotplot(gse, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplot(gseH, showCategory=10, split=".sign") + facet_grid(.~.sign)
+```
+
+
+# PDL1 sanity check
+## differential abundance
+```{r}
+cur_meta <- meta %>%
+ filter(TPS_score %in% c("positive","negative"))
+group <- factor(cur_meta$TPS_score, levels = c("negative", "positive"))
+y <- DGEList(counts = RNA[,cur_meta$immucan_id], group = group)
+
+unique(cur_meta)
+
+keep <- filterByExpr(y, group = group)
+y <- y[keep, , keep.lib.sizes = FALSE]
+
+y <- calcNormFactors(y)
+design <- model.matrix(~ group)
+y <- estimateDisp(y, design)
+fit <- glmQLFit(y, design)
+
+qlf <- glmQLFTest(fit, coef = 2)
+results <- topTags(qlf, n = Inf)$table
+
+top_results <- topTags(qlf, n = 30)$table
+head(results)
+top_results
+```
+
+## get gene names
+```{r}
+# genecode annotations
+annot <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/annotations/gencode.v29.annotation.genes.txt", sep = "\t")
+#colnames(annot) <- c("gene_type","gene_id")
+annot_type <- annot[,c("gene_id", "gene_type", "gene_name")]
+
+results$gene_id <- rownames(results)
+results <- left_join(results, annot_type,by = "gene_id")
+top_results$gene_id <- rownames(top_results)
+top_results <- left_join(top_results, annot_type,by = "gene_id")
+```
+
+## Vulcano plots
+```{r}
+ggplot(results,aes(x = logFC,y = -log10(PValue))) +
+  geom_point()+
+  theme_bw()+
+  geom_label_repel(data = top_results,aes(x = logFC,y = -log10(PValue),label = gene_name))
+```
+
+
+## GO analysis
+we will rank genes by the F st
+```{r}
+gene_list <- results$F * sign(results$logFC)
+names(gene_list) <- results$gene_id
+names(gene_list) <- str_split_i(names(gene_list),"\\.",1)
+ranked_genes <- sort(gene_list, decreasing = TRUE)
+
+
+# Keep only mapped genes# genes
+ensembl2entrez <- bitr(
+  names(ranked_genes),
+  fromType = "ENSEMBL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+)
+
+# Keep only mapped genes
+ranked_genes <- ranked_genes[ensembl2entrez$ENSEMBL]
+
+
+
+gse <- gseGO(geneList=ranked_genes, 
+             ont ="ALL", 
+             keyType = "ENSEMBL",
+             minGSSize = 10, 
+             maxGSSize = 500, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+
+msig_hallmark <- msigdbr::msigdbr(
+  species = "Homo sapiens",
+  collection = "H")
+
+gseH <- GSEA(
+  ranked_genes,
+  #OrgDb = org.Hs.eg.db,
+  TERM2GENE = msig_hallmark[,c("gs_name","ensembl_gene")],
+  minGSSize = 10,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+```
+
+## dotplot
+```{r, fig.height=10, fig.width=10}
+dotplot(gse, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplot(gseH, showCategory=10, split=".sign") + facet_grid(.~.sign)
+```
+
+
+# tcga
+
+## load clinical
+```{r}
+library(TCGAbiolinks)
+
+query.clin <- GDCquery(
+  project = "TCGA-LUAD",
+  data.category = "Clinical",
+  data.type = "Clinical Supplement",
+  file.type = "xml"
+)
+
+GDCdownload(query.clin)
+
+clinical <- GDCprepare_clinic(
+  query.clin,
+  clinical.info = "patient"
+)
+
+head(clinical)
+clinical$tobacco_smoking_history
+
+# Lifelong Non-smoker (less than 100 cigarettes smoked in Lifetime) = 1
+# Current smoker (includes daily smokers and non-daily smokers or occasional smokers) = 2
+# Current reformed smoker for > 15 years (greater than 15 years) = 3
+# Current reformed smoker for ≤15 years (less than or equal to 15 years) = 4
+# Current reformed smoker, duration not specified = 5
+# Smoking History not documented = 7
+
+table(clinical$tobacco_smoking_history)
+```
+
+## run diff analysis
+
+```{r}
+# # Load TCGA RNA data
+tcga <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/MOFA/tcga_LUAD_LUSC.rds")
+
+# Convert to SCE
+sce <- as(tcga, "SingleCellExperiment")
+sce$patient %in%
+clinical$bcr_patient_barcode
+sce <- sce[,sce$patient %in% clinical$bcr_patient_barcode]
+
+### need to figure out which assay to use
+assayNames(sce)
+assay(sce, "tpm_unstrand")
+RNA
+```
+
+# current vs former smoker
+## differential abundance
+```{r}
+# rename
+cur_meta <- meta %>%
+  mutate(current_vs_Ex_smoker = ifelse(current_vs_Ex_smoker == "Ex-smoker","Former", "Current"))
+table(cur_meta$current_vs_Ex_smoker)
+# subset RNA and metadata to contain only smokers and non-smokers
+cur_meta <- cur_meta %>% filter(!is.na(current_vs_Ex_smoker))
+
+
+
+group <- factor(cur_meta$current_vs_Ex_smoker, levels = c("Current", "Former"))
+y <- DGEList(counts = RNA[,cur_meta$immucan_id], group = group)
+
+
+keep <- filterByExpr(y, group = group)
+y <- y[keep, , keep.lib.sizes = FALSE]
+
+y <- calcNormFactors(y)
+design <- model.matrix(~ group)
+y <- estimateDisp(y, design)
+fit <- glmQLFit(y, design)
+
+qlf <- glmQLFTest(fit, coef = 2)
+results <- topTags(qlf, n = Inf)$table
+
+top_results <- topTags(qlf, n = 30)$table
+head(results)
+top_results
+```
+
+## get gene names
+```{r}
+# genecode annotations
+annot <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/annotations/gencode.v29.annotation.genes.txt", sep = "\t")
+#colnames(annot) <- c("gene_type","gene_id")
+annot_type <- annot[,c("gene_id", "gene_type", "gene_name")]
+
+results$gene_id <- rownames(results)
+results <- left_join(results, annot_type,by = "gene_id")
+top_results$gene_id <- rownames(top_results)
+top_results <- left_join(top_results, annot_type,by = "gene_id")
+```
+
+## Vulcano plots
+```{r}
+ggplot(results,aes(x = logFC,y = -log10(PValue))) +
+  geom_point()+
+  theme_bw()+
+  geom_label_repel(data = top_results,aes(x = logFC,y = -log10(PValue),label = gene_name))
+```
+
+
+## GO analysis
+we will rank genes by the F st
+```{r}
+gene_list <- results$F * sign(results$logFC)
+names(gene_list) <- results$gene_id
+names(gene_list) <- str_split_i(names(gene_list),"\\.",1)
+ranked_genes <- sort(gene_list, decreasing = TRUE)
+
+
+# Keep only mapped genes# genes
+ensembl2entrez <- bitr(
+  names(ranked_genes),
+  fromType = "ENSEMBL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+)
+
+# Keep only mapped genes
+ranked_genes <- ranked_genes[ensembl2entrez$ENSEMBL]
+
+gse <- gseGO(geneList=ranked_genes, 
+             ont ="ALL", 
+             keyType = "ENSEMBL",
+             minGSSize = 10, 
+             maxGSSize = 500, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+
+```
+
+## dotplot
+```{r, fig.height=10, fig.width=10}
+dotplot(gse, showCategory=10, split=".sign") + facet_grid(.~.sign)
+```
+
+
+
+# Trm signature
+we will check if the T-resident memory signature is different between smokers and never smokers. this has been reported by [Weeden et al](https://doi.org/10.1016/j.ccell.2023.03.019)
+the gene list was stored as a supplemental and is now located in the pdf `/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/TRM_signature_from_Corgnac_et_al.pdf` and we will construt the expression from this
+
+```{r}
+cur_RNA <- RNA
+cur_RNA$gene_name <- annot[match(rownames(RNA), annot$gene_id),"gene_name"]
+cur_RNA <- cur_RNA %>%
+  filter(!duplicated(gene_name))
+rownames(cur_RNA) <- cur_RNA$gene_name
+cur_RNA$gene_name <- NULL
+trm_sig <- data.frame(gene = c("HASPIN","GPR34","ITGAE","CXCR6","ACP5","LDLRAD4","JAML","ATP10D","IFNG","ABTB2","QPCT","XCL1","CD244","KCNN4","RACGAP1",
+                               "MAPKAPK3","P2RY10","CCL5","PCED1B","VOPP1","ABI3","DOCK2",
+                               "CDC25B","LITAF","NEDD4","BCL9L","STK38","RIPOR2","SAMHD1","FRMD4B","LEF1","PDE2A","ICAM2","RASA3","EOMES","KLF2","TCF7","FAM49A",
+                               "KLF3","S1PR1","S1PR5"),
+                      direction = c(rep("up",22),rep("down",19)))
+rankData <- rankGenes(cur_RNA)
+
+df <- simpleScore(rankData, downSet = trm_sig$gene[trm_sig$direction == "down"], upSet = trm_sig$gene[trm_sig$direction == "up"])
+
+df$immucan_id <- rownames(df)
+df <- left_join(df,clin_dat, "immucan_id")
+
+df %>%
+  filter(smoking_status %in% c("Current smoker","Non-smoker")) %>%
+  ggplot(aes(x = smoking_status,TotalScore))+
+  stat_compare_means(method = "wilcox")+
+  geom_boxplot()+
+  theme_bw()+
+  ylab("Trm score")
+df %>%
+  ggplot(aes(x = smoking_status,UpScore))+
+  geom_boxplot()
+df %>%
+  ggplot(aes(x = smoking_status,DownScore))+
+  geom_boxplot()
+```
+
+
+
+
+```{r}
+ranked_data <- rankGenes(sce)
+
+top_n <- 10
+p.list <- list()
+gene_df <- data.frame()
+for (f in seq(1,6,1)){
+  
+  # Extract weights for RNA view and Factor 1
+  rna_weights <- get_weights(model, view = "RNA", factors = f)$RNA[,1]
+  # filter for the ones present in the tcga data
+  rna_weights <- rna_weights[names(rna_weights) %in% rownames(sce)]
+  top_abs_features <- names(sort(abs(rna_weights), decreasing = TRUE))[1:top_n]
+  
+  signature_mofa_f1 <- list(
+    up = top_abs_features[rna_weights[top_abs_features] > 0],
+    down = top_abs_features[rna_weights[top_abs_features] < 0]
+  )
+  temp <- data.frame(Factor = rep(paste0("Factor",f),length(top_abs_features)),
+                     gene = top_abs_features,
+                     weight = rna_weights[top_abs_features])
+  gene_df <- rbind(gene_df, temp)
+  if (length(signature_mofa_f1$up) <= 2){
+    print("WARNING: Score is computed inverted and is negated")
+    score <- simpleScore(ranked_data, upSet = signature_mofa_f1$down)
+    # Merge with clinical data
+    survival_df <- data.frame(
+      ID = rownames(colData(sce)),
+      survival = sce$survival,
+      days_to_death = sce$days_to_death,
+      days_to_last_follow_up = sce$days_to_last_follow_up,
+      score = -score$TotalScore,
+      Histology = sce$histology
+    )
+  }else if(length(signature_mofa_f1$down) <= 2){
+    score <- simpleScore(ranked_data, upSet = signature_mofa_f1$up)
+    # Merge with clinical data
+    survival_df <- data.frame(
+      ID = rownames(colData(sce)),
+      survival = sce$survival,
+      days_to_death = sce$days_to_death,
+      days_to_last_follow_up = sce$days_to_last_follow_up,
+      score = score$TotalScore,
+      Histology = sce$histology
+    )
+  }else{
+    score <- simpleScore(ranked_data, downSet = signature_mofa_f1$down, upSet = signature_mofa_f1$up)
+    # Merge with clinical data
+    survival_df <- data.frame(
+      ID = rownames(colData(sce)),
+      survival = sce$survival,
+      days_to_death = sce$days_to_death,
+      days_to_last_follow_up = sce$days_to_last_follow_up,
+      score = score$TotalScore,
+      score_up = score$UpScore,
+      score_down = score$DownScore,
+      Histology = sce$histology
+    )
+  }
+```
+
+
+
+
+
+
+
+
+
+
+# current vs never smoker LUAD
+## differential abundance
+```{r}
+# rename
+
+# subset RNA and metadata to contain only smokers and non-smokers
+cur_meta <- cur_meta %>% filter(!is.na(never_vs_Ex_smoker),
+                                LUAD_vs_LUSC == "Adenocarcinoma")
+
+
+
+group <- factor(cur_meta$never_vs_Ex_smoker, levels = c("Never", "Former"))
+y <- DGEList(counts = RNA[,cur_meta$immucan_id], group = group)
+
+
+keep <- filterByExpr(y, group = group)
+y <- y[keep, , keep.lib.sizes = FALSE]
+
+y <- calcNormFactors(y)
+design <- model.matrix(~ group)
+y <- estimateDisp(y, design)
+fit <- glmQLFit(y, design)
+
+qlf <- glmQLFTest(fit, coef = 2)
+results <- topTags(qlf, n = Inf)$table
+
+top_results <- topTags(qlf, n = 30)$table
+head(results)
+top_results
+```
+
+## get gene names
+```{r}
+# genecode annotations
+annot <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/annotations/gencode.v29.annotation.genes.txt", sep = "\t")
+#colnames(annot) <- c("gene_type","gene_id")
+annot_type <- annot[,c("gene_id", "gene_type", "gene_name")]
+
+results$gene_id <- rownames(results)
+results <- left_join(results, annot_type,by = "gene_id")
+top_results$gene_id <- rownames(top_results)
+top_results <- left_join(top_results, annot_type,by = "gene_id")
+inf_genes <- results %>%
+  filter(gene_name %in% c("CXCL10", "CXCL9", "GZMB","GZMA","IL6","IRF1","STAT1","STAT3"))
+```
+
+## Vulcano plots
+```{r}
+ggplot(results,aes(x = logFC,y = -log10(PValue))) +
+  geom_point()+
+  theme_bw()+
+  geom_label_repel(data = top_results,aes(x = logFC,y = -log10(PValue),label = gene_name))
+
+ggplot(results,aes(x = logFC,y = -log10(PValue))) +
+  geom_point()+
+  theme_bw()+
+  geom_label_repel(data = inf_genes,aes(x = logFC,y = -log10(PValue),label = gene_name), col = "red",nudge_x = 0.5)
+```
+
+
+## GO analysis
+we will rank genes by the F st
+```{r}
+gene_list <- results$F * sign(results$logFC)
+names(gene_list) <- results$gene_id
+names(gene_list) <- str_split_i(names(gene_list),"\\.",1)
+ranked_genes <- sort(gene_list, decreasing = TRUE)
+
+# Keep only mapped genes# genes
+ensembl2entrez <- bitr(
+  names(ranked_genes),
+  fromType = "ENSEMBL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+)
+
+# Keep only mapped genes
+ranked_genes <- ranked_genes[ensembl2entrez$ENSEMBL]
+
+gse <- gseGO(geneList=ranked_genes, 
+             ont ="ALL", 
+             keyType = "ENSEMBL",
+             minGSSize = 10, 
+             maxGSSize = 500, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "BH")
+
+```
+
+## dotplot
+```{r, fig.height=10, fig.width=10}
+dotplot(gse, showCategory=10, split=".sign") + facet_grid(.~.sign)
+```
+
+
+```{r}
+table(traits$smoking_status,traits$LUAD_vs_LUSC)
+```
+
+
+# SBS based diff expression
+
+
+```{r}
+# Merge with mutational signatures
+Lung_NSCLC2_filtered <-read.delim(paste0(mount_path,"data/WES/mutation_signatures/Lung_NSCLC2_filtered.tsv"), sep="\t")
+names(Lung_NSCLC2_filtered)[names(Lung_NSCLC2_filtered)=="patient"] <- "immucan_id"
+anno_WES <- merge(traits, Lung_NSCLC2_filtered, by="immucan_id", sort=F)
+
+# Combine smoking signatures
+anno_WES[,"SBS4_SBS92"] <- apply(anno_WES[,c("SBS4","SBS92")],1,sum)
+
+# Dichotomise smoking signature
+cutoff <- median(anno_WES$SBS4_SBS92)
+anno_WES <- anno_WES %>%
+      filter(!is.na(SBS4_SBS92))  %>%
+      mutate(SBS4_SBS92_dicho = ifelse(SBS4_SBS92 > cutoff, "high","low"))
+
+anno_WES$SBS4_SBS92_dicho
+
+cur_dat <- read.table(paste0(mount_path,"data/RNASeq/CURIE/inflammation_quantification_NSCLC2/outputs/pathwayActivity/PathwayActivity_NSCLC2_mlm"))
+my_comp <-  list( c("high", "low"))
+
+cur_dat <- cur_dat %>%
+  as.data.frame() %>%
+  mutate(immucan_id = paste0("LUNG-",rownames(cur_dat))) %>%
+  left_join(anno_WES,by = "immucan_id")
+
+p <- cur_dat %>%
+  pivot_longer(cols = c(JAK.STAT,NFkB,TNFa)) %>%
+  filter(!is.na(SBS4_SBS92_dicho)) %>%
+  ggplot(aes(x = SBS4_SBS92_dicho,y = value, fill = SBS4_SBS92_dicho))+
+  geom_boxplot(outliers = FALSE)+
+  geom_jitter(aes(color = SBS4_SBS92_dicho),position = position_jitterdodge(jitter.width = 0.2), size= 1)+
+  facet_wrap(.~name)+
+  scale_fill_manual(values = alpha(c("blue", "lightblue", "cyan3"),alpha = 0.5))+
+  scale_color_manual(values = c("blue", "lightblue", "cyan3"))+
+  stat_compare_means(size = 5,label = "p.signif", comparisons = my_comp,method = "t.test")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 1, size = 16),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 14),
+        legend.text = element_text(size = 14),
+        strip.text.x = element_text(size = 14),
+        legend.position = "bottom",
+        legend.location = "plot")+
+  ylab("Pathway score")
+
+p
+
+cur_dat %>%
+  ggplot(aes(x = TNFa,y = SBS4_SBS92))+
+  geom_point()
+cor(cur_dat$TNFa,cur_dat$SBS4)
+```
+
+# inflammation signature for smoking within LUAD
+
+```{r}
+cur_dat <- read.table(paste0(mount_path,"data/RNASeq/CURIE/inflammation_quantification_NSCLC2/outputs/pathwayActivity/PathwayActivity_NSCLC2_mlm"))
+my_comp <-  list( c("Current smoker", "Non-smoker"), c("Ex-smoker", "Non-smoker"), c("Current smoker", "Non-smoker") )
+
+cur_dat <- cur_dat %>%
+  as.data.frame() %>%
+  mutate(immucan_id = paste0("LUNG-",rownames(cur_dat))) %>%
+  left_join(traits,by = "immucan_id") %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma") 
+
+cur_dat <- cur_dat %>%
+  pivot_longer(cols = c(JAK.STAT,NFkB,TNFa))
+p <- cur_dat %>%
+  filter(!is.na(smoking_status)) %>%
+  ggplot(aes(x = smoking_status,y = value, fill = smoking_status))+
+  geom_boxplot(outliers = FALSE)+
+  geom_jitter(aes(color = smoking_status),position = position_jitterdodge(jitter.width = 0.2), size= 1)+
+  facet_wrap(.~name)+
+  scale_fill_manual(values = alpha(c("blue", "lightblue", "cyan3"),alpha = 0.5))+
+  scale_color_manual(values = c("blue", "lightblue", "cyan3"))+
+  stat_compare_means(size = 5,label = "p.signif", comparisons = my_comp,method = "t.test")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 1, size = 16),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 14),
+        legend.text = element_text(size = 14),
+        strip.text.x = element_text(size = 14),
+        legend.position = "bottom",
+        legend.location = "plot")+
+  ylab("Pathway score")
+
+p
+```
+
+# inflammation signature for LUAD vs LUSC
+
+```{r}
+cur_dat <- read.table(paste0(mount_path,"data/RNASeq/CURIE/inflammation_quantification_NSCLC2/outputs/pathwayActivity/PathwayActivity_NSCLC2_mlm"))
+my_comp <-  list( c("Adenocarcinoma", "Squamous cell carcinoma"))
+
+cur_dat <- cur_dat %>%
+  as.data.frame() %>%
+  mutate(immucan_id = paste0("LUNG-",rownames(cur_dat))) %>%
+  left_join(traits,by = "immucan_id") %>%
+  filter(LUAD_vs_LUSC %in% c("Adenocarcinoma", "Squamous cell carcinoma")) 
+
+cur_dat <- cur_dat %>%
+  pivot_longer(cols = c(JAK.STAT,NFkB,TNFa))
+p <- cur_dat %>%
+  filter(!is.na(LUAD_vs_LUSC)) %>%
+  ggplot(aes(x = LUAD_vs_LUSC,y = value, fill = LUAD_vs_LUSC))+
+  geom_boxplot(outliers = FALSE)+
+  geom_jitter(aes(color = LUAD_vs_LUSC),position = position_jitterdodge(jitter.width = 0.2), size= 1)+
+  facet_wrap(.~name)+
+  scale_fill_manual(values = alpha(c("blue", "lightblue", "cyan3"),alpha = 0.5))+
+  scale_color_manual(values = c("blue", "lightblue", "cyan3"))+
+  stat_compare_means(size = 5,label = "p.signif",comparisons = my_comp,method = "t.test")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 1, size = 16),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 14),
+        legend.text = element_text(size = 14),
+        strip.text.x = element_text(size = 14),
+        legend.position = "bottom",
+        legend.location = "plot")+
+  ylab("Pathway score")+
+  coord_cartesian(ylim = c(-3,5))
+
+p
+```
+

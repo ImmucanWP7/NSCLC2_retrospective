@@ -94,7 +94,14 @@ dim(dat)
 ```
 
 # Univariate COX for continuous features - overall
+we will use:
+- imaging features
+- binary scores
+- 1000 most variable genes as used for MOFA
 
+calculate HR for continuous values
+then binarize the features that survived FDR correction
+plot the HR for those features
 ```{r, fig.height=10}
 cur_traits <-traits %>%
   select(immucan_id,TPS, CPS, TMB,TP53,EGFR, KRAS,STK11,CDKN2A,PIK3CA, censoring,time_to_event)
@@ -141,8 +148,10 @@ out <- df %>%
 out_RNA <- df_RNA %>%
   mutate(FDR = p.adjust(p = p.value,method = "BH")) %>%
   filter(FDR < 0.1)
+# no RNA features survived FDR correction
 
 
+## check HR for those features in dichotomized model
 res_out <- res %>%
   select(immucan_id,censoring, time_to_event,all_of(out$feature)) %>%
   mutate(across(.cols = all_of(out$feature),.fns = ~ as.factor(ntile(.,n = 2))))
@@ -151,13 +160,11 @@ p_list_final <- lapply(res_out[,-c(1:3)], function(x){
    coxph( Surv(time_to_event, censoring) ~  x ,data = res_out)
 })
 
+
 res_out_RNA <- RNA %>%
   select(immucan_id,censoring, time_to_event,all_of(out_RNA$feature)) %>%
   mutate(across(.cols = all_of(out_RNA$feature),.fns = ~ as.factor(ntile(.,n = 2))))
 
-p_list_final <- lapply(res_out[,-c(1:3)], function(x){
-   coxph( Surv(time_to_event, censoring) ~  x ,data = res_out)
-})
 p_list_final_RNA <- lapply(res_out_RNA[,-c(1:3)], function(x){
    coxph( Surv(time_to_event, censoring) ~  x ,data = res_out_RNA)
 })
@@ -194,9 +201,10 @@ df_2 %>%
         legend.position = "none",
         axis.title.y = element_blank(),
         plot.title = element_text(hjust = 0.5))+
-  ggtitle("HR for low infiltration ratio")
+  ggtitle("HR for survival for binarized features")
 ```
 
+## feature abundance
 ```{r}
 feat_dat <- rbind(df, df_RNA)
 
@@ -238,6 +246,11 @@ plot_dat_pval <- table(feat_pval$data_type)/table(feat_abundance$data_type)[c(1:
 plot_dat_fdr <- table(feat_fdr$data_type)/table(feat_abundance$data_type)[c(3,5)]
 
 df_RNA[(rownames(df_RNA) %in% c("ADGRF5","C1orf116","PHGDH","MYBL2","CENPF","KIF18B","BIRC5","FOXM1","TPX2","TROAP")),]
+DT::datatable(as.data.frame(unclass(table(feat_pval$data_type))))
+DT::datatable(as.data.frame(unclass(table(feat_fdr$data_type))))
+DT::datatable(as.data.frame(unclass(table(feat_abundance$data_type))))
+DT::datatable(as.data.frame(unclass(round(plot_dat_pval,digits = 3))))
+
 ```
 
 __we cannot find any of the ten genes found with LF1 from MOFA when just searching for gene expression associated with survival. so we need MOFA because it identifies data structure based on all modalities and not just RNA or others.__
@@ -311,12 +324,13 @@ df_2 %>%
         legend.position = "none",
         axis.title.y = element_blank(),
         plot.title = element_text(hjust = 0.5))+
-  ggtitle("HR for low infiltration ratio")
+  ggtitle("HR for surival")
 ```
 
 # Univariate COX for continuous features - LUSC
 
-```{r, fig.height=10}
+no features LUSC
+```{r, fig.height=10, eval=FALSE}
 cur_traits <-traits %>%
   select(immucan_id,TPS, CPS, TMB,TP53,EGFR, KRAS,STK11,CDKN2A,PIK3CA, censoring,time_to_event)
 cur_traits <- cur_traits %>%
@@ -396,42 +410,62 @@ cur_traits <- cur_traits %>%
   mutate(across(.cols = c(TP53,EGFR, KRAS, STK11,CDKN2A,PIK3CA),.fns = ~ ifelse(. == TRUE,1,0)))
 res <- left_join(dat,cur_traits,by = "immucan_id")
 
-LUAD_samples <- traits %>%
-  filter(simple_histology == "Squamous cell carcinoma") %>%
-  pull(immucan_id)
+res_out <- res %>%
+  mutate(across(.cols =-c(immucan_id,censoring,time_to_event),.fns = ~ as.factor(ntile(.,n = 2))))
 
-res <- res %>%
-  select(immucan_id,censoring,time_to_event,everything()) %>%
-   mutate(across(.cols = -c(immucan_id,censoring, time_to_event),.fns = ~ as.factor(ntile(.,n = 2)))) %>%
-  filter(immucan_id %in% LUAD_samples)
-
-
-
-p_list <- lapply(res[,-c(1:3)], function(x){
-   coxph( Surv(time_to_event, censoring) ~  x ,data = res)
+p_list_final <- lapply(res_out %>% select(-immucan_id,-censoring, -time_to_event), function(x){
+   coxph( Surv(time_to_event, censoring) ~  x ,data = res_out)
 })
 
+RNA <- read.csv(paste0(mount_path, "Figures/scores_for_sharing/MOFA/RNA_named.csv"))
+RNA <- RNA %>%
+  rename(immucan_id = Immucan_id) %>%
+  mutate(immucan_id = gsub("_","-",immucan_id))
+RNA <- left_join(RNA, cur_traits %>% select(immucan_id,censoring, time_to_event),by = "immucan_id")
+res_out_RNA <- RNA %>%
+  mutate(across(.cols = -c(immucan_id,censoring,time_to_event),.fns = ~ as.factor(ntile(.,n = 2))))
+
+
+p_list_final_RNA <- lapply(res_out_RNA %>% select(-immucan_id,-censoring, -time_to_event), function(x){
+   coxph( Surv(time_to_event, censoring) ~  x ,data = res_out_RNA)
+})
   
-df <- data.frame(HR = unlist(lapply(p_list, function(x){summary(x)$coefficients[,"exp(coef)"]})),
-                 p.value = unlist(lapply(p_list, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
-                 lower_conf = unlist(lapply(p_list, function(x){summary(x)$conf.int[, "lower .95"]})),
-                 upper_conf = unlist(lapply(p_list, function(x){summary(x)$conf.int[, "upper .95"]}))) 
-  
-df %>%
-  filter(p.value < 0.05) %>%
-  arrange(HR)
-out <- df %>%
-  mutate(FDR = p.adjust(p = p.value,method = "BH")) %>%
-  arrange(FDR)
-  filter(FDR < 0.1)
-out$feature <- rownames(out)
+df_2 <- data.frame(HR = unlist(lapply(p_list_final, function(x){summary(x)$coefficients[,"exp(coef)"]})),
+                 p.value = unlist(lapply(p_list_final, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 lower_conf = unlist(lapply(p_list_final, function(x){summary(x)$conf.int[, "lower .95"]})),
+                 upper_conf = unlist(lapply(p_list_final, function(x){summary(x)$conf.int[, "upper .95"]}))) 
+df_2_RNA <- data.frame(HR = unlist(lapply(p_list_final_RNA, function(x){summary(x)$coefficients[,"exp(coef)"]})),
+                 p.value = unlist(lapply(p_list_final_RNA, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 lower_conf = unlist(lapply(p_list_final_RNA, function(x){summary(x)$conf.int[, "lower .95"]})),
+                 upper_conf = unlist(lapply(p_list_final_RNA, function(x){summary(x)$conf.int[, "upper .95"]}))) 
+
+rownames(df_2_RNA) <- paste(rownames(df_2_RNA),"_RNA")
+df_2 <- rbind(df_2, df_2_RNA)
+
+
+# no features survive FDR correction
+
+
+df_2 %>%
+  mutate(feature = rownames(df_2),
+         type = ifelse(grepl("density",feature),"density",""),
+         type = ifelse(grepl("\\.",feature),"interaction",type),
+         type = ifelse(grepl("RNA",feature),"RNA",type),
+         type = ifelse(grepl("cello",feature),"CN",type),
+         type = ifelse(grepl("",feature),"binary",type),
+         tech = ifelse(grepl("IMC",feature),"IMC",""),
+         tech = ifelse(grepl("IF1|IF2|IF3",feature),"mIF",tech),
+         tech = ifelse(grepl("IF1|IF2|IF3",feature),"mIF",tech))
+
 
 
 
 df_2 %>%
   mutate(feature = rownames(df_2),
-         sig = as.factor(p.value < 0.05)) %>%
-  ggplot(aes(x = HR,y = feature, col = sig))+
+         sig = as.factor(p.value < 0.05),
+         effect = ifelse(HR < 1,"lower", "higher")) %>%
+  filter(p.value < 0.01) %>%
+  ggplot(aes(x = HR,y = feature, col = effect))+
   geom_point(size = 2)+
   geom_errorbar(aes(xmin=lower_conf, xmax = upper_conf),lwd =1,width = 0.3)+
   theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust= 1))+
@@ -443,14 +477,64 @@ df_2 %>%
             col = "black",
             vjust = -1,
             inherit.aes = TRUE)+
-  scale_color_manual(values = c("TRUE" = "blue", "FALSE" = "orange"))+
+  scale_color_manual(values = c("lower" = "blue", "higher" = "orange"))+
   theme(axis.text.x = element_text(size = 12),
         axis.text.y = element_text(size = 12),
         legend.position = "none",
         axis.title.y = element_blank(),
         plot.title = element_text(hjust = 0.5))+
-  ggtitle("HR for low infiltration ratio")
+  ggtitle("HR for survival for binarized features")
+
+
 ```
+
+## feature abundance
+```{r, fig.height=3, fig.width=3}
+feat_dat <- df_2
+
+feat_pval <- feat_dat %>%
+  mutate(feature = rownames(df_2)) %>%
+  filter(p.value < 0.05) %>%
+  mutate(modality = gsub("^.*_", "", feature),
+         data_type = ifelse(grepl("\\.",feature),"interaction",""),
+         data_type = ifelse(grepl("cello",feature),"CN",data_type),
+         data_type = ifelse(grepl("density",feature),"density",data_type),
+         data_type = ifelse(grepl("RNA",feature),"RNA",data_type),
+         data_type = ifelse(grepl("TP53|EGFR|KRAS|STK11|PIK3CA|CDKN2A|TMB",feature),"WES",data_type),
+         data_type = ifelse(grepl("TPS|CPS",feature),"PDL1",data_type))
+
+feat_abundance <- feat_dat %>%
+  mutate(feature = rownames(df_2),
+         modality = gsub("^.*_", "", feature),
+         data_type = ifelse(grepl("\\.",feature),"interaction",""),
+         data_type = ifelse(grepl("cello",feature),"CN",data_type),
+         data_type = ifelse(grepl("density",feature),"density",data_type),
+         data_type = ifelse(grepl("RNA",feature),"RNA",data_type),
+         data_type = ifelse(grepl("TP53|EGFR|KRAS|STK11|PIK3CA|CDKN2A|TMB",feature),"WES",data_type),
+         data_type = ifelse(grepl("TPS|CPS",feature),"PDL1",data_type))
+
+table(feat_pval$data_type)
+table(feat_abundance$data_type)
+
+plot_dat_pval <- table(feat_pval$data_type)/table(feat_abundance$data_type)
+
+df_RNA[(rownames(df_RNA) %in% c("ADGRF5","C1orf116","PHGDH","MYBL2","CENPF","KIF18B","BIRC5","FOXM1","TPX2","TROAP")),]
+DT::datatable(as.data.frame(unclass(table(feat_pval$data_type))))
+DT::datatable(as.data.frame(unclass(table(feat_abundance$data_type))))
+DT::datatable(as.data.frame(unclass(round(plot_dat_pval,digits = 3))))
+
+plot_dat <-as.data.frame(table(feat_pval$data_type))
+plot_dat$total_count = as.data.frame(table(feat_abundance$data_type))$Freq
+
+plot_dat %>%
+  ggplot(aes(x = total_count,y = Freq))+
+  geom_point()+
+  theme_bw()+
+  scale_x_log10()+
+  scale_y_log10()
+```
+
+
 
 
 

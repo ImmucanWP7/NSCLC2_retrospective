@@ -28,7 +28,7 @@ How commen are the CNs?
 Do we observe them in each patient or are there very patient specific CNs
 Are some of the observed statistically significant differences based on outliers?
 
-```{r, fig.height=20, fig.width=20}
+```{r, fig.height=8, fig.width=17}
 # Create table with celltypes fractions
 mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
 cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
@@ -190,7 +190,7 @@ ht = grid.grabExpr(draw(h1))
 grid.newpage()
 pushViewport(viewport(x=unit(0.35,"npc"),y=unit(0.55,"npc"),angle = 270))
 grid.draw(ht)
-pushViewport(viewport(x = 0.5,y=0.9,angle = 90))
+pushViewport(viewport(x = 0.5,y=1.5,angle = 90))
 grid.draw(pd)
 ```
 
