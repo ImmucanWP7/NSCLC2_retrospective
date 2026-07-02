@@ -221,6 +221,7 @@ samples_metadata(model) <- clinical
 
 saveRDS(model, model_path)
 
+write.csv(factors,"/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/Revision/LFs_per_patient.csv", row.names = TRUE, quote = FALSE)
 ```
 
 
