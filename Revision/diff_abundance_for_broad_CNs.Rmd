@@ -73,11 +73,13 @@ cello_dat2 <- cello_dat2 %>%
          CN_1__cello2_rev = CN_20__cello2,
          CN_2__cello2_rev = CN_19__cello2,
          CN_3__cello2_rev = CN_17__cello2 + CN_18__cello2 + CN_23__cello2,
-         CN_4__cello2_rev = CN_21__cello2 + CN_16__cello2 + CN_2__cello2,
-         CN_5__cello2_rev = CN_6__cello2 + CN_7__cello2 + CN_4__cello2 + CN_3__cello2 + CN_5__cello2 + CN_0__cello2 + CN_1__cello2 + CN_2__cello2 + CN_10__cello2 + CN_9__cello2,
-         CN_6__cello2_rev = CN_13__cello2 + CN_15__cello2,
-         CN_7__cello2_rev = CN_14__cello2,
-         CN_8__cello2_rev = CN_11__cello2 + CN_12__cello2) %>%
+         CN_4__cello2_rev = CN_21__cello2,
+         CN_5__cello2_rev = CN_16__cello2 + CN_22__cello2,
+         CN_6__cello2_rev = CN_6__cello2 + CN_7__cello2 + CN_4__cello2 + CN_3__cello2 + CN_5__cello2 + CN_0__cello2 + CN_1__cello2 + CN_2__cello2 + CN_10__cello2  +CN_9__cello2,
+         CN_7__cello2_rev = CN_13__cello2 + CN_15__cello2,
+         CN_8__cello2_rev = CN_14__cello2,
+         CN_9__cello2_rev = CN_11__cello2,
+         CN_10__cello2_rev = CN_12__cello2) %>%
   select(contains(c("immucan","rev")))
 
 cello_dat <- left_join(cello_dat1,cello_dat2,by = "immucan_id")
@@ -90,7 +92,7 @@ names(condition) <- c("KRAS","EGFR", "STK11", "TP53")
 
 # loop over conditions and do two way abundance difference tests
 p.list <- list()
-for (i in c(data_type,"cello1","cello2")) {
+for (i in c("cello1","cello2")) {
   for (j in names(condition)) {
     
     if(grepl("cello",i)){
@@ -221,7 +223,7 @@ cur_traits <- traits %>%
 
 # loop over conditions and do two way abundance difference tests
 p.list <- list()
-for (i in c(data_type,"cello1","cello2")) {
+for (i in c("cello1","cello2")) {
   for (j in "TP53") {
     
     if(grepl("cello",i)){
