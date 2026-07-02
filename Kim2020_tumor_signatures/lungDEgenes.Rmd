@@ -1,0 +1,417 @@
+---
+title: "NSCLC"
+author: "Elena"
+date: "2026-06-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(ggtext)
+library(glue)
+library(singscore)
+```
+
+
+```{r}
+rna_mat <- readRDS("/mnt/central_nas/datasharing/elenam/NSCLC/rna_mat.rds")
+luad_samples <- read.csv("/mnt/central_nas/datasharing/elenam/NSCLC/luad_samples.csv")
+signGenes <- read.csv("/mnt/central_nas/datasharing/elenam/NSCLC/tSn_sign.csv")
+```
+
+
+
+```{r}
+luad_ids <- luad_samples$x
+rownames(rna_mat) <- rownames(rna_mat)
+
+luad_ids_present <- luad_ids[luad_ids %in% rownames(rna_mat)]
+
+rna_luad <- rna_mat[luad_ids_present, , drop = FALSE] # the object to proceed to work with
+
+dim(rna_luad)
+length(luad_ids)          # 125 all samples
+length(luad_ids_present)  # 85 samples in the RNA countmat
+length(setdiff(luad_ids, rownames(rna_mat)))  # 40
+```
+
+
+
+```{r}
+expr_luad <- t(rna_luad)
+
+program_cols <- c(
+  tS1 = "tS1_sign",
+  tS2 = "tS2_sign",
+  tS3 = "tS3_sign"
+)
+
+# only available genes
+program_genes <- lapply(program_cols, function(col) {
+  genes <- signGenes[[col]]
+  genes <- genes[!is.na(genes) & genes != ""]
+  intersect(genes, rownames(expr_luad))
+})
+
+sapply(program_genes, length)
+```
+
+## sincScore
+
+It ranks all genes within one sample/cell, then asks whether the genes in your signature are mostly near the top of that ranked list.
+
+It scores each sample independently, as a signature activity/enrichment score
+
+```{r}
+rankData <- rankGenes(expr_luad)
+
+program_scores <- data.frame(sample = colnames(expr_luad))
+
+for (program in names(program_genes)) {
+  scored <- simpleScore(rankData, upSet = program_genes[[program]])
+  program_scores[[paste0(program, "_singscore")]] <- scored[
+    program_scores$sample,
+    "TotalScore"
+  ]
+}
+
+head(program_scores)
+```
+
+# raw score distributions
+
+```{r}
+score_cols <- c("tS1_singscore", "tS2_singscore", "tS3_singscore")
+
+score_long <- program_scores %>%
+  select(sample, all_of(score_cols)) %>%
+  pivot_longer(
+    cols = all_of(score_cols),
+    names_to = "program",
+    values_to = "singscore"
+  ) %>%
+  mutate(
+    program = recode(
+      program,
+      tS1_singscore = "tS1",
+      tS2_singscore = "tS2",
+      tS3_singscore = "tS3"
+    )
+  )
+
+ggplot(score_long, aes(x = singscore, fill = program, color = program)) +
+  geom_density(alpha = 0.25, linewidth = 1.1) +
+  scale_color_manual(values = c(tS1 = "firebrick3", tS2 = "steelblue", tS3 = "darkgreen")) +
+  scale_fill_manual(values = c(tS1 = "firebrick3", tS2 = "steelblue", tS3 = "darkgreen")) +
+  labs(
+    x = "singScore",
+    y = "Density",
+    fill = NULL,
+    color = NULL
+  ) +
+  theme_classic() +
+ theme(
+    axis.title.y = element_text(size = 13),
+    axis.ticks.y = element_line(color = "gray"),
+    axis.text.y = element_text(size = 13),
+    axis.ticks.x = element_line(color = "gray"),
+    axis.text.x = element_text(size = 13),
+    axis.title.x = element_text(size = 15),
+    legend.text = element_text(size = 15),
+    legend.position = "top"
+  )
+
+library(geomtextpath)
+
+ggplot(score_long, aes(x = singscore, fill = program, color = program)) +
+  geom_density(alpha = 0.25, linewidth = 1.1, show.legend = FALSE) +
+  geom_textdensity(
+    aes(label = program),
+    linewidth = 1.1,
+    size = 5,
+    vjust = -0.4,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(values = c(tS1 = "firebrick3", tS2 = "steelblue", tS3 = "darkgreen")) +
+  scale_fill_manual(values = c(tS1 = "firebrick3", tS2 = "steelblue", tS3 = "darkgreen")) +
+  labs(
+    x = "singScore",
+    y = "Density"
+  ) +
+  theme_classic() +
+  theme(
+    axis.title.y = element_text(size = 13),
+    axis.ticks.y = element_line(color = "gray"),
+    axis.text.y = element_text(size = 13),
+    axis.ticks.x = element_line(color = "gray"),
+    axis.text.x = element_text(size = 13),
+    axis.title.x = element_text(size = 15)
+  )
+
+library(geomtextpath)
+library(nationalparkcolors)
+
+library(geomtextpath)
+
+smokies_cols <- setNames(
+  park_palette("SmokyMountains"),
+  c("tS1", "tS2", "tS3")
+)
+
+ggplot(score_long, aes(x = singscore, fill = program, color = program)) +
+  geom_density(
+    alpha = 0.3,
+    color = NA,
+    show.legend = FALSE
+  ) +
+  geom_textdensity(
+    aes(label = program),
+    linewidth = 1.1,
+    size = 5,
+    gap = TRUE,
+    vjust = 0.5,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(values = park_palette("Badlands")) +
+  scale_fill_manual(values = park_palette("Badlands")) +
+  labs(
+  x = "singScore",
+  y = "Density",
+  caption = "Using the Badlands National Park palette (nationalparkcolors)\nLayered rock formations and mixed-grass prairie. Yellow mounds and eroded pink-red formations"
+  ) +
+  theme_classic() +
+  theme(
+    axis.title.y = element_text(size = 13),
+    axis.ticks.y = element_line(color = "gray"),
+    axis.text.y = element_text(size = 13),
+    axis.ticks.x = element_line(color = "gray"),
+    axis.text.x = element_text(size = 13),
+    axis.title.x = element_text(size = 15),
+    plot.caption = element_text(size = 10, hjust = 0, color = "gray30"),
+    legend.position = "none"
+  )
+```
+# raw singscores are clearly on different scales
+
+tS1 mean = 0.349, sd = 0.084
+tS2 mean = 0.281, sd = 0.038
+tS3 mean = 0.006, sd = 0.035
+
+```{r}
+summary(program_scores[, score_cols])
+```
+
+
+```{r}
+sapply(program_scores[, score_cols], sd)
+```
+
+## z-score each program score across samples
+
+```{r}
+z_scores <- scale(program_scores[, score_cols])
+
+colnames(z_scores) <- paste0(names(program_genes), "_z")
+
+program_scores <- cbind(
+  program_scores,
+  as.data.frame(z_scores)
+)
+
+z_cols <- colnames(z_scores)
+```
+
+
+## assign each sample to the program with max z-score
+
+```{r}
+z_mat <- as.matrix(program_scores[, z_cols])
+
+program_scores$Kim_subtype <- names(program_genes)[
+  max.col(z_mat, ties.method = "first")
+]
+
+table(program_scores$Kim_subtype)
+```
+
+
+
+```{r}
+head(program_scores)
+```
+
+## check: does each program show a cluster split?
+
+```{r}
+cluster_results <- list()
+
+for (program in names(program_genes)) {
+  
+  genes <- program_genes[[program]]
+  score_col <- paste0(program, "_singscore")
+  
+  mat <- rna_luad[, genes, drop = FALSE]
+  
+  # z-score each gene across samples
+  mat_z <- scale(mat)
+  
+  # cluster samples using only this program's genes
+  sample_hclust <- hclust(
+    dist(mat_z),
+    method = "complete"
+  )
+  
+  clusters <- cutree(sample_hclust, k = 2) # 2 clusters: high & low
+  
+  score_vec <- program_scores[[score_col]]
+  names(score_vec) <- program_scores$sample
+  
+  cluster_df <- data.frame(
+    sample = names(clusters),
+    program = program,
+    cluster = paste0("cluster_", clusters),
+    singscore = score_vec[names(clusters)]
+  )
+  
+  cluster_medians <- aggregate(singscore ~ cluster, cluster_df, median)
+  
+  high_cluster <- cluster_medians$cluster[
+    which.max(cluster_medians$singscore)
+  ]
+  
+  cluster_df$group <- ifelse(
+    cluster_df$cluster == high_cluster,
+    paste0(program, "_high"),
+    paste0(program, "_low")
+  )
+  
+  wilcox_res <- wilcox.test(singscore ~ group, data = cluster_df)
+  
+  cluster_results[[program]] <- list(
+    cluster_df = cluster_df,
+    counts = table(cluster_df$group),
+    medians = cluster_medians,
+    p_value = wilcox_res$p.value,
+    hclust = sample_hclust
+  )
+}
+```
+
+
+
+```{r}
+plot_df <- do.call(
+  rbind,
+  lapply(cluster_results, function(x) x$cluster_df)
+)
+
+plot_df <- plot_df |> 
+  mutate(
+    group_short = if_else(grepl("_high$", group), "high", "low"),
+    plot_group = paste(program, group_short),
+    plot_group = factor(
+      plot_group,
+      levels = c(
+        "tS1 low", "tS1 high",
+        "tS2 low", "tS2 high",
+        "tS3 low", "tS3 high"
+      )
+    )
+  )
+
+annot_df <- plot_df |> 
+  group_by(program) |> 
+  summarise(
+    x_start = min(as.numeric(plot_group)) + 0.15,
+    x_end = max(as.numeric(plot_group)) - 0.15,
+    x_mid = mean(as.numeric(plot_group)),
+    y_line = max(singscore, na.rm = TRUE) +
+      0.08 * diff(range(singscore, na.rm = TRUE)),
+    y_star = max(singscore, na.rm = TRUE) +
+      0.14 * diff(range(singscore, na.rm = TRUE)),
+    .groups = "drop"
+  )
+```
+
+
+```{r, fig.width=10, fig.height=6}
+clusters <- ggplot(plot_df, aes(x = plot_group, y = singscore)) +
+  geom_boxplot(
+    fill = "gray",
+    color = "darkgray",
+    staplewidth = 0.3
+  ) +
+  stat_summary(
+    geom = "crossbar",
+    fun = median,
+    fun.min = median,
+    fun.max = median,
+    width = 0.75,
+    linewidth = 0.15
+  ) +
+  annotate(
+    geom = "segment",
+    x = 1.1, xend = 1.9,
+    y = max(plot_df$singscore[plot_df$program == "tS1"]) + 0.02,
+    yend = max(plot_df$singscore[plot_df$program == "tS1"]) + 0.02
+  ) +
+  annotate(
+    geom = "text",
+    x = 1.5,
+    y = max(plot_df$singscore[plot_df$program == "tS1"]) + 0.035,
+    label = "*",
+    size = 5
+  ) +
+  annotate(
+    geom = "segment",
+    x = 3.1, xend = 3.9,
+    y = max(plot_df$singscore[plot_df$program == "tS2"]) + 0.02,
+    yend = max(plot_df$singscore[plot_df$program == "tS2"]) + 0.02
+  ) +
+  annotate(
+    geom = "text",
+    x = 3.5,
+    y = max(plot_df$singscore[plot_df$program == "tS2"]) + 0.035,
+    label = "*",
+    size = 5
+  ) +
+  annotate(
+    geom = "segment",
+    x = 5.1, xend = 5.9,
+    y = max(plot_df$singscore[plot_df$program == "tS3"]) + 0.02,
+    yend = max(plot_df$singscore[plot_df$program == "tS3"]) + 0.02
+  ) +
+  annotate(
+    geom = "text",
+    x = 5.5,
+    y = max(plot_df$singscore[plot_df$program == "tS3"]) + 0.035,
+    label = "*",
+    size = 5
+  ) +
+  labs(
+    x = "Kim LUAD program",
+    y = "singScore"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_classic(base_family = "Helvetica") +
+  theme(
+    axis.title.y = element_text(size = 13),
+    axis.ticks.y = element_line(color = "gray"),
+    axis.text.y = element_text(size = 13),
+    axis.ticks.x = element_blank(),
+    axis.text.x = element_text(size = 15),
+    axis.title.x = element_text(size = 15)
+  )
+
+clusters
+```
+
+```{r}
+ggsave("clusters.png", width = 8, height = 4)
+```
+
+
