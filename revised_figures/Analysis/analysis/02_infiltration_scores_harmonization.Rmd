@@ -1,0 +1,181 @@
+---
+title: "Tumor infiltration"
+author: "Daniel Schulz"
+date: "2025-03-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+```{r}
+mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
+old_mount <- "/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/"
+
+if (!dir.exists(out_folder)) {
+  dir.create(out_folder)
+}
+```
+
+```{r}
+library(SingleCellExperiment)
+library(imcRtools)
+library(cytomapper)
+library(tidyverse)
+library(dittoSeq)
+library(viridis)
+library(doParallel)
+library(BiocParallel)
+library(scuttle)
+```
+
+# calculate CD8 T cell phenotypes for mIF
+
+```{r}
+library(BiocParallel)
+cur_files <- list.files(paste0(old_mount,"IF/IF3/tsv"), 
+                        pattern = ".rds$", full.names = TRUE)
+
+inf_dat <- bplapply(cur_files,function(x){
+  cur_sce <- readRDS(x)
+  print(unique(cur_sce$sample_id))
+  
+  
+  if (ncol(cur_sce) > 20000) {
+
+      tumor_sce <- cur_sce[,cur_sce$dist_to_tumor < 500]
+
+      # the average cell radius is roughly 6.6-6.8 µm. we will therefore use 17 µm as a distance for graph building to have roughly 4 µm between cells
+      tumor_sce <- buildSpatialGraph(tumor_sce, img_id = "sample_id",
+                                     type = "expansion", 
+                                     threshold = 17,
+                                     coords = c("nucleus.x", "nucleus.y"),name = "exp_graph")
+
+      tumor_sce <- aggregateNeighbors(tumor_sce, 
+                                      colPairName = "exp_graph", # select appropriate spatial graph
+                                      aggregate_by = "metadata", 
+                                      count_by = "celltype", # cell type level
+                                      proportions = FALSE, 
+                                      name = "count_neighbors")
+      tumor_size = sum(unlist(lapply(colnames(colData(tumor_sce))[grep("patch_\\d_size",colnames(colData(tumor_sce)))],function(x){unique(colData(tumor_sce)[[x]])})))
+      
+      cur_dat <- tumor_sce$count_neighbors %>% as.data.frame
+      rownames(cur_dat) <- tumor_sce$cell.ID
+      cur_dat$celltypes <- tumor_sce$celltype
+      cur_dat$sample_id <- tumor_sce$sample_id
+      cur_dat$immucan_id <- str_split_i(cur_dat$sample_id,"-FIXT",1)
+      cur_dat$sample_id <- NULL
+      
+      # Define CD8+ T cells as infiltrating, bystanding, ignored
+      cur_dat <- cur_dat %>% filter(celltypes == "CD8") %>% 
+        mutate(CD8Tcell_type = ifelse(Tumor >= 3, "infiltrating", 
+                                      ifelse(Tumor < 3 & Tumor > 0, "bystanding", "ignored")))
+      out <- cur_dat %>% group_by(immucan_id, CD8Tcell_type) %>% dplyr::count() %>% 
+        pivot_wider(id_cols = immucan_id, values_from = n, names_from = CD8Tcell_type, values_fill = 0)
+      out$im_size <- tumor_size
+      return(out)
+  }
+}, BPPARAM = MulticoreParam(workers = 10))
+
+gc()
+
+out_mIF <- do.call(rbind,inf_dat)
+out_mIF <- ungroup(out_mIF)
+  
+
+```
+
+# calculate CD8 T cell phenotypes for IMC1
+```{r}
+sce <- readRDS(paste0(mount_path,"data/IMC/Panel_1/Rout/sce.rds"))
+sce <- sce[,sce$ROI != 4]
+sce <- aggregateNeighbors(sce, 
+                          colPairName = "neighborhood", # select appropriate spatial graph
+                          aggregate_by = "metadata", 
+                          count_by = "celltypes", # cell type level
+                          proportions = FALSE, 
+                          name = "count_neighbors")
+
+cur_dat <- sce$count_neighbors %>% as.data.frame
+rownames(cur_dat) <- sce$cell_id
+cur_dat$celltypes <- sce$celltypes
+cur_dat$immucan_id <- sce$immucan_id
+
+# Define CD8+ T cells as infiltrating, bystanding, ignored
+cur_dat <- cur_dat %>% filter(celltypes == "CD8") %>% 
+  mutate(CD8Tcell_type = ifelse(Tumor >= 3, "infiltrating", 
+                                ifelse(Tumor < 3 & Tumor > 0, "bystanding", "ignored")))
+
+sce$CD8Tcell_type <- cur_dat$CD8Tcell_type[match(sce$cell_id, rownames(cur_dat))]
+
+# calculate image/tissue area
+im_size <- data.frame(immucan_id = sce$immucan_id,
+                      sample_id = sce$sample_id,
+                      im_size = sce$width_px*sce$height_px/10^6) %>%
+  distinct() %>%
+  group_by(immucan_id) %>%
+  summarise(im_size = sum(im_size))
+
+# normalize by image/tissue area
+out_P1 <- cur_dat %>% group_by(immucan_id, CD8Tcell_type) %>% dplyr::count() %>% 
+  pivot_wider(id_cols = immucan_id, values_from = n, names_from = CD8Tcell_type, values_fill = 0) %>% 
+  left_join(im_size,by = "immucan_id") %>%
+  ungroup()
+
+gc()
+```
+
+
+# calculate CD8 T cell phenotypes for IMC2
+```{r}
+sce <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/sce.rds"))
+
+sce <- aggregateNeighbors(sce, 
+                          colPairName = "neighborhood", # select appropriate spatial graph
+                          aggregate_by = "metadata", 
+                          count_by = "celltypes", # cell type level
+                          proportions = FALSE, 
+                          name = "count_neighbors")
+
+cur_dat <- sce$count_neighbors %>% as.data.frame
+rownames(cur_dat) <- colnames(sce)
+cur_dat$celltypes <- sce$celltypes
+cur_dat$immucan_id <- sce$immucan_id
+
+# Define CD8+ T cells as infiltrating, bystanding, ignored
+cur_dat <- cur_dat %>% filter(celltypes == "CD8") %>% 
+  mutate(CD8Tcell_type = ifelse(Tumor >= 3, "infiltrating", 
+                                ifelse(Tumor < 3 & Tumor > 0, "bystanding", "ignored")))
+
+sce$CD8Tcell_type <- cur_dat$CD8Tcell_type[match(colnames(sce), rownames(cur_dat))]
+
+# calculate image/tissue area
+im_size <- data.frame(immucan_id = sce$immucan_id,
+                      sample_id = sce$sample_id,
+                      im_size = sce$width_px*sce$height_px/10^6) %>%
+  distinct() %>%
+  group_by(immucan_id) %>%
+  summarise(im_size = sum(im_size))
+
+
+# normalize by image/tissue area
+out_P2 <- cur_dat %>% group_by(immucan_id, CD8Tcell_type) %>% dplyr::count() %>% 
+  pivot_wider(id_cols = immucan_id, values_from = n, names_from = CD8Tcell_type, values_fill = 0) %>% 
+  left_join(im_size,by = "immucan_id") %>%
+  ungroup()
+```
+
+# merge data
+```{r}
+out_P1$tech <- "IMC1"
+out_P2$tech <- "IMC2"
+out_mIF$tech <- "mIF"
+out <- rbind(out_P1,out_P2)
+out <- rbind(out, out_mIF)
+
+saveRDS(out,paste0(out_folder,"infiltration_harmonized.rds"))
+```
+

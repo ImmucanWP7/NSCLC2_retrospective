@@ -1,0 +1,325 @@
+---
+title: "Figure_1_supp"
+author: "Daniel Schulz"
+date: "2023-12-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(ggnewscale)
+library(SingleCellExperiment)
+```
+
+```{r}
+mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_2_supp/"
+
+if (!dir.exists(out_folder)) {
+  dir.create(out_folder)
+}
+```
+# S1C IMC P1 - P2 correlation
+## load data
+```{r}
+d1 <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/celltypes_density_dat_p1.csv"))
+d2 <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/celltypes_density_dat_p2.csv")) 
+
+colnames(d1) <- c("immucan_id",paste0(colnames(d1)[-1],"__IMC1"))
+colnames(d2) <- c("immucan_id",paste0(colnames(d2)[-1],"__IMC2"))
+d1
+d2
+
+dens_dat <- left_join(d1,d2,"immucan_id")
+```
+
+## correlation plot
+```{r, fig.height=18, fig.width=16}
+# correlation
+cor <- psych::corr.test(dens_dat[,grepl("_IMC1",colnames(dens_dat))],dens_dat[,grepl("_IMC2",colnames(dens_dat))],  method = "pearson",adjust = "BH")
+
+# format correlation matrix
+cur_dat <- as.data.frame(cor$r)
+cur_dat$variable <- rownames(cur_dat)
+dat_long <- reshape2::melt(cur_dat,id.vars="variable")
+colnames(dat_long) <- c("cell_types_IMC_P1","cell_types_IMC_P2","correlation")
+
+#get p-value matrix
+p_dat <- as_tibble(cor$p)
+p_dat$variable <- rownames(cur_dat)
+pdat_long <- reshape2::melt(p_dat,id.vars="variable")
+colnames(pdat_long) <- c("cell_types_IMC_P1","cell_types_IMC_P2","p_adj")
+
+dat_long$p_adj <- pdat_long$p_adj
+
+
+# plot
+cor_filter <- 0.2
+dat_long <- dat_long %>%
+   mutate(cell_types_IMC_P1 = gsub("_density","",cell_types_IMC_P1),
+          cell_types_IMC_P2 = gsub("_density","",cell_types_IMC_P2),
+          sig = ifelse(p_adj < 0.1,TRUE, FALSE))
+
+
+p <-  dat_long %>%
+   filter(abs(correlation) > cor_filter) %>%
+   ggplot(aes(x=factor(cell_types_IMC_P1, levels=sort(unique(dat_long$cell_types_IMC_P1))),y = factor(cell_types_IMC_P2, levels=sort(unique(dat_long$cell_types_IMC_P2))),col = correlation, size= -log10(p_adj)))+
+    geom_point()+
+    theme_bw()+
+    scale_color_gradient2(low =  "darkblue",mid = "white",high = "red", name = expression("Pearson's" ~ rho))+
+    scale_size(range = c(1,6))+
+    new_scale_colour() +
+    geom_point(data = dat_long %>% filter(abs(correlation) > cor_filter),shape = 1,aes(size = -log10(p_adj), col = sig), stroke =1)+
+    scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
+    theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size =8),
+          axis.text.y = element_text(size = 8),
+          legend.text = element_text(size = 8),
+          legend.title = element_text(size = 8),
+          legend.position = "right")+
+  labs(y = "IMC panel 2 cell types",x = "IMC panel 1 cell types")
+p
+
+
+ggsave(plot = p, paste0(out_folder,"S2A_IMC_mIF_cell_type_correlation.pdf"),
+       device = "pdf", 
+       height = 5,
+       width = 6)
+
+# reprting n
+dens_dat %>%
+  select(immucan_id,Tumor__IMC1, Tumor__IMC2) %>%
+  summarise(across(-immucan_id, ~sum(!is.na(.))))
+```
+
+```{r}
+dat_long %>%
+  mutate(p1 = str_split_i(cell_types_IMC_P1,"__",1),
+         p2 = str_split_i(cell_types_IMC_P2,"__",1)) %>%
+  filter(correlation > 0.6)
+
+dat_long %>%
+  mutate(p1 = str_split_i(cell_types_IMC_P1,"__",1),
+         p2 = str_split_i(cell_types_IMC_P2,"__",1)) %>%
+  filter(p1 == p2,
+         correlation > 0.5)
+```
+
+# S2B Neutrophils stats panel 2
+```{r}
+library(ggpubr)
+p <- d2 %>%
+  pivot_longer(cols = c(Neutrophil__IMC2,PMN_MDSC__IMC2, MDSC__IMC2)) %>%
+  mutate(value = ifelse(value == 0, 0.1,value)) %>%
+  ggplot(aes(x = name, y = value, fill = name))+
+  geom_boxplot()+
+  geom_jitter(aes(color = name),position = position_jitterdodge(jitter.width = 0.2))+ 
+  scale_fill_manual(values = alpha(c("orange", "darkgreen", "blue"),alpha = 0.6))+
+  scale_color_manual(values = c("orange", "darkgreen", "blue"))+
+  theme_bw()+
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_text(angle=90,hjust = 1,vjust =0.5))+
+  stat_compare_means(paired = TRUE,na.rm = TRUE, method = "wilcox.test",comparisons = list( c("MDSC__IMC2", "Neutrophil__IMC2"), c("MDSC__IMC2", "PMN_MDSC__IMC2"), c("PMN_MDSC__IMC2", "Neutrophil__IMC2") ))+
+  scale_y_log10()+
+  ylab(expression("Log10 density [mm"^2*"]"))+
+  guides(color=guide_legend(title="cell type"),
+         fill=guide_legend(title="cell type"))
+p
+ggsave(plot = p,
+       paste0(out_folder,"S2B_neutrophil_abundance.pdf"),
+       device = "pdf", 
+       height = 7,
+       width = 4.5)
+
+# reporting n
+d2 %>%
+  pivot_longer(cols = c(Neutrophil__IMC2,PMN_MDSC__IMC2, MDSC__IMC2)) %>%
+  distinct(immucan_id)
+```
+
+
+# mean correlation of matche cell types
+```{r, fig.height=18, fig.width=16}
+dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
+
+celltype_dens_dat <- dens_dat %>%
+  pivot_longer(-immucan_id) %>%
+  mutate(celltype = str_split_i(name,"_",1),
+         tech = str_split_i(name,"__",2)) %>%
+  group_by(immucan_id,celltype, tech) %>%
+  summarise(count = sum(value)) %>%
+  pivot_wider(id_cols = immucan_id,values_from = (count),names_from = c(celltype,tech),names_sep = "__") %>%
+  ungroup()
+
+
+# correlation
+cor <- psych::corr.test(celltype_dens_dat[,grepl("_IMC",colnames(celltype_dens_dat))],celltype_dens_dat[,grepl("__IF",colnames(celltype_dens_dat))],  method = "pearson",adjust = "BH")
+
+# format correlation matrix
+cur_dat <- as.data.frame(cor$r)
+cur_dat$variable <- rownames(cur_dat)
+dat_long <- reshape2::melt(cur_dat,id.vars="variable")
+colnames(dat_long) <- c("cell_types_IMC","cell_types_mIF","correlation")
+
+#get p-value matrix
+p_dat <- as_tibble(cor$p)
+p_dat$variable <- rownames(cur_dat)
+pdat_long <- reshape2::melt(p_dat,id.vars="variable")
+colnames(pdat_long) <- c("cell_types_IMC","cell_types_mIF","p_adj")
+
+dat_long$p_adj <- pdat_long$p_adj
+
+# plot
+dat_long <- dat_long %>%
+   mutate(cell_types_IMC = gsub("_density","",cell_types_IMC),
+          cell_types_mIF = gsub("_density","",cell_types_mIF),
+          sig = ifelse(p_adj < 0.1,TRUE, FALSE))
+
+
+dat_long %>%
+  mutate(IMC = str_split_i(cell_types_IMC,"_",1),
+         IF = str_split_i(cell_types_mIF,"_",1),
+          match = IMC == IF) %>%
+  filter(match == TRUE) %>% arrange(correlation) %>%
+  summarise(mean_cor = mean(abs(correlation)))
+```
+
+
+
+# S2C IF IMC correlation
+## load data
+```{r}
+dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
+
+# remove columns that are positivity for each marker
+dens_dat <- dens_dat[,!grepl("all", colnames(dens_dat))]
+```
+
+## correlation plot
+```{r, fig.height=18, fig.width=16}
+# correlation
+cor <- psych::corr.test(dens_dat[,grepl("_IMC",colnames(dens_dat))],dens_dat[,grepl("__IF",colnames(dens_dat))],  method = "pearson",adjust = "BH")
+
+# format correlation matrix
+cur_dat <- as.data.frame(cor$r)
+cur_dat$variable <- rownames(cur_dat)
+dat_long <- reshape2::melt(cur_dat,id.vars="variable")
+colnames(dat_long) <- c("cell_types_IMC","cell_types_mIF","correlation")
+
+#get p-value matrix
+p_dat <- as_tibble(cor$p)
+p_dat$variable <- rownames(cur_dat)
+pdat_long <- reshape2::melt(p_dat,id.vars="variable")
+colnames(pdat_long) <- c("cell_types_IMC","cell_types_mIF","p_adj")
+
+dat_long$p_adj <- pdat_long$p_adj
+
+dat_long <- dat_long %>%
+  mutate(sig = ifelse(p_adj < 0.1, TRUE,FALSE))
+
+# plot
+cor_filter <- 0.3
+dat_long <- dat_long %>%
+   mutate(cell_types_IMC = gsub("_density","",cell_types_IMC),
+          cell_types_mIF = gsub("_density","",cell_types_mIF))
+
+
+p <-  dat_long %>%
+   filter(abs(correlation) > cor_filter) %>%
+   ggplot(aes(x=factor(cell_types_IMC, levels=sort(unique(dat_long$cell_types_IMC))),y = factor(cell_types_mIF, levels=sort(unique(dat_long$cell_types_mIF))),col = correlation, size= -log10(p_adj)))+
+    geom_point()+
+    theme_bw()+
+    scale_color_gradient2(low =  "blue",mid = "white",high = "red", name = expression("Pearson's" ~ rho))+
+    scale_size(range = c(1,3))+
+    new_scale_colour() +
+    geom_point(data = dat_long %>% filter(abs(correlation) > cor_filter),shape = 1,aes(size = -log10(p_adj), col = sig), stroke =1)+
+    scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
+    theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 6),
+          axis.text.y = element_text(size = 6),
+          legend.text = element_text(size = 6),
+          legend.title = element_text(size = 6),
+          legend.position = "bottom")+
+  labs(y = "IF cell types",x = "IMC cell types")
+p
+
+
+ggsave(plot = p, paste0(out_folder,"S2C_IMC_mIF_cell_type_correlation.pdf"),
+       device = "pdf", 
+       height = 7,
+       width = 6.5)
+
+# reporting n
+dens_dat %>%
+  pivot_longer(-immucan_id) %>%
+  filter(!is.na(value)) %>%
+  mutate(tech = str_split_i(name,"__",2)) %>%
+  select(immucan_id,tech) %>%
+  distinct() %>%
+  group_by(immucan_id) %>%
+  dplyr::count(tech) %>%
+  summarise(total = sum(n)) %>%
+  filter(total  == 5)
+
+```
+
+
+# mean correlation of matche cell types
+```{r, fig.height=18, fig.width=16}
+celltype_dens_dat <- dens_dat %>%
+  pivot_longer(-immucan_id) %>%
+  mutate(celltype = str_split_i(name,"_",1),
+         tech = str_split_i(name,"__",2)) %>%
+  group_by(immucan_id,celltype, tech) %>%
+  summarise(count = sum(value)) %>%
+  pivot_wider(id_cols = immucan_id,values_from = (count),names_from = c(celltype,tech),names_sep = "__") %>%
+  ungroup()
+
+
+# correlation
+cor <- psych::corr.test(celltype_dens_dat[,grepl("_IMC",colnames(celltype_dens_dat))],celltype_dens_dat[,grepl("__IF",colnames(celltype_dens_dat))],  method = "pearson",adjust = "BH")
+
+# format correlation matrix
+cur_dat <- as.data.frame(cor$r)
+cur_dat$variable <- rownames(cur_dat)
+dat_long <- reshape2::melt(cur_dat,id.vars="variable")
+colnames(dat_long) <- c("cell_types_IMC","cell_types_mIF","correlation")
+
+#get p-value matrix
+p_dat <- as_tibble(cor$p)
+p_dat$variable <- rownames(cur_dat)
+pdat_long <- reshape2::melt(p_dat,id.vars="variable")
+colnames(pdat_long) <- c("cell_types_IMC","cell_types_mIF","p_adj")
+
+dat_long$p_adj <- pdat_long$p_adj
+
+dat_long <- dat_long %>%
+  mutate(sig = ifelse(p_adj <= 0.001 & p_adj > 0.0001,0.001,p_adj))
+
+dat_long <- dat_long %>%
+  mutate(sig = case_when(p_adj <= 0.0001 ~ "< 0.0001",
+                         p_adj <= 0.001 & p_adj > 0.0001 ~ "< 0.001",
+                         p_adj <= 0.01 & p_adj > 0.001 ~ "< 0.01",
+                         p_adj <= 0.1 & p_adj > 0.01 ~ "< 0.1",
+                         p_adj >0.1 ~ "ns"))
+
+
+# plot
+cor_filter <- 0.4
+dat_long <- dat_long %>%
+   mutate(cell_types_IMC = gsub("_density","",cell_types_IMC),
+          cell_types_mIF = gsub("_density","",cell_types_mIF))
+
+
+dat_long %>%
+  mutate(IMC = str_split_i(cell_types_IMC,"_",1),
+         IF = str_split_i(cell_types_mIF,"_",1),
+          match = IMC == IF) %>%
+  filter(match == TRUE) %>% arrange(correlation) %>%
+  summarise(mean_cor = mean(abs(correlation)))
+
+```
+

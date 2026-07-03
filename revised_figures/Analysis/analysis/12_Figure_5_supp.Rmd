@@ -1,0 +1,964 @@
+---
+title: "Figure S5"
+author: "Daniel Schulz"
+date: "2025-03-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(ggpubr)
+library(SingleCellExperiment)
+library(scales)
+library(ggnewscale)
+library(edgeR)
+library(cowplot)
+library(igraph)
+library(ggraph)
+library(ggrepel)
+library(survminer)
+library(survivalAnalysis)
+library(survival)
+```
+
+
+```{r}
+mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_5_supp/"
+
+if (!dir.exists(out_folder)) {
+  dir.create(out_folder)
+}
+```
+
+
+# load data
+we will load the data we generated at the beginning of figure 2
+```{r}
+dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/abundances_dat.rds"))
+dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
+cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
+clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+int_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/interaction_dat.rds"))
+traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
+
+# variables
+data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2))
+
+# colors
+hist_col_2 = setNames(c("blue","orange"),c("LUAD","LUSC"))
+hist_col_3 = setNames(c("blue","orange", "gray40"),c("LUAD","LUSC","Other"))
+```
+
+# hazards for oncogenes
+not in paper
+```{r}
+p.list <- list()
+for (i in c("TP53","KRAS", "EGFR","STK11", "PIK3CA")) {
+  for(j in c("Adenocarcinoma", "Squamous cell carcinoma")) {
+    cur_dat <- as.data.frame(traits)
+    #cur_dat[,i] <- as.factor(cur_dat[,i])
+    cur_dat <- cur_dat %>%
+      filter(!is.na(cur_dat[,i]),
+             simple_histology == j)
+    surv_ob <- Surv(cur_dat$time_to_event,cur_dat$censoring)
+    p.list[[paste0(j, "_",i)]] <- coxph( as.formula(paste0("surv_ob ~ simple_stage + ",i)),
+                          data = cur_dat)
+  }
+}
+
+df <- data.frame(HR =      unlist(lapply(p.list, function(x){summary(x)$coefficients[,"exp(coef)"][4]})),
+                 p.value = unlist(lapply(p.list, function(x){summary(x)$coefficients[, "Pr(>|z|)"][4]})),
+                 lower_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "lower .95"][4]})),
+                 upper_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "upper .95"][4]}))) 
+
+df1 <- df %>% 
+  mutate(hist = str_split_i(rownames(df),"_",1),
+         cond = str_split_i(rownames(df),"\\.",2),
+         cond = gsub("TRUE","mut", cond)) %>%
+  filter(!is.na(HR),
+         !(hist=="Squamous cell carcinoma" & cond == "EGFRmut"),
+         !(hist=="Adenocarcinoma" & cond == "PIK3CAmut"),
+         !(hist=="Adenocarcinoma" & cond == "EGFRmut"))
+
+p1 <- df1 %>%
+  mutate(cond = paste0(hist,"_",cond)) %>%
+  ggplot(aes(x = HR,y = cond, col = hist))+
+  geom_point(size = 2)+
+  geom_errorbar(aes(xmin=lower_conf, xmax = upper_conf),lwd =1,width = 0.3)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust= 1))+
+  scale_y_discrete(labels = function(x) str_split_i(x,"_",2))+
+  scale_x_log10()+
+  theme_bw()+
+  geom_vline(xintercept = 1,linetype = "dashed")+
+  geom_text(aes(label = paste0("p : ",round(p.value,digits = 3))),
+            col = "black",
+            vjust = -1,
+            inherit.aes = TRUE)+
+  scale_color_manual(values = c("Adenocarcinoma" = "blue", "Squamous cell carcinoma" = "orange"))
+
+# Kaplan Meier plot for EGFR since no patients die
+surv_fit <- survfit(Surv(time_to_event, censoring) ~ EGFR, data = traits)
+
+p2 <- ggsurvplot(surv_fit, data = traits %>% filter(simple_histology == "Adenocarcinoma"), risk.table = TRUE, pval = TRUE,palette = c("red","blue"))
+p2 <- p2$plot+
+  ylab("OS probability")+
+  xlab("Time (days)")
+
+p2 <- plot_grid(p2,ncol = 1, rel_heights = c(1,0.5))
+
+p <- plot_grid(p1,p2,ncol = 1,rel_heights = c(1,1))
+p
+
+```
+
+
+# S5A driver mutation enrichment in histology
+
+```{r, fig.height=8}
+cur_traits <- traits %>% select("LUAD_vs_LUSC")
+condition <- c("Adenocarcinoma")
+
+names(condition) <- colnames(cur_traits)
+plots_list <- list()
+for(j in c("TP53","KRAS","EGFR","STK11","PIK3CA","NF1","KEAP1", "CDKN2A")){
+  p.list <- list()
+  l.list <- list()
+  for (i in names(condition)) {
+    x <- factor(traits[[j]])
+    x <- relevel(x, ref = "FALSE")
+    
+    y <- factor(unlist(traits[,i]))
+    y <- relevel(y, ref = condition[i])
+    
+    p.list[[i]] <- fisher.test(table(x, y))
+    l.list[[i]] <- c(levels(y)[1])
+  }
+  
+  out <- data.frame(feature = names(p.list),
+                    p.value = unlist(lapply(p.list, function(x){
+                      x$p.value})),
+                    odds_ratio = unlist(lapply(p.list, function(x){
+                      x$estimate})),
+                    reference = unlist(l.list))
+  
+  
+  # generate annotation vector:
+  anno_vec <- c("LUSC_vs_LUAD")
+  out$annotation = anno_vec
+  out[,"mutation"] <- paste0(j,"mut")
+  plots_list[[j]]<- out 
+}
+
+cur_dat <- do.call(rbind,plots_list)
+
+cur_dat <- cur_dat %>%
+    mutate(odds_ratio = ifelse(is.infinite(odds_ratio),1024,odds_ratio),
+           odds_ratio = ifelse(odds_ratio == 0,2^-10,odds_ratio),
+           FDR = p.adjust(p.value,method = "BH"),
+           sig = ifelse(p.value < 0.05 & odds_ratio > 1, "UP_trend",NA),
+           sig = ifelse(FDR < 0.1 & odds_ratio > 1, "UP",sig),
+           sig = ifelse(p.value < 0.05 & odds_ratio < 1, "DOWN_trend",sig),
+           sig = ifelse(FDR < 0.1 & odds_ratio < 1, "DOWN",sig),
+           sig = ifelse(is.na(sig),"NOTSIG", sig),
+           p.value = ifelse(is.infinite(odds_ratio),NA,p.value),
+           odds_ratio = ifelse(odds_ratio == 0,1/max(odds_ratio),odds_ratio),
+           log_odds = log2(odds_ratio))
+
+min_down <- min(cur_dat$log_odds-1)
+max_up <- max(cur_dat$log_odds)
+
+p1 <- cur_dat %>%
+  ggplot(aes(x=mutation, y = annotation,col = log_odds, size= -log10(p.value)))+
+  geom_point()+
+  theme_bw()+
+  scale_colour_gradientn(colours = c("blue","white","red"), 
+                         values = rescale(c(round(min_down),0,round(max_up+1))),
+                         guide = "colorbar", limits=c(round(min_down),round(max_up+1)),name = "log2 odds ratio")+
+  scale_size(range = c(1,6))+
+  new_scale_colour() +
+  geom_point(data =cur_dat, shape = 1,aes(x = mutation,size = -log10(p.value), col = sig), stroke =1.75)+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","UP_trend" = "#e73032","NOTSIG" = "snow2"), name = "stats")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
+        axis.text.y = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        plot.margin = unit(c(0.5, 0,0,0), "cm"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.position = "none")
+p1
+
+ggsave(filename = paste0(out_folder,"S5A_Driver_enrichment_in_histology.pdf"),
+       plot = p1,
+       device = "pdf",
+       width = 3,
+       height = 1.5)
+```
+
+# S5A enrichment of clinical in oncogenes
+
+## LUAD
+```{r, fig.height=8}
+cur_traits <- traits %>% select("TPS_score", "TMB_score","age_dicho", "gender","stage_1_2","stage_1_3","stage_2_3","never_vs_current_smoker",
+            "never_vs_Ex_smoker","current_vs_Ex_smoker", "N0_vs_Nx","M0_vs_Mx")
+condition <- c("negative", "low","low", "Female","I","I","II","Non-smoker","Non-smoker","Ex-smoker", "node_neg", "met_neg")
+
+names(condition) <- colnames(cur_traits)
+plots_list <- list()
+cur_traits <- traits %>% filter(simple_histology == "Adenocarcinoma")
+for(j in c("TP53","KRAS","EGFR","STK11")){
+  p.list <- list()
+  l.list <- list()
+  for (i in names(condition)) {
+    x <- factor(cur_traits[[j]])
+    x <- relevel(x, ref = "FALSE")
+    
+    y <- factor(unlist(cur_traits[,i]))
+    y <- relevel(y, ref = condition[i])
+    
+    p.list[[i]] <- fisher.test(table(x, y))
+    l.list[[i]] <- c(levels(y)[1])
+  }
+  
+  out <- data.frame(feature = names(p.list),
+                    p.value = unlist(lapply(p.list, function(x){
+                      x$p.value})),
+                    odds_ratio = unlist(lapply(p.list, function(x){
+                      x$estimate})),
+                    reference = unlist(l.list))
+  
+  
+  # generate annotation vector:
+  anno_vec <- c("TPSpos_vs_TPSneg","TMBhigh_vs_TMBlow","HighAge_vs_lowAge","Male_vs_Female","StageII_vs_I","StageIII_vs_I","StageIII_vs_II","Smoker_vs_neverSmoker","formerSmoker_vs_neverSmoker","Smoker_vs_formerSmoker","NodePos_vs_NodeNeg","MetPos_Vs_MetNeg")
+  out$annotation = anno_vec
+  out[,"mutation"] <- paste0(j,"mut")
+  plots_list[[j]]<- out 
+}
+
+cur_dat <- do.call(rbind,plots_list)
+
+cur_dat_LUAD <- cur_dat %>%
+    mutate(FDR = p.adjust(p.value,method = "BH"),
+           sig = ifelse(p.value < 0.05 & odds_ratio > 1, "UP_trend",NA),
+           sig = ifelse(FDR < 0.1 & odds_ratio > 1, "UP",sig),
+           sig = ifelse(p.value < 0.05 & odds_ratio < 1, "DOWN_trend",sig),
+           sig = ifelse(FDR < 0.1 & odds_ratio < 1, "DOWN",sig),
+           sig = ifelse(is.na(sig),"NOTSIG", sig),
+           p.value = ifelse(is.infinite(odds_ratio),NA,p.value),
+           odds_ratio = ifelse(odds_ratio == 0,1/max(odds_ratio),odds_ratio),
+           log_odds = log2(odds_ratio))
+
+
+p <- cur_dat_LUAD %>%
+  ggplot(aes(x=mutation, y = annotation,col = log_odds, size= -log10(p.value)))+
+  geom_point()+
+  theme_bw()+
+  scale_colour_gradientn(colours = c("blue","white","red"), 
+                         values = rescale(c(round(min_down),0,round(max_up+1))),
+                         guide = "colorbar", limits=c(round(min_down),round(max_up+1)))+
+  scale_size(range = c(1,6))+
+  new_scale_colour() +
+  geom_point(shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.75)+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","UP_trend" = "#e73032","NOTSIG" = "snow2"), name = "stats")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
+        axis.text.y = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        plot.margin = unit(c(0.5, 0,0,0), "cm"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+p
+
+```
+
+## LUSC
+```{r, fig.height=8}
+cur_traits <- traits %>% select("TPS_score", "TMB_score","age_dicho", "gender","stage_1_2","stage_1_3","stage_2_3","current_vs_Ex_smoker", "N0_vs_Nx","M0_vs_Mx")
+condition <- c("negative", "low","low", "Female","I","I","II","Ex-smoker", "node_neg", "met_neg")
+
+names(condition) <- colnames(cur_traits)
+plots_list <- list()
+cur_traits <- traits %>% filter(simple_histology == "Squamous cell carcinoma")
+for(j in c("TP53","PIK3CA", "CDKN2A")){
+  p.list <- list()
+  l.list <- list()
+  for (i in names(condition)) {
+    x <- factor(cur_traits[[j]])
+    x <- relevel(x, ref = "FALSE")
+    
+    y <- factor(unlist(cur_traits[,i]))
+    y <- relevel(y, ref = condition[i])
+    
+    p.list[[i]] <- fisher.test(table(x, y))
+    l.list[[i]] <- c(levels(y)[1])
+  }
+  
+  out <- data.frame(feature = names(p.list),
+                    p.value = unlist(lapply(p.list, function(x){
+                      x$p.value})),
+                    odds_ratio = unlist(lapply(p.list, function(x){
+                      x$estimate})),
+                    reference = unlist(l.list))
+  
+  
+  # generate annotation vector:
+  anno_vec <- c("TPSpos_vs_TPSneg","TMBhigh_vs_TMBlow","HighAge_vs_lowAge","Male_vs_Female","StageII_vs_I","StageIII_vs_I","StageIII_vs_II","Smoker_vs_formerSmoker","NodePos_vs_NodeNeg","MetPos_Vs_MetNeg")
+  out$annotation = anno_vec
+  out[,"mutation"] <- paste0(j,"mut")
+  plots_list[[j]]<- out
+}
+
+cur_dat <- do.call(rbind,plots_list)
+
+
+cur_dat_LUSC <-  cur_dat %>%
+    mutate(FDR = p.adjust(p.value,method = "BH"),
+           sig = ifelse(p.value < 0.05 & odds_ratio > 1, "UP_trend",NA),
+           sig = ifelse(FDR < 0.1 & odds_ratio > 1, "UP",sig),
+           sig = ifelse(p.value < 0.05 & odds_ratio < 1, "DOWN_trend",sig),
+           sig = ifelse(FDR < 0.1 & odds_ratio < 1, "DOWN",sig),
+           sig = ifelse(is.na(sig),"NOTSIG", sig),
+           p.value = ifelse(is.infinite(odds_ratio),NA,p.value),
+           odds_ratio = ifelse(odds_ratio == 0,1/max(odds_ratio),odds_ratio),
+           odds_ratio = ifelse(is.infinite(odds_ratio),NA,odds_ratio),
+           log_odds = log2(odds_ratio))
+
+p <- cur_dat_LUSC %>%
+  ggplot(aes(x=mutation, y = annotation,col = log_odds, size= -log10(p.value)))+
+  geom_point()+
+  theme_bw()+
+  scale_colour_gradientn(colours = c("blue","white","red"), 
+                         values = rescale(c(round(min_down),0,round(max_up+1))),
+                         guide = "colorbar", limits=c(round(min_down),round(max_up+1)))+
+  scale_size(range = c(1,6))+
+  new_scale_colour() +
+  geom_point(shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.75)+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","UP_trend" = "#e73032","NOTSIG" = "snow2"), name = "stats")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
+        axis.text.y = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        plot.margin = unit(c(0.5, 0,0,0), "cm"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+p
+
+```
+
+
+## plot LUSC and LUAD together
+
+```{r}
+cur_dat_LUAD$histology <- "LUAD"
+cur_dat_LUSC$histology <- "LUSC"
+
+cur_dat <- rbind(cur_dat_LUAD,cur_dat_LUSC)
+
+cur_dat <- cur_dat %>%
+  mutate(FDR = p.adjust(p.value,method = "BH"),
+         sig = ifelse(p.value < 0.05 & odds_ratio > 1, "UP_trend",NA),
+         sig = ifelse(FDR < 0.1 & odds_ratio > 1, "UP",sig),
+         sig = ifelse(p.value < 0.05 & odds_ratio < 1, "DOWN_trend",sig),
+         sig = ifelse(FDR < 0.1 & odds_ratio < 1, "DOWN",sig),
+         sig = ifelse(is.na(sig),"NOTSIG", sig),
+         p.value = ifelse(is.infinite(odds_ratio),NA,p.value),
+         odds_ratio = ifelse(odds_ratio == 0,1/max(odds_ratio),odds_ratio),
+         log_odds = log2(odds_ratio),
+         mutation = paste0(histology,"_",mutation))
+p <- cur_dat %>%
+  ggplot(aes(x=mutation, y = annotation,col = log_odds, size= -log10(p.value)))+
+  geom_point()+
+  theme_bw()+
+  scale_colour_gradientn(colours = c("blue","white","red"), 
+                         values = rescale(c(round(min_down),0,round(max_up+1))),
+                         guide = "colorbar", limits=c(round(min_down),round(max_up+1)))+
+  scale_size(range = c(1,6))+
+  new_scale_colour() +
+  geom_point(data = cur_dat ,shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.75)+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","UP_trend" = "#e73032","NOTSIG" = "snow2"), name = "stats")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
+        axis.text.y = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        plot.margin = unit(c(0.5, 0,0,0), "cm"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.location = "plot")
+
+p
+p2 <- plot_grid(p1,p,ncol = 1, rel_heights = c(1,4))
+p2
+ggsave(filename = paste0(out_folder,"S5A_driver_mutation_enrichment_in_clinical.pdf"),
+       plot = p2,
+       device = "pdf",
+       width = 6,
+       height = 7)
+```
+
+# S5B mean expression of markers across cell types and driver mutations
+```{r}
+mean_exp1 <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/mean_marker_expr_per_celltype_p1.csv"))
+mean_exp2 <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/mean_marker_expr_per_celltype_p2.csv"))
+
+# long format
+mean_exp1 <- mean_exp1 %>%
+  pivot_longer(-immucan_id)
+mean_exp2 <- mean_exp2 %>%
+  pivot_longer(-immucan_id)
+
+mean_exp1$tech <- "IMC1"
+mean_exp2$tech <- "IMC2"
+mean_exp <- rbind(mean_exp1,mean_exp2)
+
+mean_exp <- mean_exp %>%
+  mutate(celltypes = str_split_i(name,"-",1),
+         name = str_split_i(name,"-",2))
+```
+
+## panel 1 markers of interest - to be removeed
+```{r}
+markers_1 <- list()
+# we will not subcluters "uncertain" cells as the merging will be very difficult. we may inspect this at a later time point again
+
+mean_exp1 <- mean_exp %>%
+  filter(tech == "IMC1")
+#functional markers_1 for T cells
+markers_1[["CD4"]] <- mean_exp1 %>%
+  filter(grepl("CD27|LAG3|PD1|CD7|GrzB|ICOS|Ki67|TCF7",name)) %>%
+  pull(name) %>%
+  unique()
+
+markers_1[["CD8"]] <- mean_exp1 %>%
+  filter(grepl(pattern = "CD27|LAG3|PD1|CD7|GrzB|ICOS|Ki67|TCF7",name)) %>%
+  pull(name) %>%
+  unique()
+
+markers_1[["Treg"]] <- mean_exp1 %>%
+  filter(grepl(pattern = "CD27|LAG3|ICOS|Ki67|TCF7",name)) %>%
+  pull(name) %>% 
+  unique()
+
+# B and BnT cell markers_1
+markers_1[["BnT"]] <- mean_exp1 %>%
+  filter(grepl(pattern = "CD27|CD45RA|CD45RO|LAG3|PD1|CD7|GrzB|FOXP3|ICOS|Ki67|TCF7|VISTA|CD40|HLADR|CD38",name))%>% 
+  pull(name) %>%  
+  unique()
+
+markers_1[["B"]] <- mean_exp1 %>%  
+  filter(grepl(pattern = "CD27|CD40|Ki67",name)) %>% 
+  pull(name) %>% 
+  unique()
+
+# myeloid markers_1
+markers_1[["MacCD163"]] <- mean_exp1 %>%  
+  filter(grepl(pattern = "CD68|CD11c|PDL1|VISTA|CD40|CD14|CD206|IDO1|CD16",name)) %>% 
+  pull(name) %>% 
+  unique()
+
+# we will also use CD20 for DCs to detect those DCs that sit in TLS
+markers_1[["DC"]] <- mean_exp1 %>%  
+  filter(grepl(pattern = "PDL1|VISTA|CD40|IDO1|CD20",name)) %>% 
+  pull(name) %>%  
+  unique()
+
+# we will also use E-cad for HLADR cells as there may still be tumor cells in these cells
+markers_1[["HLADR"]] <- mean_exp1 %>%  
+  filter(grepl(pattern = "CD11b|CD163|CD68|CD11c|PDL1|ICOS|VISTA|TIM3|CD40|CD14|CD206|CD163|HLADR|Ecad",name)) %>%  
+  pull(name) %>%   
+  unique()
+
+# NK markers_1
+markers_1[["NK"]] <- mean_exp1 %>%  
+  filter(grepl(pattern = "CD7|GrzB|CD16|CD45RA|CD45RO",name)) %>%
+  pull(name) %>% 
+  unique()
+
+# Neutrophil markers_1
+markers_1[["Neutrophil"]] <- mean_exp1 %>%  
+  filter(grepl(pattern = "MPO|PDL1|VISTA",name)) %>% 
+  pull(name) %>% 
+  unique()
+
+# pDC markers_1
+markers_1[["pDC"]] <- mean_exp1 %>%  
+  filter(grepl(pattern = "CD303|CD4|GrzB|CD45RA|CD45RO|CD27",name)) %>%  
+  pull(name) %>%  
+  unique()
+
+# Plasma cell markers_1
+markers_1[["plasma"]] <- mean_exp1 %>%  
+  filter(grepl(pattern = "CD38|TCF7|CD27|CD45RA|CD45RO",name)) %>% 
+  pull(name) %>% 
+  unique()
+
+# stroma markers_1
+markers_1[["Mural"]] <- mean_exp1 %>%   
+  filter(grepl(pattern = "PDGFR|SMA",name)) %>% 
+  pull(name) %>% 
+  unique()
+
+# tumor markers_1
+markers_1[["Tumor"]] <- mean_exp1 %>%   
+  filter(grepl(pattern = "HLADR|CarbonicAnhydrase|cleavedPARP|PDL1|IDO1|CD15|Ki67|Ido|B2M",name)) %>%  
+  pull(name) %>%  
+  unique()
+```
+
+## panel 2 markers of interest - to be removed
+
+```{r}
+mean_exp2 <- mean_exp %>%
+  filter(tech == "IMC2")
+markers_2 <- list()
+# we will not subcluters "uncertain" cells as the merging will be very difficult. we may inspect this at a later time point again
+
+markers_2[["CD8"]] <- mean_exp2 %>% 
+  filter(grepl(pattern = "CD7$|PD1|Bcl2|GATA3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",name)) %>%
+  pull(name) %>%  
+  unique()
+  
+markers_2[["CD4"]] <- mean_exp2 %>% 
+  filter(grepl(pattern = "CD7$|PD1|Bcl2|GATA3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",name)) %>%
+  pull(name) %>%  
+  unique()
+markers_2[["Treg"]] <- mean_exp2 %>%
+  filter(grepl(pattern = "CD7$|Bcl2|GATA3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",name)) %>%
+  pull(name) %>%  
+  unique()
+
+
+# NK markers_2
+markers_2[["NK"]] <- mean_exp2 %>% 
+  filter(grepl(pattern = "Tbet|Bcl2|GATA3|NKG2A|EOMES|GITR",name)) %>%
+  pull(name) %>%  
+  unique()
+
+
+# B and BnT cell markers_2
+markers_2[["B"]] <- mean_exp2 %>%
+  filter(grepl(pattern = "Bcl2|Ki67",name)) %>%
+  pull(name) %>%  
+  unique()
+markers_2[["BnT"]] <- mean_exp2 %>% 
+  filter(grepl(pattern = "CD7$|PD1|FOXP3|Bcl2|GATA3|CD8a|LAG3|PD1|NKG2A|CXCL13|EOMES|CD137|CD134|Tbet|GITR|Tim3|Ki67",name)) %>%
+  pull(name) %>%  
+  unique()
+
+
+
+# myeloid markers_2
+markers_2[["MacCD204"]] <- mean_exp2 %>% 
+  filter(grepl(pattern = "CD11c|Arg1|MMP9|CD73|CD10|Tim3",name)) %>%
+  pull(name) %>%  
+  unique()
+markers_2[["MacCD209"]] <- mean_exp2 %>% 
+  filter(grepl(pattern = "CD11c|Arg1|MMP9|CD73|CD10|Tim3",name)) %>%
+  pull(name) %>%  
+  unique()
+markers_2[["MacCD204_CD209"]] <- mean_exp2 %>%
+  filter(grepl(pattern = "CD11c|Arg1|MMP9|CD73|CD10|Tim3",name)) %>%
+  pull(name) %>%  
+  unique()
+# DCs
+markers_2[["DC"]] <- mean_exp2 %>% 
+  filter(grepl(pattern = "CD137|Tim3|CD20$",name)) %>%
+  pull(name) %>%  
+  unique()
+markers_2[["mregDC"]] <- mean_exp2 %>% 
+  filter(grepl(pattern = "CD11c|CD137|Tim3",name)) %>%
+  pull(name) %>%  
+  unique()
+
+
+# MDSCs
+markers_2[["MDSC"]] <- mean_exp2 %>%
+  filter(grepl(pattern = "CD11b|CD10|CXCL8|Arg1|MMP9",name)) %>%
+  pull(name) %>%  
+  unique()
+markers_2[["PMN_MDSC"]] <- mean_exp2 %>%
+  filter(grepl(pattern = "CD11b|CD15$|CD66b|CD10|CXCL8|Arg1|MMP9",name)) %>%
+  pull(name) %>%  
+  unique()
+markers_2[["Neutrophil"]] <- mean_exp2 %>%
+  filter(grepl(pattern = "CD11b|CD15$|CD66b|CD10|CXCL8|Arg1|MMP9",name)) %>%
+  pull(name) %>%  
+  unique()
+
+
+# stroma markers_2
+markers_2[["Vasculature"]] <- mean_exp2 %>% filter(grepl(pattern = "CD31|CD146",name)) %>%
+  pull(name) %>%  
+  unique()
+
+markers_2[["vCAF"]] <- mean_exp2 %>%
+  filter(grepl(pattern = "SMA|CD146",name)) %>%
+  pull(name) %>%  
+  unique()
+
+markers_2[["Fibro"]] <- mean_exp2 %>% 
+  filter(grepl(pattern = "Podoplanin|CD10|MMP9|SMA",name)) %>%
+  pull(name) %>%  
+  unique()
+
+
+# tumor markers_2
+markers_2[["Tumor"]] <- mean_exp2 %>%
+  filter(grepl(pattern = "panCK|Ecad|Arg1|EGFR|MMP9|p53|Lamp3|CD73|Bcl2|GATA3|CD155|CD10|CD56|CXCL8|Ki67|Podoplanin|IgG",name)) %>%
+  pull(name) %>%  
+  unique()
+
+```
+
+```{r, fig.height=15, fig.width=15}
+cur_files_1 <- lapply(names(markers_1), function(x){
+  cur_dat <- mean_exp %>%
+    filter(celltypes == x,
+           name %in% markers_1[[x]])
+})
+cur_files_2 <- lapply(names(markers_2), function(x){
+  mean_exp %>%
+    filter(celltypes == x,
+           name %in% markers_2[[x]])
+})
+
+mean_exp1 <- do.call(rbind,cur_files_1)
+mean_exp2 <- do.call(rbind,cur_files_2)
+
+mean_data <- distinct(rbind(mean_exp1,mean_exp2))
+
+mean_exp %>%
+  left_join(traits,"immucan_id") %>%
+  group_by(EGFR, celltypes,name) %>%
+  summarise(mean(value))
+
+library(dplyr)
+library(rstatix)
+
+p.list <- list()
+
+# LUAD EGFR
+p.list[["LUAD_EGFR"]] <- mean_data %>%
+  left_join(traits,"immucan_id") %>%
+  filter(!is.na(EGFR),
+         simple_histology == "Adenocarcinoma") %>%
+  group_by(celltypes, name) %>%
+  summarise(
+    wilcox_test = list(wilcox_test(value ~ EGFR, data = cur_data(), detailed = TRUE)),
+    logFC = log2(mean(value[EGFR == TRUE], na.rm = TRUE) / mean(value[EGFR == FALSE], na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  unnest(wilcox_test) %>%
+  mutate(condition = "LUAD_EGFR")
+
+# LUAD KRAS
+p.list[["LUAD_KRAS"]] <- mean_data %>%
+  left_join(traits,"immucan_id") %>%
+  filter(!is.na(KRAS),
+         simple_histology == "Adenocarcinoma") %>%
+  group_by(celltypes, name) %>%
+  summarise(
+    wilcox_test = list(wilcox_test(value ~ KRAS, data = cur_data(), detailed = TRUE)),
+    logFC = log2(mean(value[KRAS == TRUE], na.rm = TRUE) / mean(value[KRAS == FALSE], na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  unnest(wilcox_test) %>%
+  mutate(condition = "LUAD_KRAS")
+
+#LUAD STK11
+p.list[["LUAD_STK11"]] <- mean_data %>%
+  left_join(traits,"immucan_id") %>%
+  filter(!is.na(STK11),
+         simple_histology == "Adenocarcinoma") %>%
+  group_by(celltypes, name) %>%
+  summarise(
+    wilcox_test = list(wilcox_test(value ~ STK11, data = cur_data(), detailed = TRUE)),
+    logFC = log2(mean(value[STK11 == TRUE], na.rm = TRUE) / mean(value[STK11 == FALSE], na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  unnest(wilcox_test) %>%
+  mutate(condition = "LUAD_STK11")
+
+# LUAD TP53
+p.list[["LUAD_p53"]] <- mean_data %>%
+  left_join(traits,"immucan_id") %>%
+  filter(!is.na(TP53),
+         simple_histology == "Adenocarcinoma") %>%
+  group_by(celltypes, name) %>%
+  summarise(
+    wilcox_test = list(wilcox_test(value ~ TP53, data = cur_data(), detailed = TRUE)),
+    logFC = log2(mean(value[TP53 == TRUE], na.rm = TRUE) / mean(value[TP53 == FALSE], na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  unnest(wilcox_test) %>%
+  mutate(condition = "LUAD_TP53")
+
+# LUSC PIK3CA
+p.list[["LUSC_PIK3CA"]] <- mean_data %>%
+  left_join(traits,"immucan_id") %>%
+  filter(!is.na(PIK3CA),
+         simple_histology == "Squamous cell carcinoma") %>%
+  group_by(celltypes, name) %>%
+  summarise(
+    wilcox_test = list(wilcox_test(value ~ PIK3CA, data = cur_data(), detailed = TRUE)),
+    logFC = log2(mean(value[PIK3CA == TRUE], na.rm = TRUE) / mean(value[PIK3CA == FALSE], na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  unnest(wilcox_test) %>%
+  mutate(condition = "LUSC_PIK3CA")
+
+# LUSC TP53
+p.list[["LUSC_TP53"]] <- mean_data %>%
+  left_join(traits,"immucan_id") %>%
+  filter(!is.na(TP53),
+         simple_histology == "Squamous cell carcinoma") %>%
+  group_by(celltypes, name) %>%
+  summarise(
+    wilcox_test = list(wilcox_test(value ~ TP53, data = cur_data(), detailed = TRUE)),
+    logFC = log2(mean(value[TP53 == TRUE], na.rm = TRUE) / mean(value[TP53 == FALSE], na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  unnest(wilcox_test) %>%
+  mutate(condition = "LUSC_TP53")
+
+dat <- do.call(rbind,p.list)
+
+dat <- dat %>%
+  group_by(celltypes, condition) %>%
+  mutate(p_adjust =p.adjust(p = p,method = "BH"),
+         FCcutoff = ifelse(abs(logFC)>0.33,TRUE,FALSE),
+         show =  p_adjust < 0.1 & FCcutoff == TRUE)
+dat %>%
+  filter(celltypes == "Treg",
+         condition == "LUSC_PIK3CA")
+
+library(ggrepel)
+sce1 <- readRDS(paste0(mount_path,"data/IMC/Panel_1/Rout/sce.rds"))
+sce2 <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/sce.rds"))
+
+col_vec <- c(metadata(sce1)$colour_vectors$celltypes,metadata(sce2)$colour_vectors$cell_types)
+col_vec <- col_vec[!duplicated(names(col_vec))]
+
+
+
+p <- dat %>%
+  ggplot(aes(x = logFC,y = -log10(p), col= celltypes, shape = factor(condition)))+
+  geom_point(size = 4)+
+  geom_text_repel(data = dat %>% filter(show == TRUE),aes(x = logFC,y = -log10(p),label= paste(name, celltypes,sep = "-")), col = "black",size = 5,box.padding = 0.5,max.overlaps = 20)+
+  scale_color_manual(values = col_vec)+
+  theme_bw()+
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 12),
+        axis.text.x = element_text(size =12),
+        axis.text.y = element_text(size =12),
+        axis.title.x = element_text(size =12),
+        axis.title.y = element_text(size =12))
+
+p
+
+ggsave(filename = paste0(out_folder,"S5B_marker_exp_fold_changes_all_celltypes.pdf"),
+       plot = p,
+       device = "pdf",
+       width = 15,
+       height = 10)
+
+dat %>%
+  filter(condition == "LUAD_EGFR",
+         celltypes == "Tumor")
+```
+
+# S5C number HLADR positive tumor cells in EGFR
+
+```{r, fig.width=4, fig.height=8}
+sce1 <- sce1[,sce1$ROI != 4]
+
+counts <- as.data.frame(t(assay(sce1,"exprs")))
+head(counts)
+dim(counts)
+
+counts$celltypes <- sce1$celltypes
+counts$immucan_id <- sce1$immucan_id
+counts$sample_id <- sce1$sample_id
+counts <- left_join(counts, traits,"immucan_id")
+
+p <- counts %>%
+  filter(celltypes == "Tumor", 
+         simple_histology == "Adenocarcinoma") %>%
+  ggplot(aes(x = Ecad,y = HLADR))+
+  geom_point(size = 0.1)+
+  facet_wrap(.~EGFR)+
+  theme_bw()
+
+counts_EGFR <- counts %>%
+  filter(celltypes == "Tumor", 
+         simple_histology == "Adenocarcinoma",
+         EGFR == TRUE)
+
+counts_EGFRneg <- counts %>%
+  filter(celltypes == "Tumor", 
+         simple_histology == "Adenocarcinoma",
+         EGFR == FALSE)
+
+fit2 <- mixtools::normalmixEM(counts_EGFRneg$HLADR,k = 2)
+# get cut point
+post <- fit2$posterior[, 1]
+# Approximate cut point: where posteriors are equal (0.5)
+idx <- which.min(abs(post - 0.5))
+cut_point_HLADR <- counts_EGFRneg$HLADR[idx]
+cut_point_HLADR
+
+Cairo::CairoPNG(filename = paste0(out_folder,"S5C_HLADR_tumor_cell_EGFRmutated.png"),width = 1000, height = 500,units = "px")
+Cairo::CairoPNG(filename = paste0(out_folder,"S5C_HLADR_tumor_cell_EGFRmutated.png"),width = 1000, height = 500,units = "px")
+par(mfrow = c(1,2))
+LSD::heatscatter(x = counts_EGFR$Ecad, y = counts_EGFR$HLADR,main = "EGFR mutated")
+abline(h = cut_point_HLADR, lty = 2, lwd = 5)
+LSD::heatscatter(x = counts_EGFRneg$Ecad, y = counts_EGFRneg$HLADR, main = "EGFR wild type")
+abline(h = cut_point_HLADR, lty = 2, lwd = 5)
+dev.off()
+```
+
+# S5D Ki67 and p53 on tumor cells in LUSC
+
+```{r}
+p_Tumor_Ki67_P53_TP53_LUSC <- mean_exp %>%
+  filter(celltypes == "Tumor",
+         name %in% c("p53_p2","Ki67_p1","Ki67_p2")) %>%
+  left_join(traits, by = "immucan_id") %>%
+  filter(simple_histology == "Squamous cell carcinoma", 
+         !is.na(TP53)) %>%
+  ggplot(aes(x = TP53, y = value,fill= TP53))+
+  geom_boxplot(outliers = FALSE)+
+  geom_jitter(aes(color = TP53),position = position_jitterdodge(jitter.width = 0.2), size= 1)+
+  scale_fill_manual(values = alpha(c("red", "blue"),alpha = 0.6))+
+  scale_color_manual(values = c("red", "blue"))+
+  facet_wrap(.~name, scales= "free")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  stat_compare_means(size = 2.5)+
+    theme_bw()+
+  theme(axis.text.y = element_text(size = 6),
+        axis.text.x = element_text(size = 6),
+        legend.text = element_text(size = 6),
+        legend.title = element_text(size = 6),
+        strip.text = element_text(size = 7))+
+  theme(legend.position = "none")
+p_Tumor_Ki67_P53_TP53_LUSC
+
+ggsave(filename = paste0(out_folder,"S5D_Ki67_p53_tumor_cells_LUSC.pdf"),
+       plot = p_Tumor_Ki67_P53_TP53_LUSC,
+       device = "pdf",
+       width = 5,
+       height = 3)
+```
+
+# S5E GITR on Tregs
+
+```{r}
+counts2 <- as.data.frame(t(assay(sce2,"exprs")))
+head(counts2)
+dim(counts2)
+
+counts2$celltypes <- sce2$celltypes
+counts2$immucan_id <- sce2$immucan_id
+counts2$sample_id <- sce2$sample_id
+counts2 %>%
+  filter(celltypes == "Treg") %>%
+  ggplot(aes(x = FOXP3,y = GITR))+
+  geom_point()
+
+counts2 <- left_join(counts2, traits,"immucan_id")
+
+counts2 %>%
+  filter(simple_histology == "Squamous cell carcinoma",
+         celltypes == "Treg") %>%
+  mutate(PIK3CApos = ifelse(GITR > 1, TRUE,FALSE)) %>%
+  group_by(sample_id,.drop = FALSE) %>%
+  dplyr::count(PIK3CApos) %>%
+  mutate(total_cells = sum(n),
+         frac = n/total_cells) %>%
+  filter(PIK3CApos == TRUE) %>%
+  arrange(frac)
+
+# selected images
+ims <- c("IMMUcan_Batch20210921_LUNG_10041582-LUNG-VAR-TIS-01-IMC-02_003","IMMUcan_Batch20210701_LUNG_10040761-LUNG-VAR-TIS-01-IMC-02_001")
+
+
+# load images
+library(cytomapper)
+masks <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/masks.rds"))
+images <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/images.rds"))
+
+cur_df <- as.data.frame(colData(sce2))
+rownames(cur_df) <- NULL
+cur_df <- cur_df %>%
+  select(immucan_id,image, sample_id) %>%
+  distinct() %>%
+  mutate(image = gsub(".tiff","",image))
+rownames(cur_df) <- cur_df$image
+
+
+# unify metadata of masks and images
+mcols(images)$immucan_id <- cur_df[names(images),"immucan_id"]
+mcols(masks)$immucan_id <- cur_df[names(masks),"immucan_id"]
+mcols(images)$sample_id <- cur_df[names(images),"sample_id"]
+mcols(masks)$sample_id <- cur_df[names(masks),"sample_id"]
+
+
+cur_sce <- sce2[,sce2$sample_id %in% ims]
+
+
+cur_ims <- getImages(images,ims)
+cur_masks <- getImages(masks, ims)
+
+# read images into memory and normalize
+cur_images <- CytoImageList(cur_ims, on_disk = FALSE)
+cur_masks <- CytoImageList(cur_masks, on_disk = FALSE)
+cur_images <- scaleImages(cur_images,value = 2^16-1)
+cur_masks <- scaleImages(cur_masks,value = 2^16-1)
+cur_images <- normalize(cur_images, separateImages = TRUE)
+cur_images <- normalize(cur_images, separateImages = TRUE, 
+                        inputRange = c(0, 0.2))
+
+channelNames(cur_images) <- rownames(cur_sce)
+
+# define all tumor and non-tumor cells
+cur_sce$Treg <- "nonTreg"
+cur_sce[,cur_sce$celltypes == "Treg"]$Treg <- "Treg"
+plot_sce <- cur_sce[,cur_sce$celltypes == "Treg"]
+
+test_images <- endoapply(cur_images, gblur, sigma = 1)
+
+# generate images
+plotPixels(image = test_images,
+           mask = cur_masks,
+           object = plot_sce,
+           cell_id = "ObjectNumber",
+           img_id = "sample_id",
+           colour_by = c("CD137", "GITR", "FOXP3"),
+           outline_by = "Treg",
+           colour = list(CD137 = c("black", "green"),GITR = c("black","red"),FOXP3 = c("black","blue"),
+                        Treg = c(Treg = "white")),
+           bcg = list(CD137  = c(0,1.5,1),
+                      GITR = c(0,1.5,1),
+                      FOXP3  = c(0,3,1)),
+            image_title = NULL,save_plot = list(filename = paste0(out_folder,"S5E_GITR_Tregs_blurred.png")))
+
+plotPixels(image = cur_images,
+           mask = cur_masks,
+           object = plot_sce,
+           cell_id = "ObjectNumber",
+           img_id = "sample_id",
+           colour_by = c("CD137", "GITR", "FOXP3"),
+           outline_by = "Treg",
+           colour = list(CD137 = c("black", "green"),GITR = c("black","red"),FOXP3 = c("black","blue"),
+                        Treg = c(Treg = "white")),
+           bcg = list(CD137  = c(0,1.5,1),
+                      GITR = c(0,1.5,1),
+                      FOXP3  = c(0,3,1)),
+            image_title = NULL,save_plot = list(filename = paste0(out_folder,"S5E_GITR_Tregs.png")))
+
+```
+

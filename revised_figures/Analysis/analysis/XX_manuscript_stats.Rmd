@@ -1,0 +1,378 @@
+---
+title: "general stats for NSCLC2"
+author: "Daniel Schulz"
+date: "2024-08-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(survivalAnalysis)
+library(ggsurvfit)
+library(survminer)
+library(survival)
+```
+
+```{r}
+mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_1_supp/"
+
+if (!dir.exists(out_folder)) {
+  dir.create(out_folder)
+}
+```
+
+
+```{r}
+traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
+```
+
+# median follow up
+```{r}
+median(traits$time_to_event)/365*12
+```
+
+# clinical table
+```{r}
+table(traits$gender)/nrow(traits)
+table(traits$simple_stage)/nrow(traits)
+
+table(traits$curative_surgery)/nrow(traits)
+table(traits$smoking_status)/nrow(traits)
+table(traits$death)/nrow(traits)
+
+```
+
+
+```{r}
+dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
+
+cur_dat <- dat %>%
+  mutate(CN15_high = as.factor(ntile(CN_15__cello1,2))) %>%
+  left_join(traits, "immucan_id")
+
+ggforest(coxph( Surv(time_to_event, censoring) ~  CN15_high,data = cur_dat))
+x<- coxph( Surv(time_to_event, censoring) ~  neo_adjuvant_treatment,data = traits)
+
+cur_dat %>%
+  group_by(LUAD_vs_LUSC) %>%
+  summarise(mean(CN_15__cello1))
+```
+
+
+# number of cells in mIF
+```{r}
+dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/abundances_dat.rds"))
+dat <- dat[,grepl("IF",colnames(dat))]
+x <- sum(rowSums(dat,na.rm = TRUE),na.rm = TRUE)/10^6
+x
+```
+
+in mIF we have `r round(x)` million cells
+
+# number of cells in IMC
+```{r}
+dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/abundances_dat.rds"))
+dat <- dat[,grepl("IMC1",colnames(dat))]
+(x <- sum(rowSums(dat),na.rm = TRUE)/10^6)
+
+dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/abundances_dat.rds"))
+dat <- dat[,grepl("IMC2",colnames(dat))]
+(y <- sum(rowSums(dat),na.rm = TRUE)/10^6)
+```
+
+in IMC panel 1 we have `r round(x)` and in panel 2 `r round(y)` million cells
+
+
+```{r, eval=FALSE}
+sce1 <- readRDS(paste0(mount_path,"/data/IMC/Panel_1/Rout/sce.rds"))
+cur_sce <- sce1[,sce1$ROI != 4]
+dat <- as.data.frame(sort(table(cur_sce$celltypes)/ncol(cur_sce)))
+
+dat %>%
+  filter(Var1 %in% c("Treg","CD4","CD8")) %>%
+  summarise(sum(Freq))
+
+dat %>%
+  filter(Var1 %in% c("DC","MacCD163", "HLADR","Neutrophil")) %>%
+  summarise(sum(Freq))
+```
+
+# smoking and TP53 in LUAD
+
+```{r}
+table(traits$smoking_status, traits$TP53)
+cur_traits <- traits %>%
+  filter(!is.na(smoking_status)) %>%
+  mutate(smoker = ifelse(smoking_status %in% c("Current smoker","Ex-smoker"),"smoker", "non-smoker")) %>%
+  filter(simple_histology == "Adenocarcinoma")
+res <- fisher.test(table(cur_traits$smoker,cur_traits$TP53), or = TRUE,conf.int = TRUE)
+print(res)
+```
+
+
+# survival for neo-adjuvant and adjuvant treatment
+```{r}
+ggforest(coxph( Surv(time_to_event, censoring) ~  neo_adjuvant_treatment,data = traits))
+x<- coxph( Surv(time_to_event, censoring) ~  neo_adjuvant_treatment,data = traits)
+
+(p <- summary(x)$coefficients[, "Pr(>|z|)"])
+(HR <- summary(x)$coefficients[, "exp(coef)"])
+```
+
+Neo-adjuvant treatment has a HR of `r round(HR, digits = 2)` and a p value of `r round(p, digits = 2)`
+
+# survival for adjuvant and adjuvant treatment
+```{r}
+ggforest(coxph( Surv(time_to_event, censoring) ~  adjuvant_treatment,data = traits))
+x<- coxph( Surv(time_to_event, censoring) ~  adjuvant_treatment,data = traits)
+
+(p <- summary(x)$coefficients[, "Pr(>|z|)"])
+(HR <- summary(x)$coefficients[, "exp(coef)"])
+```
+
+Adjuvant treatment has a HR of `r round(HR, digits = 2)` and a p value of `r round(p, digits = 2)`
+
+# survival for TPS and CPS
+```{r}
+ggforest(coxph( Surv(time_to_event, censoring) ~  TPS_score,data = traits))
+x<- coxph( Surv(time_to_event, censoring) ~  TPS_score,data = traits)
+summary(x)
+
+table(traits$TPS_score)/nrow(traits)
+
+(p_TPS <- summary(x)$coefficients[, "Pr(>|z|)"])
+(HR_TPS <- summary(x)$coefficients[, "exp(coef)"])
+
+ggforest(coxph( Surv(time_to_event, censoring) ~  CPS_score,data = traits))
+x<- coxph( Surv(time_to_event, censoring) ~  CPS_score,data = traits)
+summary(x)
+
+(p_CPS <- summary(x)$coefficients[, "Pr(>|z|)"])
+(HR_CPS <- summary(x)$coefficients[, "exp(coef)"])
+```
+
+TPS > 1% has a HR of `r round(HR_TPS, digits = 2)` and a p value of `r round(p_TPS, digits = 2)` and CPS has a HR of `r round(HR_CPS, digits = 2)` and a p value of `r round(p_CPS, digits = 2)`
+
+# survival for TMB
+```{r}
+ggforest(coxph( Surv(time_to_event, censoring) ~  TMB_score ,data = traits))
+x<- coxph( Surv(time_to_event, censoring) ~  TMB_score* LUAD_vs_LUSC,data = traits)
+summary(x)
+
+(p <- summary(x)$coefficients[, "Pr(>|z|)"])
+(HR <- summary(x)$coefficients[, "exp(coef)"])
+```
+
+TMB > 10 mut/MB has a HR of `r round(HR, digits = 2)` and a p value of `r round(p, digits = 2)` 
+
+# survival for smoking
+```{r}
+cur_traits <- traits
+cur_traits$smoking_status <- factor(cur_traits$smoking_status,levels = c("Non-smoker" ,"Ex-smoker", "Current smoker"))
+ggforest(coxph( Surv(time_to_event, censoring) ~  smoking_status,data = cur_traits))
+x<- coxph( Surv(time_to_event, censoring) ~  smoking_status,data = cur_traits)
+summary(x)
+
+(p <- summary(x)$coefficients[, "Pr(>|z|)"])
+(HR <- summary(x)$coefficients[, "exp(coef)"])
+```
+
+# association of smoking with TP53 mutation
+```{r}
+table(traits$smoking_status,traits$TP53)
+cur_traits <- traits
+cur_traits <- cur_traits %>%
+  filter(simple_histology == "Adenocarcinoma") %>%
+  mutate(smoking_status = ifelse(smoking_status == "Ex-smoker", "smoker",smoking_status),
+         smoking_status = ifelse(smoking_status == "Current smoker", "smoker",smoking_status))
+table(cur_traits$smoking_status, cur_traits$TP53)
+fisher.test(cur_traits$smoking_status, cur_traits$TP53)
+
+cur_traits <- traits[which(traits$smoking_status %in% c("Current smoker", "Non-smoker")),]
+fisher.test(cur_traits$smoking_status,cur_traits$TP53)
+
+cur_traits <- traits[which(traits$smoking_status %in% c("Ex-smoker", "Non-smoker")),]
+fisher.test(cur_traits$smoking_status,cur_traits$TP53)
+```
+
+
+# TMB and TPS
+```{r}
+res <- fisher.test(traits$TMB_score,traits$TPS_score)
+res$p.value
+```
+
+TMB and TPS are not asociated in fisher test `r round(res$p.value, digits = 2)`
+
+# p53 mutaion
+```{r}
+ggforest(coxph( Surv(time_to_event, censoring) ~  TP53,data = traits %>% filter(simple_histology == "Adenocarcinoma")))
+ggforest(coxph( Surv(time_to_event, censoring) ~  TP53,data = traits))
+ggforest(coxph( Surv(time_to_event, censoring) ~  TP53,data = traits %>% filter(simple_histology == "Squamous cell carcinoma")))
+x<- coxph( Surv(time_to_event, censoring) ~  TP53,data =  traits %>% filter(simple_histology == "Adenocarcinoma"))
+
+(p_LUAD <- summary(x)$coefficients[, "Pr(>|z|)"])
+(HR_LUAD <- summary(x)$coefficients[, "exp(coef)"])
+
+y <- coxph( Surv(time_to_event, censoring) ~  TP53,data =  traits %>% filter(simple_histology == "Squamous cell carcinoma"))
+(p_LUSC <- summary(y)$coefficients[, "Pr(>|z|)"])
+(HR_LUSC <- summary(y)$coefficients[, "exp(coef)"])
+```
+
+
+
+TP53 has a HR of `r round(HR_LUAD, digits = 2)` and a p value of `r round(p_LUAD, digits = 2)` and CPS has a HR of `r round(HR_LUSC, digits = 2)` and a p value of `r round(p_LUSC, digits = 2)`
+
+# percent of TPS > 1 % patients
+```{r}
+table(traits$TPS_score)/nrow(traits)
+```
+
+```{r}
+cur_traits <- traits %>%
+  filter(simple_histology == "Adenocarcinoma")
+table(cur_traits$smoking_status, cur_traits$TPS_score)
+```
+
+
+# Reporting n
+
+```{r}
+dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/abundances_dat.rds"))
+dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
+cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
+traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
+```
+
+# densities & counts
+```{r}
+dens_dat %>%
+  mutate(across(-immucan_id,~sum(!is.na(.))))
+  pivot_longer(-immucan_id) %>%
+  mutate(tech = str_split_i(name, "__",2)) %>%
+  select(immucan_id,tech) %>%
+  distinct() %>%
+  group_by(tech) %>%
+  dplyr::count(immucan_id) %>%
+  summarise(total = sum(n))
+```
+# histology
+```{r}
+traits %>%
+  dplyr::count(simple_histology)
+```
+
+# Smoking
+
+```{r}
+# imaging
+traits %>%
+  dplyr::count(smoking_status)
+
+# RNA
+RNA <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/RNAseq/log2normcounts_adj.txt", sep = "\t")
+RNA_pats <- str_split_i(colnames(RNA),".FIXT",1)
+RNA_pats <- gsub("\\.","-", RNA_pats)
+traits %>%
+  filter(immucan_id %in% RNA_pats)%>%
+  dplyr::count(smoking_status)
+```
+
+
+# stage
+
+```{r}
+# imaging
+table(traits$simple_stage,traits$simple_histology)
+
+# RNA
+RNA <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/RNAseq/log2normcounts_adj.txt", sep = "\t")
+RNA_pats <- str_split_i(colnames(RNA),".FIXT",1)
+RNA_pats <- gsub("\\.","-", RNA_pats)
+traits %>%
+  filter(immucan_id %in% RNA_pats)%>%
+  dplyr::count(smoking_status)
+```
+
+# TPS
+
+```{r}
+# imaging
+table(traits$simple_histology,traits$TPS_score)
+
+# RNA
+RNA <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/RNAseq/log2normcounts_adj.txt", sep = "\t")
+RNA_pats <- str_split_i(colnames(RNA),".FIXT",1)
+RNA_pats <- gsub("\\.","-", RNA_pats)
+cur_traits <- traits %>%
+  filter(immucan_id %in% RNA_pats)
+table(cur_traits$simple_histology,cur_traits$TPS_score)
+```
+# TMB
+```{r}
+# imaging
+table(traits$simple_histology,traits$TMB_score)
+
+# RNA
+RNA <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/RNAseq/log2normcounts_adj.txt", sep = "\t")
+RNA_pats <- str_split_i(colnames(RNA),".FIXT",1)
+RNA_pats <- gsub("\\.","-", RNA_pats)
+cur_traits <- traits %>%
+  filter(immucan_id %in% RNA_pats)
+table(cur_traits$simple_histology,cur_traits$TMB_score)
+```
+# TMB-TPS
+```{r}
+cur_traits <- traits %>%
+  mutate(TMB_TPS = ifelse(TMB_score == "low" & TPS_score == "positive", "TMBlow_TPShigh",ifelse(TMB_score == "high" & TPS_score == "negative", "TMBhigh_TPSlow", NA))) 
+table(cur_traits$simple_histology,cur_traits$TMB_TPS)
+```
+
+
+# LUAD mutations
+## TP53
+```{r}
+table(traits$EGFR,traits$simple_histology)
+```
+
+
+## EGFR
+```{r}
+table(traits$TP53,traits$simple_histology)
+```
+
+## KRAS
+```{r}
+table(traits$KRAS,traits$simple_histology)
+```
+
+## STK11 
+```{r}
+table(traits$STK11,traits$simple_histology)
+```
+
+## STK11 
+```{r}
+cur_traits <- traits %>%
+  filter(smoking_status == "Current smoker")
+table(cur_traits$TP53,cur_traits$simple_histology)
+
+```
+
+# LUSC
+## TP53
+```{r}
+table(traits$PIK3CA,traits$simple_histology)
+```
+
+## CDKN2A
+```{r}
+table(traits$CDKN2A,traits$simple_histology)
+```
+

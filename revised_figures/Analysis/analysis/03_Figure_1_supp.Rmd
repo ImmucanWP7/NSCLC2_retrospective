@@ -1,0 +1,413 @@
+---
+title: "Figure_1_supp"
+author: "Daniel Schulz"
+date: "2023-12-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(ggnewscale)
+library(SingleCellExperiment)
+```
+
+```{r}
+mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_1_supp/"
+
+if (!dir.exists(out_folder)) {
+  dir.create(out_folder)
+}
+```
+
+# S1A Labelled cells heatmap
+
+## laod data
+```{r}
+sce <- readRDS("/mnt/immucan_volume/processed_data/Panel_2/cell_classification/classifier_v7/sce_selected.rds")
+```
+
+## heatmap
+```{r heatmap-V1, fig.width=20, fig.height=15}
+lab_sce <- sce[,sce$cell_labels != "unlabelled"]
+agr_sce <- aggregateAcrossCells(lab_sce, 
+                                ids = colData(lab_sce)[,c("sample_id", "cell_labels")], 
+                                statistics = "mean")
+assay(agr_sce, "exprs") <- asinh(counts(agr_sce))
+colnames(agr_sce) <- paste0(agr_sce$sample_id, "_", 
+                            agr_sce$cell_labels)
+
+# Define markers that were used for gating
+cur_markers <- c("Ecad", "CarbonicAnhydrase", "HLADR", 
+                 "CD11c", "CD163", "CD303", "CD15", "MPO", "CD38",
+                 "SMA", "PDGFRb", "CD20", "CD7", "CD3", "CD8a", "CD4", "FOXP3")
+
+
+png(file =  paste0(out_folder,"S1A_labelled_cell_heatmap.png"),
+    width = 900,
+    height = 800,
+    units = "px")
+dittoSeq::dittoHeatmap(agr_sce,
+                       genes = rownames(lab_sce)[!grepl("DNA|Histone", rownames(lab_sce))],
+                       assay = "exprs",
+                       annot.by = c( "cell_labels", "Indication"), 
+                       cluster_rows = FALSE,
+                       order.by = "cell_labels",
+                       annotation_colors = list(cell_labels = metadata(sce)$colour_vectors$cell_types),
+                       heatmap.colors = colorRampPalette(c("dark blue", "white", "dark red"))(100),
+                       breaks = seq(-3, 3, length.out = 101))
+dev.off()
+```
+
+# S1B classifier P2 results
+
+## load data
+
+```{r}
+# load classifier
+rfit <- readRDS("/mnt/immucan_volume/processed_data/Panel_2/cell_classification/classifier_v7/classifier_xgboost_weighted_filtered_igg_mregDC.rds")
+```
+
+## generate train and test split
+note: this recycles code from the repo [here](https://github.com/ImmucanWP7/IMMUcan_IMC_panel_2_cell_type_classifier/tree/main)
+```{r exclude-DCs}
+lab_sce <- sce[,sce$cell_labels != "unlabelled"]
+unlab_sce <- sce[,sce$cell_labels == "unlabelled"]
+
+# We will filter out IgG cell labelled that are under 1 count
+lab_sce <- lab_sce[,!((t(assay(lab_sce, "exprs"))[,"IgG"] < 1) & (lab_sce$cell_labels == "Igg"))]
+# We will also relabel mregDC labelled cells that have high panCK or Ecad expression to tumor cells
+lab_sce[,((t(assay(lab_sce, "exprs"))[,"panCK"] > 0.5) & (lab_sce$cell_labels == "mregDC")) | ((t(assay(lab_sce, "exprs"))[,"Ecad"] > 0.8) & (lab_sce$cell_labels == "mregDC"))]$cell_labels <- "Tumor"
+
+table(lab_sce$cell_labels)
+```
+
+Next, we will first split the labelled data into training and test (validation) data at a ratio of 80/20 using images as grouping level.
+
+
+```{r split-data-images-DCs}
+library(caret)
+set.seed(2928)
+trainIndex <- groupKFold(group = factor(lab_sce$sample_id), k = 5)
+train_sce <- lab_sce[,trainIndex$Fold5]
+test_sce <- lab_sce[,-trainIndex$Fold5]
+
+# cell type fraction
+table(train_sce$cell_labels)/length(train_sce$cell_labels)
+table(test_sce$cell_labels)/length(test_sce$cell_labels)
+
+table(train_sce$BatchId)/length(train_sce$cell_labels)
+table(test_sce$BatchId)/length(test_sce$cell_labels)
+
+table(train_sce$Indication)/length(train_sce$cell_labels)
+table(test_sce$Indication)/length(test_sce$cell_labels)
+```
+
+## test classifier performance
+```{r}
+# cell identifier
+test_sce$cell_id <- paste0(test_sce$sample_id,"_",test_sce$ObjectNumber)
+
+# extract expression matrix
+cur_mat <- t(assay(test_sce, "exprs")[!grepl("DNA|Histone", rownames(test_sce)),])
+# create dummy varaible for indication and batch
+dummies <- dummyVars(SampleId ~ Indication, data = colData(test_sce))
+all_dummies <- predict(dummies, newdata = colData(test_sce))
+# concatenate with expression data
+X_test <- cbind(cur_mat, all_dummies)
+
+library(xgboost)
+X_test <- xgb.DMatrix(data = X_test)
+```
+
+## Visualize predicted results
+```{r, fig.height=8, fig.width=12}
+#define some variables
+num_classes <- length(unique(train_sce$cell_labels))
+label_mapping <- levels(as.factor(test_sce$cell_labels))
+names(label_mapping) <- as.character(0:(length(label_mapping) - 1))
+
+
+prob_mat <- as.vector(predict(rfit, newdata = X_test))
+prob_mat <- matrix(prob_mat, ncol = num_classes, byrow = TRUE)
+y_pred <- as.factor(label_mapping[apply(prob_mat, 1, which.max)])
+y_true <- as.factor(test_sce$cell_labels)
+
+cm <- confusionMatrix(y_pred, y_true)
+
+cm$table
+
+p <- data.frame(cm$byClass) %>%
+  mutate(class = sub("Class: ", "", rownames(cm$byClass))) %>%
+  ggplot() +
+  geom_point(aes(1 - Specificity, Sensitivity,
+                 size = Detection.Rate,
+                 fill = class),
+             shape = 21) +
+  scale_fill_manual(values = metadata(sce)$colour_vectors$cell_types) +
+  theme_bw() +
+  theme(legend.text = element_text(size = 12),
+        axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_text(size = 12))+
+  scale_size(range = c(1,12))+
+  ylab("Sensitivity (TPR)") +
+  xlab("1 - Specificity (FPR)")+ guides(fill = guide_legend(override.aes = list(size = 4)))
+
+p
+ggsave(plot = p,
+       filename = "S1B_TPR_FPR_plot.pdf",
+       device = "pdf",
+       path = out_folder,
+       width = 7,
+       height = 4.5)
+```
+
+# S1C cell type heatmap panel 2 
+
+## load data
+```{r}
+sce2 <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/sce.rds"))
+```
+
+## major 
+```{r, fig.height=7, fig.width=20}
+library(ComplexHeatmap)
+dat <- as.data.frame(colData(sce2))
+
+use_channel <- rownames(sce2)[!grepl("DNA|Histone", rownames(sce2))]
+mean_sce <- scater::aggregateAcrossCells(sce2,
+                                 ids = sce2$celltypes,
+                                 statistics = "mean",
+                                 use.assay.type = "exprs",
+                                 subset.row = use_channel)
+
+assay(mean_sce,"zscore") <- t(scale(t(assay(mean_sce,"exprs")),center = TRUE,scale = TRUE))
+
+# generate marker classes for visualization
+markers <- rownames(mean_sce)
+marker_type <- c("cell identity","cell identity","cell identity","cell identity","functional","cell identity","functional","cell identity","cell identity","functional","cell identity","cell identity","functional","cell identity","cell identity","cell identity","functional","functional","functional","functional","functional","cell identity","functional","cell identity","functional","cell identity","functional","functional","functional","cell identity","cell identity","functional","functional","cell identity","functional","functional","cell identity","functional","cell identity","cell identity","cell identity")
+names(markers) <- marker_type
+rowData(mean_sce)$marker_type <- marker_type
+
+row_anno <- as.data.frame(colData(mean_sce)) %>%
+  select(ids, ncells)
+colnames(row_anno) <- c("CellType","ncells")
+col_list <- list(CellType = metadata(sce2)$colour_vectors$cell_types)
+pie(rep(1,length(row_anno$CellType)),col=col_list$CellType, labels = names(col_list$CellType))
+
+
+heatmap_body <- t(assay(mean_sce,"zscore"))
+
+#colnames(heatmap_body) <- c(colnames(heatmap_body)[1:26],"CAIX",colnames(heatmap_body)[28:37])
+p <- Heatmap((heatmap_body),
+        name = "exprs",
+        clustering_method_rows = "ward.D2",
+        clustering_method_columns = "ward.D2",
+        column_split = rowData(mean_sce)$marker_type,
+        column_title = c("cell identity markers","functional markers"))+
+  rowAnnotation(CellType = anno_simple(row_anno$CellType,border = TRUE,col =col_list$CellType))+
+  rowAnnotation(n_cells = anno_barplot((row_anno$ncells)))+
+  rowAnnotation(names = anno_text(row_anno$CellType,gp = gpar(fontsize=16)))
+
+p
+
+pdf(file =  paste0(out_folder,"cell_types_heatmap_panel_2.pdf"),width = 10, height = 6)
+p
+dev.off
+```
+
+## minor 
+
+```{r, fig.height=7, fig.width=20}
+dat <- as.data.frame(colData(sce2))
+
+use_channel <- rownames(sce2)[!grepl("DNA|Histone", rownames(sce2))]
+mean_sce <- scater::aggregateAcrossCells(sce2,
+                                 ids = sce2$celltypes_minor,
+                                 statistics = "mean",
+                                 use.assay.type = "exprs",
+                                 subset.row = use_channel)
+
+assay(mean_sce,"zscore") <- t(scale(t(assay(mean_sce,"exprs")),center = TRUE,scale = TRUE))
+
+# generate marker classes for visualization
+markers <- rownames(mean_sce)
+marker_type <- c("cell identity","cell identity","cell identity","cell identity","functional","cell identity","functional","cell identity","cell identity","functional","cell identity","cell identity","functional","cell identity","cell identity","cell identity","functional","functional","functional","functional","functional","cell identity","functional","cell identity","functional","cell identity","functional","functional","functional","cell identity","cell identity","functional","functional","cell identity","functional","functional","cell identity","functional","cell identity","cell identity","cell identity")
+names(markers) <- marker_type
+rowData(mean_sce)$marker_type <- marker_type
+
+row_anno <- as.data.frame(colData(mean_sce)) %>%
+  select(ids, ncells)
+colnames(row_anno) <- c("CellType","ncells")
+col_list <- list(CellType = metadata(sce2)$colour_vectors$celltypes_minor)
+pie(rep(1,length(row_anno$CellType)),col=col_list$CellType, labels = names(col_list$CellType))
+
+
+heatmap_body <- t(assay(mean_sce,"zscore"))
+
+#colnames(heatmap_body) <- c(colnames(heatmap_body)[1:26],"CAIX",colnames(heatmap_body)[28:37])
+p <- Heatmap((heatmap_body),
+        name = "exprs",
+        clustering_method_rows = "ward.D2",
+        clustering_method_columns = "ward.D2",
+        column_split = rowData(mean_sce)$marker_type,
+        column_title = c("cell identity markers","functional markers"))+
+  rowAnnotation(CellType = anno_simple(row_anno$CellType,border = TRUE,col =col_list$CellType))+
+  rowAnnotation(n_cells = anno_barplot((row_anno$ncells)))+
+  rowAnnotation(names = anno_text(row_anno$CellType,gp = gpar(fontsize=16)))
+
+p
+
+pdf(file =  paste0(out_folder,"S1C_cell_types_minor_heatmap_panel_2.pdf"),width = 10.5, height = 9)
+p
+dev.off
+```
+
+
+
+# S1D cellohood clusters heatmap panel 2
+excluding TLS images
+```{r, fig.height=10, fig.width=14}
+library(ComplexHeatmap)
+library(viridis)
+library(circlize)
+
+sce2 <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/sce.rds"))
+
+# fraction data
+cur_dat <- as.data.frame(colData(sce2))
+
+frac_dat <- cur_dat %>%
+  group_by(cellohood,.drop = FALSE) %>%
+  dplyr::count(celltypes) %>%
+  mutate(total_cells = sum(n),
+         CN_freq = round(n/total_cells, digits = 2)*100) %>%
+  pivot_wider(id_cols = cellohood,names_from = celltypes, values_from = CN_freq, values_fill = 0) %>%
+  ungroup() %>%
+  as.data.frame()
+
+# generate data to merge with expression data which we can filter exp on later
+merge_info <- frac_dat %>%
+  pivot_longer(cols = -cellohood,names_to = "celltypes")
+
+# generate matrix for heatmap
+rownames(frac_dat) <- frac_dat$cellohood
+frac_dat <- t(frac_dat[,-1])
+
+# abundance across patients
+per_dat <- cur_dat %>%
+  group_by(immucan_id, cellohood, .drop = FALSE) %>%
+  summarise(n = n()) %>%
+  mutate(fraction = n / sum(n)) %>%
+  pivot_wider(values_from = fraction, names_from = cellohood, id_cols = immucan_id, values_fill = 0)
+
+rownames(per_dat) <- per_dat$cellohood
+per_dat <- as.matrix(per_dat[, -1])
+
+# expression data
+cur_dat <- as.data.frame(t(assay(sce2, "exprs")))
+cur_dat$cellohood <- sce2$cellohood
+cur_dat$celltypes <- sce2$celltypes
+head(cur_dat)
+
+cur_dat <- cur_dat %>%
+  pivot_longer(-c(celltypes,cellohood)) %>%
+  group_by(celltypes, cellohood,name,.drop = FALSE) %>%
+  summarise(mean_exp = mean(value))
+
+# merge with fraction data and filter only those expression that the respective cell type is present with at least 2% in the cluster
+cur_dat <- cur_dat %>%
+  left_join(merge_info,by = c("cellohood", "celltypes")) %>%
+  filter(value > 2)
+
+
+# fractions to merge
+exp_dat <- cur_dat %>%
+  mutate(type = paste0(celltypes,": ", name)) %>%
+  filter(type %in% c("CD4: Tim3", "CD4: PD1","CD4: GITR", "CD8: PD1","CD8: Tim3", "CD8: CXCL13", "CD8: EOMES", "CD8: NKG2A","MacCD204: Arg1","MacCD204: CD11c","Treg: CD137","PMN_MDSC: MMP9","Tumor: p53","Tumor: EGFR","Tumor: Ki67","Tumor: CD56","Tumor: CD155","Tumor: BCL2", "Tumor: CD10","Tumor: CD73","Tumor: IgG", "Tumor: Podoplanin", "Fibro: Podoplanin", "Fibro: CD10" )) %>%
+  pivot_wider(id_cols = cellohood,names_from = type, values_from = mean_exp) %>%
+  as.data.frame()
+rownames(exp_dat) <- exp_dat$cellohood
+exp_dat <- exp_dat[,-1]
+exp_dat_scaled <- t(scale(exp_dat))
+
+# match column names of both matrices
+exp_dat_scaled <- exp_dat_scaled[,colnames(frac_dat)]
+# generate complex heatmap
+
+#color functions
+expression_col_fun <- colorRamp2(
+  c(-3, 0, 3), 
+  c("blue", "white", "red")
+)
+fraction_col_fun <- colorRamp2(seq(0, 50, length.out = 50), viridis(50))
+
+# clustering 
+col_clustering <- hclust(dist(t(frac_dat)))
+
+ht1 <- Heatmap(
+  frac_dat,
+  name = "Fraction",
+  col = fraction_col_fun,
+  cluster_rows = TRUE,
+  cluster_columns = col_clustering,
+  show_row_names = TRUE,
+  show_column_names = TRUE,
+  rect_gp = gpar(col = "white", lwd = 1),
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    value <- frac_dat[i, j]
+    fill_col <- fraction_col_fun(value)  # get fill color from scale
+    rgb_col <- col2rgb(fill_col) / 255   # normalize RGB
+    lum <- 0.299 * rgb_col[1] + 0.587 * rgb_col[2] + 0.114 * rgb_col[3]  # luminance
+
+    text_col <- if (lum < 0.5) "white" else "black"
+
+    grid.text(
+      label = round(value),
+      x = x, y = y,
+      gp = gpar(fontsize = 8, col = text_col)
+    )
+  }
+)
+
+
+per_dat <- per_dat[,colnames(exp_dat_scaled) ]
+col_ann <- HeatmapAnnotation(
+  Observation_frequency = anno_boxplot(per_dat, outline = FALSE)
+)
+
+ht2 <-Heatmap(
+  exp_dat_scaled,
+  name = "Z-scored\nExpression",
+  rect_gp = gpar(col = "white", lwd = 1),
+  col = expression_col_fun,
+  
+  cluster_rows = FALSE,  # Already clustered by ht1
+  cluster_columns = col_clustering,
+  show_row_names = TRUE,  # Avoid duplication
+  show_column_names = TRUE,
+  heatmap_legend_param = list(
+    at = c(-3,-2,-1, 0, 1,2,3),  # control tick marks
+    color_bar = "continuous"
+  ), top_annotation = col_ann
+)
+
+ht2 %v% ht1
+
+pdf(paste0(out_folder,"S1D_cellohood_heatmap_panel_2.pdf"),
+    width = 15,
+    height = 10)
+ht2 %v% ht1
+dev.off()
+
+cur_sce <- sce2[,sce2$celltypes %in% c("Fibro", "Tumor")]
+plot_sce <- cur_sce[,sample(colnames(cur_sce),size = 10000,replace = FALSE)]
+dittoSeq::dittoScatterPlot(plot_sce,x.var = "CD10", y.var = "Ecad",assay.x = "exprs", assay.y = "exprs", color.var = "immucan_id", legend.show = FALSE)
+```
