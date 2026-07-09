@@ -30,7 +30,7 @@ library(imcRtools)
 
 ```{r}
 mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
-out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_2/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_2/"
 
 if (!dir.exists(out_folder)) {
   dir.create(out_folder)
@@ -45,11 +45,255 @@ dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.
 cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
 clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
 traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
+modules <- as.data.frame(readRDS( "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/patient_imaging_meta_cluster_scores.rds"))
 
-
+modules <- modules  %>%
+  mutate(immucan_id = rownames(modules))
+rownames(modules) <- NULL
 # variables
 data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2))
 ```
+
+# modules for histology
+```{r, fig.height=10, fig.width=8}
+inf_dat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/infiltration_harmonized.rds")
+
+# compare densities of infiltrating, bystanding and ignored from IMC1, IMC2 and mIF
+inf_dat <- inf_dat %>%
+  group_by(immucan_id,tech) %>%
+  mutate(total_CD8 = sum(bystanding,ignored,infiltrating,na.rm = TRUE)/im_size,
+         bystanding = round(bystanding/im_size),
+         ignored = round(ignored/im_size),
+         infiltrating = round(infiltrating/im_size)) %>%
+  ungroup()
+
+# define interactor over bystander ratio
+inf_dat <- inf_dat %>%
+  group_by(immucan_id, tech) %>%
+  mutate(int_over_bystander = (infiltrating+bystanding)/ignored)
+
+inf_dat[(is.infinite(inf_dat$int_over_bystander)),]$int_over_bystander <- NA
+
+# we will average the ratios across technologies
+inf_dat <- inf_dat %>%
+  group_by(immucan_id) %>%
+  mutate(mean_inf_ratio = mean(int_over_bystander,na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(mean_inf_ratio_dicho = ntile(mean_inf_ratio,2),
+         mean_inf_ratio_dicho = ifelse(mean_inf_ratio_dicho == 2, "high", "low")) %>%
+  select(immucan_id,mean_inf_ratio) %>%
+  distinct() %>%
+  as.data.frame()
+
+
+left_join(modules, traits, "immucan_id") %>%
+  filter(!is.na(LUAD_vs_LUSC)) %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  pivot_longer(cols = 1:8) %>%
+  ggplot(aes(x = LUAD_vs_LUSC,y = value))+
+  geom_boxplot()+
+  facet_wrap(.~name, scales = "free")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  ggpubr::stat_compare_means(label.y = )
+
+dat_z <- left_join(modules, traits, "immucan_id") %>%
+  filter(!is.na(LUAD_vs_LUSC)) %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  pivot_longer(cols = 1:8)
+
+
+volcano_df <- dat_z %>%
+  group_by(name) %>%
+  mutate(value_z = as.numeric(scale(value))) %>%  # z-score within each signature
+  summarise(
+    delta_z = mean(value_z[LUAD_vs_LUSC == "LUAD"], na.rm = TRUE) -
+              mean(value_z[LUAD_vs_LUSC == "LUSC"], na.rm = TRUE),
+    pvalue  = t.test(value_z[LUAD_vs_LUSC == "LUAD"],
+                      value_z[LUAD_vs_LUSC == "LUSC"])$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    padj        = p.adjust(pvalue, method = "BH"),
+    neg_log10_p = -log10(pvalue),
+    direction   = ifelse(delta_z > 0, "Up in LUAD", "Up in LUSC")
+  ) %>%
+  arrange(delta_z)
+
+
+volcano_df <- volcano_df %>%
+  mutate(name = factor(name, levels = name[order(delta_z)]))  # order for plotting
+
+p <- ggplot(volcano_df, aes(x = delta_z, y = name)) +
+  geom_segment(aes(x = 0, xend = delta_z, y = name, yend = name), color = "grey70") +
+  geom_point(aes(color = direction, size = -log10(padj))) +
+  scale_color_manual(values = c("Up in LUAD" = "blue", "Up in LUSC" = "orange")) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
+  labs(x = "Δ z-score (LUAD - LUSC)", y = NULL,
+       color = "Direction", size = "-log10(FDR)") +
+  theme_minimal() +
+  coord_flip()+
+  theme(
+    axis.title.x = element_text(size = 10),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1,size = 10),
+    axis.text.y     = element_text(size = 9),
+    legend.margin   = margin(t = 0),
+    legend.spacing  = unit(0.2, "cm"),
+  )+
+  ggtitle("Imaging modules")
+
+p
+
+ggsave(plot = p, path = out_folder,filename = "Imaging_modules_for_histology.pdf",width = 5, height = 4,device = cairo_pdf)
+
+
+left_join(modules, traits, "immucan_id") %>%
+  filter(!is.na(smoking_status)) %>%
+  pivot_longer(cols = 1:8) %>%
+  ggplot(aes(x = smoking_status,y = value))+
+  geom_boxplot()+
+  facet_wrap(.~name)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  ggpubr::stat_compare_means(comparisons = list(c("Current smoker", "Ex-smoker"), c("Current smoker", "Non-smoker"), c("Ex-smoker", "Non-smoker")),method = "t.test")
+
+left_join(modules, traits, "immucan_id") %>%
+  filter(!is.na(TPS_score)) %>%
+  pivot_longer(cols = 1:8) %>%
+  ggplot(aes(x = TPS_score,y = value))+
+  geom_boxplot()+
+  facet_wrap(.~name)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  ggpubr::stat_compare_means(method = "t.test")
+
+left_join(modules, traits, "immucan_id") %>%
+  filter(!is.na(TMB_score)) %>%
+  pivot_longer(cols = 1:8) %>%
+  ggplot(aes(x = TMB_score,y = value))+
+  geom_boxplot()+
+  facet_wrap(.~name)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  ggpubr::stat_compare_means(method = "t.test")
+
+left_join(modules, traits, "immucan_id") %>%
+  filter(!is.na(EGFR),
+         LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  pivot_longer(cols = 1:8) %>%
+  ggplot(aes(x = EGFR,y = value))+
+  geom_boxplot()+
+  facet_wrap(.~name)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  ggpubr::stat_compare_means(method = "t.test")
+
+left_join(modules, traits, "immucan_id") %>%
+  filter(!is.na(KRAS),
+         LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  pivot_longer(cols = 1:8) %>%
+  ggplot(aes(x = KRAS,y = value))+
+  geom_boxplot()+
+  facet_wrap(.~name)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  ggpubr::stat_compare_means(method = "t.test")
+
+left_join(modules, traits, "immucan_id") %>%
+  filter(!is.na(simple_stage),
+         simple_stage != "IV") %>%
+  pivot_longer(cols = 1:8) %>%
+  ggplot(aes(x = simple_stage,y = value))+
+  geom_boxplot()+
+  facet_wrap(.~name)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  ggpubr::stat_compare_means()
+
+```
+
+```{r}
+left_join(modules, traits, "immucan_id") %>%
+  left_join(inf_dat,"immucan_id") %>%
+  mutate(inf_score = as.factor(ntile(x = mean_inf_ratio, n = 2))) %>%
+  filter(!is.na(inf_score)) %>%
+  pivot_longer(cols = 1:8) %>%
+  select(immucan_id, name, value, inf_score) %>%
+  ggplot(aes(x = inf_score,y = value))+
+  geom_boxplot()+
+    facet_wrap(.~name)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  ggpubr::stat_compare_means()
+```
+
+# RNA scores
+
+```{r, fig.height=15, fig.width=15}
+rna <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_scores.rds")
+
+rna$immucan_id  <- rownames(rna)
+rownames(rna) <- NULL
+
+left_join(rna, traits, "immucan_id") %>%
+  filter(!is.na(LUAD_vs_LUSC)) %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  pivot_longer(cols = 1:29) %>%
+  ggplot(aes(x = LUAD_vs_LUSC,y = value))+
+  geom_boxplot()+
+  facet_wrap(.~name, scales = "free")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  ggpubr::stat_compare_means()
+
+dat_z <- left_join(rna, traits, "immucan_id") %>%
+  filter(!is.na(LUAD_vs_LUSC)) %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  pivot_longer(cols = 1:29)
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(broom)
+
+volcano_df <- dat_z %>%
+  group_by(name) %>%
+  mutate(value_z = as.numeric(scale(value))) %>%  # z-score within each signature
+  summarise(
+    delta_z = mean(value_z[LUAD_vs_LUSC == "LUAD"], na.rm = TRUE) -
+              mean(value_z[LUAD_vs_LUSC == "LUSC"], na.rm = TRUE),
+    pvalue  = t.test(value_z[LUAD_vs_LUSC == "LUAD"],
+                      value_z[LUAD_vs_LUSC == "LUSC"])$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    padj        = p.adjust(pvalue, method = "BH"),
+    neg_log10_p = -log10(pvalue),
+    direction   = ifelse(delta_z > 0, "Up in LUAD", "Up in LUSC")
+  ) %>%
+  arrange(delta_z)
+
+
+volcano_df <- volcano_df %>%
+  mutate(name = factor(name, levels = name[order(delta_z)]))  # order for plotting
+
+p <- ggplot(volcano_df, aes(x = delta_z, y = name)) +
+  geom_segment(aes(x = 0, xend = delta_z, y = name, yend = name), color = "grey70") +
+  geom_point(aes(color = direction, size = -log10(padj))) +
+  scale_color_manual(values = c("Up in LUAD" = "blue", "Up in LUSC" = "orange")) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
+  labs(x = "Δ z-score (LUAD - LUSC)", y = NULL,
+       color = "Direction", size = "-log10(FDR)") +
+  guides(
+    color = guide_legend(nrow = 1, title.position = "top"),
+    size  = guide_legend(nrow = 1, title.position = "top")
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(size = 10),
+    axis.text.y     = element_text(size = 9),
+    legend.position = "bottom",
+    legend.box      = "vertical",     # stacks the color legend and size legend on top of each other
+    legend.margin   = margin(t = 0),
+    legend.spacing  = unit(0.2, "cm")
+  )+
+  ggtitle("RNA signatures")
+ggsave(plot = p, path = out_folder,filename = "RNA_difference_for_histology.pdf",width = 4.5, height = 7,device = cairo_pdf)
+```
+
+
+
 
 # 2A diff abundance histology
 here we will estimate the dispersion across the whole data set and then do the linear model of count comparison only for the groups of interest.
