@@ -29,7 +29,7 @@ library(ggnewscale)
 
 ```{r}
 mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
-out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_3_supp/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_3_supp/"
 
 if (!dir.exists(out_folder)) {
   dir.create(out_folder)
@@ -67,6 +67,155 @@ p <- ggsurvplot(surv_fit, data = cur_clin, risk.table = TRUE, pval = TRUE,palett
 p <- plot_grid(p$plot,p$table,ncol = 1, rel_heights = c(1,0.5))
 p
 ggsave(p,filename = paste0(out_folder,"S3A_Kaplan_Meier_CPS_score.pdf"),device = "pdf",width = 6, height = 5)
+```
+
+# TCGA RNA modules
+```{r, fig.width=10, fig.height=6}
+library(singscore)
+tcga <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/MOFA/tcga_LUAD_LUSC.rds")
+sce <- as(tcga, "SingleCellExperiment")
+# subset to LUAD
+sce <- sce[,sce$histology == "LUAD"]
+ranked_data <- rankGenes(sce)
+
+# load Bageav genes
+df <- readxl::read_xlsx(
+  "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/annotations/Bagaev_FGES.xlsx",
+  sheet = 3, skip = 1)[, 1:2]
+colnames(df) <- c("gene", "name")
+
+df <- df %>%
+  filter(!is.na(gene), !is.na(name)) %>%
+  mutate(gene = trimws(gene),
+         name = trimws(name),
+         name = gsub(" ", "_", name))
+
+signatures <- split(df$gene, df$name)
+
+# can we find all genes in tcga
+overlap <- sapply(signatures, function(g) sum(g %in% rownames(ranked_data)))
+total   <- sapply(signatures, length)
+print(data.frame(found = overlap, total = total, pct = round(100 * overlap / total)))
+
+# score with signscore
+scores_list <- lapply(names(signatures), function(nm) {
+  sc <- simpleScore(ranked_data, upSet = signatures[[nm]], centerScore = TRUE)
+  setNames(sc$TotalScore, rownames(sc))
+})
+rna_scores <- as.data.frame(do.call(cbind, scores_list))
+colnames(rna_scores) <- names(signatures)
+
+# z score the signscore data
+rn <- rownames(rna_scores)
+rna_scores <- as.data.frame(apply(rna_scores, 2, scale))
+rownames(rna_scores) <- rn
+
+# investigate stage
+table(sce$tobacco_smoking_status)
+table(sce$ajcc_pathologic_stage)
+colnames(colData(sce))
+clin_tcga <- as.data.frame(colData(sce)) %>%
+  select(patient, ajcc_pathologic_stage) %>%
+  distinct()
+
+cur_dat <- cbind(clin_tcga, rna_scores[rownames(clin_tcga),])
+
+# define stages
+
+dat_z <- cur_dat %>%
+  pivot_longer(cols = -c(patient,ajcc_pathologic_stage))
+
+sigs <- dat_z %>%
+  select(patient,name, value,ajcc_pathologic_stage) %>%
+  mutate(stage = ifelse(grepl("I",ajcc_pathologic_stage),1,NA),
+         stage = ifelse(grepl("II",ajcc_pathologic_stage),2,stage),
+         stage = ifelse(grepl("III",ajcc_pathologic_stage),3,stage),
+         stage = ifelse(grepl("IV",ajcc_pathologic_stage),4,stage),
+         stage = as.numeric(as.factor(stage))) %>%
+  filter(stage != 4) %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(model = map(data, ~ lm(value ~ stage, data = .x)),
+         summary = map(model, broom::tidy)) %>%
+  select(name, summary) %>%
+  unnest(c(summary)) %>%
+  filter(term == "stage") %>%
+  ungroup() %>%
+  mutate(FDR = p.adjust(p = p.value,method = "BH"),
+         sig_p = ifelse(p.value < 0.05,TRUE, FALSE),
+         sig_fdr = ifelse(FDR < 0.1,"T", "F"))
+
+
+summary_dat <- sigs %>%
+  filter(sig_p == TRUE |
+         name %in% c("Angiogenesis","Cancer-associated-fibroblasts","Granulocyte_traffic","Myeloid_cells_traffic","Protumor_cytokines")) %>%
+  ungroup() %>%
+  as.data.frame()
+
+p2 <- dat_z %>%
+  select(patient,name, value,ajcc_pathologic_stage) %>%
+  mutate(stage = ifelse(grepl("I",ajcc_pathologic_stage),1,NA),
+         stage = ifelse(grepl("II",ajcc_pathologic_stage),2,stage),
+         stage = ifelse(grepl("III",ajcc_pathologic_stage),3,stage),
+         stage = ifelse(grepl("IV",ajcc_pathologic_stage),4,stage),
+         stage = as.numeric(as.factor(stage)),
+         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
+  filter(name %in% summary_dat$name ,
+         stage != 4) %>%
+  ggplot(aes(x = name,y = log10(value+1),fill=as.factor(stage))) +
+  geom_boxplot(outliers = FALSE)+
+  geom_jitter(aes(col = as.factor(stage)),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
+  scale_fill_manual(values = alpha(c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"),alpha = 0.6))+
+  scale_color_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust = 1),
+        axis.title = element_blank())+
+  guides(fill=guide_legend(title="Stage"),
+         col=guide_legend(title="Stage"))+
+  geom_text(data = summary_dat, aes(x = name,y=0.85,label = paste0("fdr: ",sig_fdr)), inherit.aes = FALSE, size = 3)+
+  geom_text(data = summary_dat, aes(x = name,y=1,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE, size = 3)+
+  coord_cartesian(ylim = c(-1, 1))+
+  ggtitle(label = "RNA module differencess for LUAD in TCGA")
+  
+p2
+
+ggsave(plot = p2, path = out_folder,filename = "RNA_modules_for_stage_TCGA.pdf",width = 6, height = 3.5,device = cairo_pdf)
+```
+
+
+```{r, fig.height=7, fig.width=20}
+summary_dat <- sigs %>%
+  #filter(sig_p == TRUE) %>%
+  ungroup() %>%
+  as.data.frame()
+
+p2 <- dat_z %>%
+  select(patient,name, value,ajcc_pathologic_stage) %>%
+  mutate(stage = ifelse(grepl("I",ajcc_pathologic_stage),1,NA),
+         stage = ifelse(grepl("II",ajcc_pathologic_stage),2,stage),
+         stage = ifelse(grepl("III",ajcc_pathologic_stage),3,stage),
+         stage = ifelse(grepl("IV",ajcc_pathologic_stage),4,stage),
+         stage = as.numeric(as.factor(stage)),
+         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
+  filter(name %in% summary_dat$name,
+         stage != 4) %>%
+  ggplot(aes(x = name,y = log10(value+1),fill=as.factor(stage))) +
+  geom_boxplot(outliers = FALSE)+
+  geom_jitter(aes(col = as.factor(stage)),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
+  scale_fill_manual(values = alpha(c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"),alpha = 0.6))+
+  scale_color_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust = 1),
+        axis.title = element_blank())+
+  guides(fill=guide_legend(title="Stage"),
+         col=guide_legend(title="Stage"))+
+  geom_text(data = summary_dat, aes(x = name,y=0.85,label = paste0("fdr: ",sig_fdr)), inherit.aes = FALSE)+
+  geom_text(data = summary_dat, aes(x = name,y=1,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE)+
+  coord_cartesian(ylim = c(-1, 1))+
+  ggtitle(label = "LUAD")
+  
+p2
+sigs
 ```
 
 # S3B TCGA across stages adenocarcinoma
