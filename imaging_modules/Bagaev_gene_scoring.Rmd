@@ -1,0 +1,104 @@
+---
+title: "Bagaev_scores"
+author: "Daniel Schulz"
+date: "2026-07-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# scoring with singscore
+Score each RNA patient on the 29 Bagaev functional gene expression signatures
+using singscore (rank-based, single-sample; no maxRank cutoff issue).
+Output: data/processed/rna_scores.rds
+  data/processed/gene_signatures_Bagaev.csv
+  figures/02_rna_scores_heatmap_Bagaev.pdf
+
+```{r}
+library(singscore)
+library(readxl)
+library(dplyr)
+library(ComplexHeatmap)
+library(circlize)
+
+OUT     <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing"
+FIGURES <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Revision/"
+
+rna_mat <- readRDS(file.path(OUT, "rna_mat.rds"))
+
+# ── Load Bagaev signatures ────────────────────────────────────────────────────
+df <- read_xlsx(
+  "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/annotations/Bagaev_FGES.xlsx",
+  sheet = 3, skip = 1)[, 1:2]
+colnames(df) <- c("gene", "name")
+
+df <- df %>%
+  filter(!is.na(gene), !is.na(name)) %>%
+  mutate(gene = trimws(gene),
+         name = trimws(name),
+         name = gsub(" ", "_", name))
+
+signatures <- split(df$gene, df$name)
+
+cat("Loaded", length(signatures), "Bagaev signatures\n")
+cat("Signature sizes:\n"); print(sapply(signatures, length))
+
+# Export gene list (long format)
+sig_df  <- do.call(rbind, lapply(names(signatures), function(nm)
+  data.frame(name = nm, gene = signatures[[nm]], stringsAsFactors = FALSE)))
+write.csv(sig_df, file.path(OUT, "gene_signatures_Bagaev.csv"), row.names = FALSE)
+
+# ── Diagnostic: gene overlap per signature ────────────────────────────────────
+# rankGenes() requires genes × patients orientation
+rna_for_score <- if (ncol(rna_mat) > nrow(rna_mat)) t(rna_mat) else rna_mat
+
+cat("\nGene overlap between signatures and RNA matrix:\n")
+overlap <- sapply(signatures, function(g) sum(g %in% rownames(rna_for_score)))
+total   <- sapply(signatures, length)
+print(data.frame(found = overlap, total = total, pct = round(100 * overlap / total)))
+
+# ── Score with singscore ──────────────────────────────────────────────────────
+ranked <- rankGenes(rna_for_score)
+
+scores_list <- lapply(names(signatures), function(nm) {
+  sc <- simpleScore(ranked, upSet = signatures[[nm]], centerScore = TRUE)
+  setNames(sc$TotalScore, rownames(sc))
+})
+rna_scores <- as.data.frame(do.call(cbind, scores_list))
+colnames(rna_scores) <- names(signatures)
+rownames(rna_scores) <- colnames(rna_for_score)
+
+cat("\nRNA scores:", nrow(rna_scores), "patients ×", ncol(rna_scores), "axes\n")
+
+saveRDS(rna_scores, file.path(OUT, "rna_scores.rds"))
+cat("Saved rna_scores.rds\n")
+
+```
+
+```{r}
+# ── Diagnostic heatmap ────────────────────────────────────────────────────────
+score_z  <- t(scale(as.matrix(rna_scores)))   # axes × patients
+
+col_fun <- colorRamp2(c(-2, 0, 2), c("#2166AC", "white", "#B2182B"))
+
+ht <- Heatmap(
+  score_z,
+  name               = "z-score",
+  col                = col_fun,
+  cluster_columns    = hclust(dist(t(score_z), method = "euclidean"), method = "ward.D2"),
+  cluster_rows       = hclust(dist(score_z,    method = "euclidean"), method = "ward.D2"),
+  show_column_names  = FALSE,
+  row_names_side     = "left",
+  row_names_gp       = gpar(fontsize = 9),
+  column_title       = paste0("Bagaev RNA scores  (n=", ncol(score_z), " patients)"),
+  column_title_gp    = gpar(fontsize = 12),
+  heatmap_legend_param = list(title = "z-score\n(per axis)")
+)
+
+pdf(file.path(FIGURES, "02_rna_scores_heatmap_Bagaev.pdf"), width = 14, height = 7)
+draw(ht)
+dev.off()
+cat("Heatmap saved\n")
+```

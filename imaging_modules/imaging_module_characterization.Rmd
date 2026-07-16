@@ -1,0 +1,264 @@
+---
+title: "image_module_description"
+author: "Daniel Schulz"
+date: "2026-07-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# wordcloud
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggwordcloud)
+library(ggforce)
+library(cowplot)
+
+OUT <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing"
+FIGURES <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_2_supp"
+if (!dir.exists(FIGURES)) {
+  dir.create(FIGURES)
+}
+
+TOP_N <- 15  # features per meta-cluster to display
+
+# ── Load ──────────────────────────────────────────────────────────────────────
+imaging_mat <- readRDS(file.path(OUT, "imaging_mat.rds"))
+meta_scores <- read.csv(file.path(OUT, "patient_imaging_meta_cluster_scores.csv"),
+                        row.names = 1, check.names = FALSE)
+
+shared <- intersect(rownames(imaging_mat), rownames(meta_scores))
+cat("Shared patients:", length(shared), "\n")
+
+img <- imaging_mat[shared, , drop = FALSE]
+ms  <- as.matrix(meta_scores[shared, , drop = FALSE])
+
+# ── Feature × meta-cluster Pearson correlations ───────────────────────────────
+# Pearson r is scale-invariant so no z-scoring needed here
+cor_mat <- cor(img, ms, use = "pairwise.complete.obs")  # features × meta-clusters
+cat("Correlation matrix:", nrow(cor_mat), "features ×", ncol(cor_mat), "meta-clusters\n")
+
+# ── Top N features per meta-cluster ──────────────────────────────────────────
+plot_df <- do.call(rbind, lapply(colnames(cor_mat), function(mc) {
+  r     <- cor_mat[, mc]
+  r     <- r[!is.na(r)]
+  top   <- names(sort(abs(r), decreasing = TRUE))[seq_len(min(TOP_N, length(r)))]
+  data.frame(
+    meta_cluster = mc,
+    feature      = top,
+    r            = r[top],
+    abs_r        = abs(r[top]),
+    panel        = sub("_.*", "", top),
+    stringsAsFactors = FALSE
+  )
+}))
+
+# ── Colors ────────────────────────────────────────────────────────────────────
+panels    <- sort(unique(plot_df$panel))
+panel_pal <- setNames(
+  colorRampPalette(c("#4DBBD5", "#E64B35", "#00A087", "#3C5488",
+                     "#F39B7F", "#91D1C2", "#8491B4", "#DC0000", "#7E6148"))(length(panels)),
+  panels
+)
+
+# Preserve biological meta-cluster order from the scores matrix
+plot_df$meta_cluster <- factor(plot_df$meta_cluster, levels = colnames(ms))
+
+# ── Plot ──────────────────────────────────────────────────────────────────────
+p <- ggplot(plot_df, aes(label = feature, size = abs_r, color = panel)) +
+  geom_text_wordcloud(area_corr = TRUE, seed = 42, rm_outside = TRUE) +
+  scale_size_area(max_size = 5) +
+  scale_color_manual(values = panel_pal, name = "Panel") +
+  facet_wrap(~ meta_cluster, ncol = 4) +
+  theme_minimal(base_size = 11) +
+  theme(
+    strip.text       = element_text(face = "bold", size = 10),
+    panel.border     = element_rect(color = "grey50", fill = NA, linewidth = 1.2),
+    panel.background = element_rect(fill = "grey97", color = NA),
+    panel.spacing    = unit(1.2, "lines"),
+    legend.position  = "bottom",
+    legend.title     = element_text(size = 9),
+    legend.text      = element_text(size = 8),
+    plot.title       = element_text(face = "bold", size = 13)
+  ) +
+  guides(size  = "none",
+         color = guide_legend(override.aes = list(size = 4), nrow = 2)) +
+  labs(title = paste0("Top ", TOP_N, " features correlated with each imaging meta-cluster"),
+       subtitle = "Feature name size proportional to |r| with meta-cluster score; color = imaging panel")
+
+ggsave(file.path(FIGURES, "05_meta_cluster_feature_wordcloud.pdf"),device = cairo_pdf,
+       p, width = 16, height = 10)
+```
+
+# Network graph
+
+```{r}
+# Meta-cluster × meta-cluster correlations (from aggregate scores)
+mc_cor   <- cor(ms, use = "pairwise.complete.obs")
+mc_names <- colnames(ms)
+
+# MDS layout: place similar meta-clusters close together
+mc_dist <- as.dist((1 - mc_cor) / 2)
+mds_raw <- cmdscale(mc_dist, k = 2)
+
+# Keep nodes well inside [0,1] so large circles don't get clipped
+rescale_range <- function(x, lo = 0.18, hi = 0.82)
+  lo + (x - min(x)) / (max(x) - min(x)) * (hi - lo)
+
+pos <- cbind(rescale_range(mds_raw[, 1]),
+             rescale_range(mds_raw[, 2]))
+
+# Post-MDS repulsion: push overlapping nodes apart until all circles have
+# at least MIN_GAP clearance between their edges.
+MIN_GAP  <- 0.002    
+NODE_R <- 0.10 # minimum gap between circle edges
+MIN_DIST <- 2 * NODE_R + MIN_GAP        # minimum centre-to-centre distance
+MIS_DIST <- 0.05
+for (iter in seq_len(2000)) {
+  moved <- FALSE
+  for (i in seq_len(nrow(pos) - 1)) {
+    for (j in (i + 1):nrow(pos)) {
+      dx <- pos[j, 1] - pos[i, 1]
+      dy <- pos[j, 2] - pos[i, 2]
+      d  <- sqrt(dx^2 + dy^2)
+      if (d < MIN_DIST && d > 1e-9) {
+        push      <- (MIN_DIST - d) / 2
+        pos[i, 1] <- pos[i, 1] - push * dx / d
+        pos[i, 2] <- pos[i, 2] - push * dy / d
+        pos[j, 1] <- pos[j, 1] + push * dx / d
+        pos[j, 2] <- pos[j, 2] + push * dy / d
+        moved <- TRUE
+      }
+    }
+  }
+  if (!moved) break
+}
+
+mds_df <- data.frame(
+  meta_cluster = rownames(mds_raw),
+  x            = pos[, 1],
+  y            = pos[, 2],
+  stringsAsFactors = FALSE
+)
+
+# Meta-cluster palette (consistent with script 03)
+mc_pal <- setNames(
+  colorRampPalette(c("#E64B35", "#4DBBD5", "#00A087", "#3C5488",
+                     "#F39B7F", "#91D1C2", "#8491B4", "#DC0000"))(length(mc_names)),
+  mc_names
+)
+
+# ── Base graph: circles + name labels only (no connecting edges) ──────────────
+# coord_fixed() adds internal padding that breaks cowplot alignment.
+# Use scale limits + expand=0 so data [0,1] maps 1:1 to ggdraw [0,1].
+
+
+base_graph <- ggplot() +
+  geom_circle(
+    data = mds_df,
+    aes(x0 = x, y0 = y, r = NODE_R, fill = meta_cluster),
+    alpha = 0.20, color = "grey35", linewidth = 0.8
+  ) +
+  geom_text(
+    data = mds_df,
+    aes(x = x, y = y + NODE_R+ 0.01, label = meta_cluster),
+    size = 3.2, fontface = "bold", color = "grey20"
+  ) +
+  scale_fill_manual(values = mc_pal, guide = "none") +
+  scale_x_continuous(limits = c(0, 1), expand = c(0, 0)) +
+  scale_y_continuous(limits = c(0, 1), expand = c(0, 0)) +
+  theme_void() +
+  theme(plot.margin = margin(0, 0, 0, 0))
+
+# ── Word cloud sub-plots (transparent background, one per node) ───────────────
+# WC_SIZE matches the circle diameter so text fills the circle area
+WC_SIZE <- NODE_R * 2
+
+wc_plots <- lapply(mc_names, function(mc) {
+  sub_df <- plot_df[as.character(plot_df$meta_cluster) == mc, ]
+  ggplot(sub_df, aes(label = feature, size = abs_r, color = panel)) +
+    geom_text_wordcloud(area_corr = TRUE, seed = 42, rm_outside = TRUE) +
+    scale_size_area(max_size = 8) +
+    scale_color_manual(values = panel_pal) +
+    theme_void() +
+    theme(plot.margin    = margin(0, 0, 0, 0),
+          plot.background = element_rect(fill = NA, color = NA))
+})
+names(wc_plots) <- mc_names
+
+# ── Compose: overlay word clouds exactly on node centers ─────────────────────
+# With expand=0 + no margins, data coordinates map directly to ggdraw [0,1]
+composed <- ggdraw(base_graph)
+for (mc in mc_names) {
+  cx <- mds_df$x[mds_df$meta_cluster == mc]
+  cy <- mds_df$y[mds_df$meta_cluster == mc]
+  composed <- composed + draw_plot(
+    wc_plots[[mc]],
+    x      = cx - WC_SIZE / 2,
+    y      = cy - WC_SIZE / 2,
+    width  = WC_SIZE,
+    height = WC_SIZE
+  )
+}
+
+# ── Panel legend extracted from a dummy plot ──────────────────────────────────
+legend_grob <- get_legend(
+  ggplot(plot_df, aes(x = 1, y = 1, color = panel)) +
+    geom_point(size = 3) +
+    scale_color_manual(values = panel_pal, name = "Imaging panel") +
+    guides(color = guide_legend(override.aes = list(size = 3), nrow = 1)) +
+    theme_void() +
+    theme(legend.position  = "bottom",
+          legend.text      = element_text(size = 9),
+          legend.title     = element_text(size = 10, face = "bold"))
+)
+
+final <- plot_grid(composed, legend_grob, ncol = 1, rel_heights = c(1, 0.05))
+
+ggsave(file.path(FIGURES, "05_meta_cluster_network.pdf"),
+       final, width = 10, height = 10)
+```
+
+# original correlation
+
+```{r}
+# ── Inlet: true MDS distances, circles + labels only ─────────────────────────
+# Raw MDS positions rescaled to [0,1] — no repulsion, no word clouds.
+# Use a small fixed circle radius so circles don't obscure the distances.
+INLET_R <- 0.06
+
+mds_true <- data.frame(
+  meta_cluster = rownames(mds_raw),
+  x            = rescale_range(mds_raw[, 1]),
+  y            = rescale_range(mds_raw[, 2]),
+  stringsAsFactors = FALSE
+)
+
+inlet <- ggplot() +
+  geom_circle(
+    data = mds_true,
+    aes(x0 = x, y0 = y, r = INLET_R, fill = meta_cluster),
+    alpha = 0.30, color = "grey35", linewidth = 0.6
+  ) +
+  geom_text(
+    data = mds_true,
+    aes(x = x, y = y, label = meta_cluster),
+    size = 2.8, fontface = "bold", color = "grey10"
+  ) +
+  scale_fill_manual(values = mc_pal, guide = "none") +
+  scale_x_continuous(limits = c(0, 1), expand = c(0, 0)) +
+  scale_y_continuous(limits = c(0, 1), expand = c(0, 0)) +
+  coord_fixed() +
+  theme_void() +
+  theme(plot.margin      = margin(4, 4, 4, 4),
+        plot.background  = element_rect(fill = "white", color = "grey70",
+                                        linewidth = 0.6))
+
+ggsave(file.path(FIGURES, "05_meta_cluster_network_inlet.pdf"),
+       inlet, width = 4, height = 4)
+```
+

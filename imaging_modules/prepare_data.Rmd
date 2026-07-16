@@ -1,0 +1,133 @@
+---
+title: "data_loading"
+author: "Daniel Schulz"
+date: "2026-07-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# read imaging data
+Load, harmonize, and align all data modalities.
+Output: data/processed/rna_mat.rds, imaging_mat.rds, rna_scores_input.rds
+
+```{r}
+library(biomaRt)
+library(dplyr)
+
+DATA  <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing"
+OUT   <- DATA
+
+# ── 1. Imaging data ────────────────────────────────────────────────────────────
+
+read_img <- function(fname) {
+  d <- read.csv(file.path(DATA, fname), row.names = 1, check.names = FALSE)
+  d
+}
+
+ct_p1  <- read_img("celltypes_minor_density_dat_p1.csv")
+ct_p2  <- read_img("celltypes_minor_density_dat_p2.csv")
+sp_p1  <- read_img("cellohood_density_cellbased_p1.csv")
+sp_p2  <- read_img("cellohood_density_cellbased_p2.csv")
+mif_p1 <- read_img("celltypes_density_IF1.csv")
+mif_p2 <- read_img("celltypes_density_IF2.csv")
+mif_p3 <- read_img("celltypes_density_IF3.csv")
+mean_p1 <- read_img("mean_marker_expr_per_celltype_p1.csv")
+mean_p2 <- read_img("mean_marker_expr_per_celltype_p2.csv")
+#int_if1 <- read_img("cell-cell-pair_interactions_directional_IF1.csv")
+#int_if2 <- read_img("cell-cell-pair_interactions_directional_IF2.csv")
+#int_if3 <- read_img("cell-cell-pair_interactions_directional_IF3.csv")
+#int_p1 <- read_img("cell-pair_interactions_celltypes_minor_directional_P1.csv")
+#int_p2 <- read_img("cell-pair_interactions_celltypes_minor_directional_P2.csv")
+
+# Add source prefix to feature names to avoid collisions on merge
+prefix_cols <- function(df, prefix) {
+  colnames(df) <- paste0(prefix, "_", colnames(df))
+  df
+}
+
+ct_p1  <- prefix_cols(ct_p1,  "IMC1")
+ct_p2  <- prefix_cols(ct_p2,  "IMC2")
+sp_p1  <- prefix_cols(sp_p1,  "SP1")
+sp_p2  <- prefix_cols(sp_p2,  "SP2")
+mif_p1 <- prefix_cols(mif_p1, "mIF1")
+mif_p2 <- prefix_cols(mif_p2, "mIF2")
+mif_p3 <- prefix_cols(mif_p3, "mIF3")
+mean_p1 <- prefix_cols(mean_p1,"exp1")
+mean_p2 <- prefix_cols(mean_p2,"exp2")
+#int_if1 <- prefix_cols(int_if1, "intIF1")
+#int_if2 <- prefix_cols(int_if2, "intIF2")
+#int_if3 <- prefix_cols(int_if3, "intIF3")
+#int_p1 <- prefix_cols(int_p1, "intP1")
+#int_p2 <- prefix_cols(int_p2, "intP2")
+
+# Merge all imaging modalities (outer join — keeps all patients)
+imaging_mat <- Reduce(function(a, b) merge(a, b, by = "row.names", all = TRUE) |>
+                        (\(x) { rownames(x) <- x$Row.names; x$Row.names <- NULL; x })(),
+                      list(ct_p1, ct_p2, sp_p1, sp_p2, mif_p1, mif_p2, mif_p3,mean_p1, mean_p2))
+
+cat("Imaging matrix:", nrow(imaging_mat), "patients x", ncol(imaging_mat), "features\n")
+```
+
+# RNA
+```{r}
+rna_raw <- read.table("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/RNAseq/vstcounts_adj_proteins.txt",
+                      header = TRUE, row.names = 1, check.names = FALSE)
+# Genes x samples → samples x genes
+rna_raw <- t(rna_raw)
+
+# Harmonize sample IDs to match imaging format
+rownames(rna_raw) <- gsub("\\.", "-", rownames(rna_raw))
+rownames(rna_raw) <- gsub("-FIXT.*", "", rownames(rna_raw))
+
+cat("RNA matrix (after transpose):", nrow(rna_raw), "samples x", ncol(rna_raw), "genes\n")
+
+# ── 3. Ensembl → gene symbol conversion ───────────────────────────────────────
+
+# Strip version suffix (ENSG00000000003.14 → ENSG00000000003)
+ensembl_ids <- sub("\\..*", "", colnames(rna_raw))
+
+#mart <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+
+id_map <- mapIds(org.Hs.eg.db,
+       keys      = ensembl_ids,
+       column    = "SYMBOL",
+       keytype   = "ENSEMBL",
+       multiVals = "first")
+
+colnames(rna_raw) <- sub("\\..*", "", colnames(rna_raw))
+identical(colnames(rna_raw),names(id_map))
+
+# Match to column order
+rna_mat      <- rna_raw
+colnames(rna_mat) <- id_map
+rna_mat <- rna_mat[,!is.na(colnames(rna_mat))]
+
+
+# For duplicate symbols (paralogs), keep the column with highest mean expression
+if (any(duplicated(colnames(rna_mat)))) {
+  col_means <- colMeans(rna_mat)
+  rna_mat   <- rna_mat[, order(-col_means), drop = FALSE]
+  rna_mat   <- rna_mat[, !duplicated(colnames(rna_mat)), drop = FALSE]
+}
+
+cat("RNA matrix after symbol mapping:", nrow(rna_mat), "samples x", ncol(rna_mat), "genes\n")
+```
+
+```{r}
+# ── 4. Overlap check ──────────────────────────────────────────────────────────
+
+rna_in_imaging <- rownames(rna_mat) %in% rownames(imaging_mat)
+cat("RNA samples also in imaging:", sum(rna_in_imaging), "/", nrow(rna_mat), "\n")
+
+# ── 5. Save ───────────────────────────────────────────────────────────────────
+
+saveRDS(rna_mat,     file.path(OUT, "rna_mat.rds"))
+saveRDS(imaging_mat, file.path(OUT, "imaging_mat.rds"))
+
+cat("Saved rna_mat.rds and imaging_mat.rds to", OUT, "\n")
+```
