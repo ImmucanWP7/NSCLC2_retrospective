@@ -45,6 +45,10 @@ cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds
 clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
 traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
 
+rna <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_scores.rds")
+rna$immucan_id  <- rownames(rna)
+rownames(rna) <- NULL
+
 
 # variables
 data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2))
@@ -69,7 +73,82 @@ p
 ggsave(p,filename = paste0(out_folder,"S3A_Kaplan_Meier_CPS_score.pdf"),device = "pdf",width = 6, height = 5)
 ```
 
-# TCGA RNA modules
+# S3B
+code here: to be included in this script: [tumor subtyping](../../../RNA/tumor_subtypes/tumor_subtypes_oncotypes.Rmd)
+
+
+# S3C RNA modules for stage 
+```{r}
+dat_z <- left_join(rna, traits, "immucan_id") %>%
+  filter(!is.na(simple_stage),
+         simple_histology == "Adenocarcinoma") %>%
+  pivot_longer(cols = 1:29) %>%
+  group_by(name) %>%
+  mutate(value = as.numeric(scale(value))) %>%  # z-score within each signature
+  ungroup()
+
+sigs <- dat_z %>%
+  select(immucan_id,name, value,simple_stage) %>%
+  mutate(stage = ifelse(simple_stage == "I",1,NA),
+         stage = ifelse(simple_stage == "II",2,stage),
+         stage = ifelse(simple_stage == "III",3,stage),
+         stage = ifelse(simple_stage == "IV",4,stage),
+         stage = as.numeric(as.factor(stage))) %>%
+  filter(stage != 4) %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(model = map(data, ~ lm(value ~ stage, data = .x)),
+         summary = map(model, broom::tidy)) %>%
+  select(name, summary) %>%
+  unnest(c(summary)) %>%
+  filter(term == "stage") %>%
+  mutate(tech = str_split_i(name,"__",2)) %>%
+  group_by(tech) %>%
+  mutate(FDR = p.adjust(p = p.value,method = "BH"),
+         sig_p = ifelse(p.value < 0.05,TRUE, FALSE),
+         sig_fdr = ifelse(FDR < 0.1,"T", "F"))
+
+
+summary_dat <- sigs %>%
+  filter(sig_p == TRUE) %>%
+  #filter(grepl("CD8_GATA3_BCL2|^CD8_density|CD8_Ki67_density|CD8_TCF7_density|Tumor_IDO1",name)) %>%
+  mutate(y_position = 1000,
+         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
+  ungroup() %>%
+  as.data.frame()
+
+p2 <- dat_z %>%
+  select(immucan_id,name, value,simple_stage) %>%
+  mutate(stage = ifelse(simple_stage == "I",1,NA),
+         stage = ifelse(simple_stage == "II",2,stage),
+         stage = ifelse(simple_stage == "III",3,stage),
+         stage = ifelse(simple_stage == "IV",4,stage),
+         stage = as.numeric(as.factor(stage)),
+         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
+  filter(name %in% summary_dat$name,
+         stage != 4) %>%
+  ggplot(aes(x = name,y = value,fill=as.factor(stage))) +
+  geom_boxplot(outliers = FALSE)+
+  geom_jitter(aes(col = as.factor(stage)),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
+  scale_fill_manual(values = alpha(c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"),alpha = 0.6))+
+  scale_color_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust = 1),
+        axis.title.x = element_blank())+
+  guides(fill=guide_legend(title="Stage"),
+         col=guide_legend(title="Stage"))+
+  geom_text(data = summary_dat, aes(x = name,y=3,label = paste0("fdr: ",sig_fdr)), inherit.aes = FALSE, size =3)+
+  geom_text(data = summary_dat, aes(x = name,y=3.4,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE, size = 3)+
+  #coord_cartesian(ylim = c(-0.35, 0.5))+
+  ggtitle(label = "RNA module differences in LUAD")+
+  labs(y = "RNA module score")
+  
+p2
+
+# plotting in chunk below
+```
+
+# S3D TCGA RNA modules
 ```{r, fig.width=10, fig.height=6}
 library(singscore)
 tcga <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/MOFA/tcga_LUAD_LUSC.rds")
@@ -146,13 +225,17 @@ sigs <- dat_z %>%
          sig_fdr = ifelse(FDR < 0.1,"T", "F"))
 
 
-summary_dat <- sigs %>%
-  filter(sig_p == TRUE |
-         name %in% c("Angiogenesis","Cancer-associated-fibroblasts","Granulocyte_traffic","Myeloid_cells_traffic","Protumor_cytokines")) %>%
+summary_dat_val <- sigs %>%
+  filter(name %in% c("Angiogenesis","Cancer-associated_fibroblasts","Granulocyte_traffic","Myeloid_cells_traffic","Protumor_cytokines"))%>%
   ungroup() %>%
   as.data.frame()
 
-p2 <- dat_z %>%
+summary_dat_sig <- sigs %>%
+  filter(sig_p == TRUE) %>%
+  ungroup() %>%
+  as.data.frame()
+
+p1 <- dat_z %>%
   select(patient,name, value,ajcc_pathologic_stage) %>%
   mutate(stage = ifelse(grepl("I",ajcc_pathologic_stage),1,NA),
          stage = ifelse(grepl("II",ajcc_pathologic_stage),2,stage),
@@ -160,9 +243,9 @@ p2 <- dat_z %>%
          stage = ifelse(grepl("IV",ajcc_pathologic_stage),4,stage),
          stage = as.numeric(as.factor(stage)),
          name = gsub(pattern = "density_",replacement = "",x = name)) %>%
-  filter(name %in% summary_dat$name ,
+  filter(name %in% summary_dat_sig$name ,
          stage != 4) %>%
-  ggplot(aes(x = name,y = log10(value+1),fill=as.factor(stage))) +
+  ggplot(aes(x = name,y = value,fill=as.factor(stage))) +
   geom_boxplot(outliers = FALSE)+
   geom_jitter(aes(col = as.factor(stage)),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
   scale_fill_manual(values = alpha(c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"),alpha = 0.6))+
@@ -172,14 +255,47 @@ p2 <- dat_z %>%
         axis.title = element_blank())+
   guides(fill=guide_legend(title="Stage"),
          col=guide_legend(title="Stage"))+
-  geom_text(data = summary_dat, aes(x = name,y=0.85,label = paste0("fdr: ",sig_fdr)), inherit.aes = FALSE, size = 3)+
-  geom_text(data = summary_dat, aes(x = name,y=1,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE, size = 3)+
-  coord_cartesian(ylim = c(-1, 1))+
-  ggtitle(label = "RNA module differencess for LUAD in TCGA")
-  
-p2
+  geom_text(data = summary_dat_sig, aes(x = name,y=2.8,label = paste0("fdr: ",sig_fdr)), inherit.aes = FALSE, size = 3)+
+  geom_text(data = summary_dat_sig, aes(x = name,y=3.5,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE, size = 3)+
+  coord_cartesian(ylim = c(-4, 3.5))+
+  ggtitle(label = "RNA modules across stages in LUAD - TCGA exploratory")+
+  theme(title = element_text(size = 10))
+p1  
+p_val <- dat_z %>%
+  select(patient,name, value,ajcc_pathologic_stage) %>%
+  mutate(stage = ifelse(grepl("I",ajcc_pathologic_stage),1,NA),
+         stage = ifelse(grepl("II",ajcc_pathologic_stage),2,stage),
+         stage = ifelse(grepl("III",ajcc_pathologic_stage),3,stage),
+         stage = ifelse(grepl("IV",ajcc_pathologic_stage),4,stage),
+         stage = as.numeric(as.factor(stage)),
+         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
+  filter(name %in% summary_dat_val$name ,
+         stage != 4) %>%
+  ggplot(aes(x = name,y = value,fill=as.factor(stage))) +
+  geom_boxplot(outliers = FALSE)+
+  geom_jitter(aes(col = as.factor(stage)),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
+  scale_fill_manual(values = alpha(c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"),alpha = 0.6))+
+  scale_color_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust = 1),
+        axis.title.x = element_blank())+
+  guides(fill=guide_legend(title="Stage"),
+         col=guide_legend(title="Stage"))+
+  geom_text(data = summary_dat_val, aes(x = name,y=2.5,label = paste0("fdr: ",sig_fdr)), inherit.aes = FALSE, size = 3)+
+  geom_text(data = summary_dat_val, aes(x = name,y=3.2,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE, size = 3)+
+  coord_cartesian(ylim = c(-4, 3.2))+
+  ggtitle(label = "RNA modules across stages in LUAD - TCGA validation")+
+  theme(title = element_text(size = 10))+
+  labs(y = "RNA module score")
 
-ggsave(plot = p2, path = out_folder,filename = "RNA_modules_for_stage_TCGA.pdf",width = 6, height = 3.5,device = cairo_pdf)
+
+p <- plot_grid(p2 + theme(axis.text.x = element_blank()), p_val, ncol = 1, rel_heights = c(1.2,2))
+
+ggsave(plot = p, path = out_folder,filename = "S3C_RNA_modules_for_stage_and_TCGA_validation.pdf",width = 6, height = 5,device = cairo_pdf)
+
+
+p1
+ggsave(plot = p1, path = out_folder,filename = "S3D_RNA_modules_for_stage_and_TCGA_exploratory.pdf",width = 6, height = 3,device = cairo_pdf)
 ```
 
 
@@ -218,7 +334,7 @@ p2
 sigs
 ```
 
-# S3B TCGA across stages adenocarcinoma
+# S3B TCGA across stages adenocarcinoma to be deleted 
 ```{r}
 tcga <- read.csv(paste0(mount_path,"data/RNAseq/luad_tcga_pan_can_atlas_2018/luad_tcga_pan_can_atlas_2018/xcell_between_samples_scores.csv"), sep = "\t")
 tcga_patient <- read.csv(paste0(mount_path,"data/RNAseq/luad_tcga_pan_can_atlas_2018/luad_tcga_pan_can_atlas_2018/data_clinical_patient.txt"), sep = "\t")
@@ -291,7 +407,10 @@ tcga %>%
   dplyr::count(stage)
 ```
 
-# deconvolution of RNAseq
+
+
+
+# deconvolution of RNAseq - to be deleted
 ```{r, fig.width=25, fig.height=8}
 dat <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/RNAseq/xcell_results/xCell_TPM_norm_for_xCell_xCell_1129103125.txt", sep = "\t")
 dat_t <- as.data.frame(t(dat[,-1]))
@@ -376,7 +495,7 @@ dat_t %>%
 
 
 
-# diff abundance stages bubble plot
+# diff abundance stages bubble plot - to be deleted
 not in paper
 here we will estimate the dispersion across the whole data set and then do the linear model of count comparison only for the groups of interest.
 ```{r, fig.height=8, fig.width=10}
@@ -732,7 +851,7 @@ p
 ```
 
 
-# S3C linear regression for stage for LUSC
+# S3C linear regression for stage for LUSC - to be deleted
 
 ```{r, fig.width=10}
 library(purrr)
@@ -896,10 +1015,207 @@ p2
 
 ```
 
+# S3E Smoking
+## RNA
+
+### RNA modules never vs current
+```{r}
+dat_z <- left_join(rna, traits, "immucan_id") %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  pivot_longer(cols = 1:29)
+
+result <- lollipop_plot(dat_z, "never_vs_current_smoker", "Current smoker", "Non-smoker",col_A = "blue", col_B = "cyan")
+order_vec <- result$data %>%
+  arrange(delta_z) %>%
+  pull(name)
+p4 <- result$plot+
+  
+    ylab("RNA modules")+
+  ggtitle("Current vs Non-smoker")+
+  theme(axis.title.y = element_text(size= 14))
+p4
+```
 
 
 
-# S3D diff abundance smoking cellohood
+### RNA modules never vs ex
+```{r}
+result <- lollipop_plot(dat_z, "never_vs_Ex_smoker", "Ex-smoker", "Non-smoker", order = FALSE, order_vec = order_vec)
+p5 <- result$plot+
+  theme(axis.text.y = element_blank())+
+  ggtitle("Ex-smokers vs Non-smokers")
+p5
+```
+
+### RNA modules current vs ex
+```{r}
+result <- lollipop_plot(dat_z, "current_vs_Ex_smoker", "Current smoker", "Ex-smoker", order = FALSE, order_vec = order_vec)
+p6 <- result$plot+
+  theme(axis.text.y = element_blank())+
+  ggtitle("Current smokers vs Ex-smokers")
+```
+
+### plot RNA
+
+```{r, fig.height=5.5, fig.width= 22}
+p <- cowplot::plot_grid(p4, p5, p6, ncol = 3, rel_widths = c(1.5, 0.7, 0.7))
+p
+ggsave(plot = p4+
+         theme(legend.position = "bottom", legend.box = "vertical")+
+           guides(color = guide_legend(nrow = 2, byrow = TRUE),
+         size = guide_legend(nrow = 2, byrow = TRUE)), path = out_folder,filename = "RNA_modules_for_smoking.pdf",width = 8, height = 8,device = cairo_pdf)
+```
+
+# S3F inflammation in smoking
+
+```{r}
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(msigdbr)
+
+rna_mat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_mat.rds")
+
+
+# ── gene signatures ────────────────────────────────────────────────────
+hallmark_sets <- msigdbr(species = "Homo sapiens", collection = "H") %>%
+  dplyr::select(gs_name, gene_symbol) %>%
+  split(.$gs_name) %>%
+  lapply(function(x) x$gene_symbol)
+
+# Targeted Hallmark gene sets of interest
+target_sets <- c(
+  "HALLMARK_INFLAMMATORY_RESPONSE",
+  "HALLMARK_INTERFERON_GAMMA_RESPONSE",
+  "HALLMARK_INTERFERON_ALPHA_RESPONSE",
+  "HALLMARK_TNFA_SIGNALING_VIA_NFKB",
+  "HALLMARK_IL6_JAK_STAT3_SIGNALING",
+  "HALLMARK_IL2_STAT5_SIGNALING"
+)
+gs_list_hallmark <- hallmark_sets[intersect(target_sets, names(hallmark_sets))]
+
+# ── 2. Custom gene sets ────────────────────────────────────────────────────────
+# CXCL9/10/11 chemokine axis (T cell recruitment)
+gs_list_custom <- list(
+  CXCL9_10_11_axis = c("CXCL9", "CXCL10", "CXCL11", "CXCR3",
+                       "CXCL13", "CXCR5"),
+  T_cell_activation = c("CD8A", "CD8B", "GZMB", "PRF1", "IFNG",
+                        "TNF", "IL2", "PDCD1", "HAVCR2", "LAG3"),
+  type_I_IFN = c("IFNB1", "IRF7", "MX1", "OAS1", "OAS2", "OAS3",
+                 "ISG15", "IFIT1", "IFIT2", "IFIT3", "RSAD2", "HERC5"),
+  NF_kB_target  = c("NFKB1", "RELA", "RELB", "NFKB2", "REL",
+                    "BCL2L1", "IL1B", "IL6", "CXCL8", "TNF", "ICAM1"),
+  TCR_signaling = c("CD3D", "CD3E", "CD3G", "ZAP70", "LCK", "LAT",
+                    "ITK", "PLCG1", "NFATC1", "NFATC2"),
+  cytotoxic = c("GZMB", "GZMA", "GZMK", "PRF1", "NKG7", "IFNG", "KLRG1"),
+  exhaustion = c("PDCD1","LAG3","HAVCR2","TX","CTLA4", "IDO1")
+  )
+
+all_gs <- c(gs_list_hallmark, gs_list_custom)
+
+# compute score
+rna_for_score <- t(rna_mat)
+
+# Filter gene sets to genes present in the RNA-seq matrix
+all_gs <- lapply(all_gs, function(g) intersect(g, rownames(rna_for_score)))
+all_gs <- all_gs[sapply(all_gs, length) >= 5]
+
+
+
+overlap <- sapply(all_gs, function(g) sum(g %in% rownames(rna_for_score)))
+total   <- sapply(all_gs, length)
+print(data.frame(found = overlap, total = total, pct = round(100 * overlap / total)))
+
+# ── Score with singscore ──────────────────────────────────────────────────────
+ranked <- rankGenes(rna_for_score)
+
+scores_list <- lapply(names(all_gs), function(nm) {
+  sc <- simpleScore(ranked, upSet = all_gs[[nm]], centerScore = TRUE)
+  setNames(sc$TotalScore, rownames(sc))
+})
+
+
+rna_scores <- as.data.frame(do.call(cbind, scores_list))
+colnames(rna_scores) <- names(all_gs)
+rownames(rna_scores) <- colnames(rna_for_score)
+rna_scores$immucan_id <- rownames(rna_scores)
+rownames(rna_scores) <- NULL
+
+dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  pivot_longer(cols = 1:13)
+
+result <- lollipop_plot(dat_z, "never_vs_current_smoker", "Current smoker", "Non-smoker", col_A = "blue", col_B = "cyan")
+p <- result$plot+
+    ylab("RNA modules")+
+  ggtitle("Current vs Non-smoker")+
+  theme(axis.title.y = element_blank(),
+        axis.title.x = element_text(size= 18),
+        legend.position = "bottom", 
+        legend.text = element_text(size = 18),
+        legend.title = element_text(size = 18))+
+  guides(color = guide_legend(nrow = 2, byrow = TRUE),
+         size = guide_legend(nrow = 2, byrow = TRUE))
+
+
+```
+
+```{r, fig.height=10, fig.width=10}
+p <- result$plot+
+    ylab("RNA modules")+
+  ggtitle("Current vs Non-smoker")+
+  theme(axis.title.y = element_blank(),
+        axis.title.x = element_text(size= 18),
+        #legend.position = "bottom", 
+        legend.text = element_text(size = 18),
+        legend.title = element_text(size = 18),
+        title = element_text(size = 18))
+p
+ggsave(plot = p, path = out_folder,filename = "alternative_inflammation.pdf",width = 10, height = 6 ,device = cairo_pdf)
+
+```
+
+# S3G tumor types for smoking
+
+```{r}
+scores <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/tumor_subtype_scores.csv")
+
+scores <- left_join(scores, traits,"immucan_id")
+
+
+plot_data <- scores %>%
+  pivot_longer(cols = 1:3) %>%
+  filter(!is.na(smoking_status))
+
+library(rstatix)
+stat_test <- plot_data %>%
+  group_by(name) %>%
+  t_test(value ~ smoking_status,
+         comparisons = list(c("Current smoker", "Ex-smoker"),
+                             c("Current smoker", "Non-smoker"),
+                             c("Ex-smoker", "Non-smoker"))) %>%
+  mutate(p_round = round(p, 3)) %>%
+  add_xy_position(x = "smoking_status")
+
+p <- ggplot(plot_data, aes(x = smoking_status, y = value, fill = smoking_status)) +
+  geom_boxplot() +
+  geom_jitter(aes(col = smoking_status), position = position_jitterdodge(jitter.width = 0.2), size = 0.5) +
+  scale_fill_manual(values = alpha(c("blue", "lightblue", "cyan3"), alpha = 0.5)) +
+  scale_color_manual(values = c("blue", "lightblue", "cyan3")) +
+  facet_wrap(~name) +
+  stat_pvalue_manual(stat_test, label = "p_round", tip.length = 0.01,y.position = c(1, 1.2,1.4)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  coord_cartesian(ylim = c(-0.7, 1.5)) +
+  xlab("Smoking status") +
+  ylab("Tumor type score")
+
+
+ggsave(plot = p, path = out_folder,filename = "tumor_types_for_smoking.pdf",width = 5, height = 3.5,device = cairo_pdf)
+
+```
+
+
+# S3D diff abundance smoking cellohood - to be deleted
 
 ```{r, fig.height=15, fig.width=25}
 condition <- c("Non-smoker","Non-smoker","Ex-smoker")
@@ -1151,7 +1467,7 @@ ggsave(filename = paste0(out_folder,"S3D_diff_abundance_smoking.pdf"),
 
 
 
-# S3E mutation signatures
+# S3H mutation signatures
 
 ```{r}
 # Merge with mutational signatures
@@ -1159,6 +1475,7 @@ Lung_NSCLC2_filtered <-read.delim(paste0(mount_path,"data/WES/mutation_signature
 names(Lung_NSCLC2_filtered)[names(Lung_NSCLC2_filtered)=="patient"] <- "immucan_id"
 anno_WES <- merge(traits, Lung_NSCLC2_filtered, by="immucan_id", sort=F)
 
+apply(Lung_NSCLC2_filtered[, 4:12], 2, hist)
 # Combine smoking signatures
 anno_WES[,"SBS4_SBS92"] <- apply(anno_WES[,c("SBS4","SBS92")],1,sum)
 
@@ -1175,7 +1492,8 @@ data_to_plot <- anno_WES[,c("smoking_status", feature)]
 names(data_to_plot) <- c("smoking_status", "feature")
   
 data_to_plot <- data_to_plot %>%
-  filter(!is.na(smoking_status))
+  filter(!is.na(smoking_status),
+         !feature == 0)
 
 sample_sizes <- data_to_plot %>%
     group_by(smoking_status) %>%
@@ -1216,45 +1534,8 @@ ggsave(filename = paste0(out_folder,"S3E_mutation_signatures_for_smoking.pdf"),
        device = "pdf",
        width = 6,
        height = 6)
+
 ```
 
-# S3F inflammation signature for smoking
 
-```{r}
-cur_dat <- read.table(paste0(mount_path,"data/RNASeq/CURIE/inflammation_quantification_NSCLC2/outputs/pathwayActivity/PathwayActivity_NSCLC2_mlm"))
-my_comp <-  list( c("Current smoker", "Non-smoker"), c("Ex-smoker", "Non-smoker"), c("Current smoker", "Non-smoker") )
 
-cur_dat <- cur_dat %>%
-  as.data.frame() %>%
-  mutate(immucan_id = paste0("LUNG-",rownames(cur_dat))) %>%
-  left_join(traits,by = "immucan_id")
-
-cur_dat <- cur_dat %>%
-  pivot_longer(cols = c(JAK.STAT,NFkB,TNFa))
-p <- cur_dat %>%
-  filter(!is.na(smoking_status)) %>%
-  ggplot(aes(x = smoking_status,y = value, fill = smoking_status))+
-  geom_boxplot(outliers = FALSE)+
-  geom_jitter(aes(color = smoking_status),position = position_jitterdodge(jitter.width = 0.2), size= 1)+
-  facet_wrap(.~name)+
-  scale_fill_manual(values = alpha(c("blue", "lightblue", "cyan3"),alpha = 0.5))+
-  scale_color_manual(values = c("blue", "lightblue", "cyan3"))+
-  stat_compare_means(size = 5,label = "p.signif", comparisons = my_comp,method = "t.test")+
-  theme_bw()+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 1, size = 16),
-        axis.title.x = element_blank(),
-        axis.title.y = element_text(size = 14),
-        legend.text = element_text(size = 14),
-        strip.text.x = element_text(size = 14),
-        legend.position = "bottom",
-        legend.location = "plot")+
-  ylab("Pathway score")
-
-p
-
-ggsave(filename = paste0(out_folder,"S3F_inflammation_score_for_smoking_status.pdf"),
-       plot = p,
-       device = "pdf",
-       width = 7,
-       height = 7)
-```

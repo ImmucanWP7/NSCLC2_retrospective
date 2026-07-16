@@ -7,6 +7,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
 ```
 
 ```{r}
@@ -35,6 +36,8 @@ out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/
 if (!dir.exists(out_folder)) {
   dir.create(out_folder)
 }
+
+source("code/lollipop_function.R")
 ```
 
 # load data
@@ -47,6 +50,10 @@ clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSC
 traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
 modules <- as.data.frame(readRDS( "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/patient_imaging_meta_cluster_scores.rds"))
 
+rna <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_scores.rds")
+rna$immucan_id  <- rownames(rna)
+rownames(rna) <- NULL
+
 modules <- modules  %>%
   mutate(immucan_id = rownames(modules))
 rownames(modules) <- NULL
@@ -54,73 +61,89 @@ rownames(modules) <- NULL
 data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2))
 ```
 
+# 2A Imaging modules
+
+code is here: [imaging module plot](../../../imaging_modules/imaging_module_generation.Rmd)
+
 # Histology
 
-## plot function
-```{r}
-lollipop_plot <- function(data, condition, var_A, var_B, order = TRUE, order_vec) {
-  condition_sym <- rlang::sym(condition)
+## 2B RNA scores
 
-  volcano_df <- data %>%
-    filter(!is.na(!!condition_sym)) %>%
-    group_by(name) %>%
-    mutate(value_z = as.numeric(scale(value))) %>%  # z-score within each signature
-    summarise(
-      delta_z = mean(value_z[!!condition_sym == var_A], na.rm = TRUE) -
-                mean(value_z[!!condition_sym == var_B], na.rm = TRUE),
-      pvalue  = t.test(value_z[!!condition_sym == var_A],
-                        value_z[!!condition_sym == var_B])$p.value,
-      .groups = "drop"
-    ) %>%
-    mutate(
-      padj        = p.adjust(pvalue, method = "BH"),
-      neg_log10_p = -log10(pvalue),
-      direction   = ifelse(delta_z > 0, paste("Up in", var_A), paste("Up in", var_B)),
-      sig         = ifelse(padj < 0.1, TRUE, FALSE)
-    ) %>%
-    arrange(delta_z)
+```{r, fig.height=15, fig.width=15}
+left_join(rna, traits, "immucan_id") %>%
+  filter(!is.na(LUAD_vs_LUSC)) %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  pivot_longer(cols = 1:29) %>%
+  ggplot(aes(x = LUAD_vs_LUSC,y = value))+
+  geom_boxplot()+
+  facet_wrap(.~name, scales = "free")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  ggpubr::stat_compare_means()
 
-  if(order == TRUE){
-    volcano_df <- volcano_df %>%
-      mutate(name = factor(name, levels = name[order(delta_z)]))  # order for plotting
-    print(volcano_df$name)
-  } else {
-    volcano_df <- volcano_df %>%
-      mutate(name = factor(name, levels = order_vec))  # order for plotting
-  }
+dat_z <- left_join(rna, traits, "immucan_id") %>%
+  filter(!is.na(LUAD_vs_LUSC)) %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  pivot_longer(cols = 1:29)
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(broom)
+
+volcano_df <- dat_z %>%
+  group_by(name) %>%
+  mutate(value_z = as.numeric(scale(value))) %>%  # z-score within each signature
+  summarise(
+    delta_z = mean(value_z[LUAD_vs_LUSC == "LUAD"], na.rm = TRUE) -
+              mean(value_z[LUAD_vs_LUSC == "LUSC"], na.rm = TRUE),
+    pvalue  = t.test(value_z[LUAD_vs_LUSC == "LUAD"],
+                      value_z[LUAD_vs_LUSC == "LUSC"])$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    padj        = p.adjust(pvalue, method = "BH"),
+    neg_log10_p = -log10(pvalue),
+    direction   = ifelse(delta_z > 0, "Up in LUAD", "Up in LUSC"),
+    sig = ifelse(padj < 0.1, TRUE, FALSE)
+  ) %>%
+  arrange(delta_z)
 
 
-  dir_A <- paste("Up in", var_A)
-  dir_B <- paste("Up in", var_B)
+volcano_df <- volcano_df %>%
+  mutate(name = factor(name, levels = name[order(delta_z)]))  # order for plotting
 
-  p2 <- ggplot(volcano_df, aes(x = delta_z, y = name)) +
-    geom_segment(aes(x = 0, xend = delta_z, y = name, yend = name), color = "grey70") +
-    geom_point(aes(color = direction, size = -log10(padj))) +
-    geom_point(
-      data = subset(volcano_df, sig == TRUE),
-      aes(x = delta_z, y = name, size = -log10(padj)),
-      shape = 21, color = "black", fill = NA, stroke = 1
-    ) +
-    scale_color_manual(values = setNames(c("blue", "orange"), c(dir_A, dir_B))) +
-    geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
-    labs(x = paste0("Δ z-score (", var_A, " - ", var_B, ")"), y = NULL,
-         color = "Direction", size = "-log10(FDR)") +
-    theme_minimal() +
-    theme(
-      axis.title.x = element_text(size = 14),
-      axis.text.x  = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 14),
-      axis.text.y  = element_text(size = 14),
-      legend.margin  = margin(t = 0),
-      legend.spacing = unit(0.2, "cm"),
-      legend.text = element_text(size = 12)
-    ) +
-    ggtitle("Imaging modules")
-
-  return(list(data = volcano_df, plot = p2))
-}
+p <- ggplot(volcano_df, aes(x = delta_z, y = name)) +
+  geom_segment(aes(x = 0, xend = delta_z, y = name, yend = name), color = "grey70") +
+  geom_point(aes(color = direction, size = -log10(padj))) +
+  geom_point(
+    data = subset(volcano_df, sig == TRUE),
+    aes(x = delta_z, y = name, size = -log10(padj)),
+    shape = 21, color = "black", fill = NA, stroke = 1
+  )+
+  scale_color_manual(values = c("Up in LUAD" = "blue", "Up in LUSC" = "orange")) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
+  labs(x = "Δ z-score (LUAD - LUSC)", y = NULL,
+       color = "Direction", size = "-log10(FDR)") +
+  guides(
+    color = guide_legend(nrow = 1, title.position = "top"),
+    size  = guide_legend(nrow = 1, title.position = "top")
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(size = 10),
+    axis.text.y     = element_text(size = 9),
+    legend.position = "bottom",
+    legend.box      = "vertical",     # stacks the color legend and size legend on top of each other
+    legend.margin   = margin(t = 0),
+    legend.spacing  = unit(0.2, "cm")
+  )+
+  ggtitle("RNA signatures")
+p
+ggsave(plot = p, path = out_folder,filename = "RNA_difference_for_histology.pdf",width = 4.5, height = 7,device = cairo_pdf)
 ```
 
-## imaging modules for histology
+
+## 2C imaging modules for histology
 ```{r, fig.height=10, fig.width=8}
 left_join(modules, traits, "immucan_id") %>%
   filter(!is.na(LUAD_vs_LUSC)) %>%
@@ -210,90 +233,10 @@ left_join(modules, traits, "immucan_id") %>%
   ggpubr::stat_compare_means()
 ```
 
-## RNA scores
-
-```{r, fig.height=15, fig.width=15}
-rna <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_scores.rds")
-
-rna$immucan_id  <- rownames(rna)
-rownames(rna) <- NULL
-
-left_join(rna, traits, "immucan_id") %>%
-  filter(!is.na(LUAD_vs_LUSC)) %>%
-  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
-  pivot_longer(cols = 1:29) %>%
-  ggplot(aes(x = LUAD_vs_LUSC,y = value))+
-  geom_boxplot()+
-  facet_wrap(.~name, scales = "free")+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
-  ggpubr::stat_compare_means()
-
-dat_z <- left_join(rna, traits, "immucan_id") %>%
-  filter(!is.na(LUAD_vs_LUSC)) %>%
-  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
-  pivot_longer(cols = 1:29)
-
-library(dplyr)
-library(tidyr)
-library(purrr)
-library(broom)
-
-volcano_df <- dat_z %>%
-  group_by(name) %>%
-  mutate(value_z = as.numeric(scale(value))) %>%  # z-score within each signature
-  summarise(
-    delta_z = mean(value_z[LUAD_vs_LUSC == "LUAD"], na.rm = TRUE) -
-              mean(value_z[LUAD_vs_LUSC == "LUSC"], na.rm = TRUE),
-    pvalue  = t.test(value_z[LUAD_vs_LUSC == "LUAD"],
-                      value_z[LUAD_vs_LUSC == "LUSC"])$p.value,
-    .groups = "drop"
-  ) %>%
-  mutate(
-    padj        = p.adjust(pvalue, method = "BH"),
-    neg_log10_p = -log10(pvalue),
-    direction   = ifelse(delta_z > 0, "Up in LUAD", "Up in LUSC"),
-    sig = ifelse(padj < 0.1, TRUE, FALSE)
-  ) %>%
-  arrange(delta_z)
-
-
-volcano_df <- volcano_df %>%
-  mutate(name = factor(name, levels = name[order(delta_z)]))  # order for plotting
-
-p <- ggplot(volcano_df, aes(x = delta_z, y = name)) +
-  geom_segment(aes(x = 0, xend = delta_z, y = name, yend = name), color = "grey70") +
-  geom_point(aes(color = direction, size = -log10(padj))) +
-  geom_point(
-    data = subset(volcano_df, sig == TRUE),
-    aes(x = delta_z, y = name, size = -log10(padj)),
-    shape = 21, color = "black", fill = NA, stroke = 1
-  )+
-  scale_color_manual(values = c("Up in LUAD" = "blue", "Up in LUSC" = "orange")) +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
-  labs(x = "Δ z-score (LUAD - LUSC)", y = NULL,
-       color = "Direction", size = "-log10(FDR)") +
-  guides(
-    color = guide_legend(nrow = 1, title.position = "top"),
-    size  = guide_legend(nrow = 1, title.position = "top")
-  ) +
-  theme_minimal() +
-  theme(
-    axis.title.x = element_text(size = 10),
-    axis.text.y     = element_text(size = 9),
-    legend.position = "bottom",
-    legend.box      = "vertical",     # stacks the color legend and size legend on top of each other
-    legend.margin   = margin(t = 0),
-    legend.spacing  = unit(0.2, "cm")
-  )+
-  ggtitle("RNA signatures")
-p
-ggsave(plot = p, path = out_folder,filename = "RNA_difference_for_histology.pdf",width = 4.5, height = 7,device = cairo_pdf)
-```
 
 
 
-
-# 2A diff abundance histology
+# 2A diff abundance histology - move to supplements
 here we will estimate the dispersion across the whole data set and then do the linear model of count comparison only for the groups of interest.
 ```{r, fig.height=10, fig.width=10}
 condition <- c("Adenocarcinoma")
@@ -395,7 +338,7 @@ colSums(cello_dat[,grepl("cello1",colnames(cello_dat))])/sum(cello_dat[,grepl("c
 ```
 
 
-# 2B diff abundance cellohood for histology
+# 2B diff abundance cellohood for histology - move to supplements
 
 ```{r}
 condition <- c("Adenocarcinoma")
@@ -486,7 +429,7 @@ ggsave(filename = paste0(out_folder,"2B_diff_abundance_celloClusters_histology.p
        height = 6)
 ```
 
-# 2C images P1 CN_2
+# 2D images P1 CN_2
 ```{r, fig.height=12, fig.width=16}
 sce1 <- readRDS(paste0(mount_path,"data/IMC/Panel_1/Rout/sce.rds"))
 sce1 <- sce1[,sce1$ROI != 4]
@@ -593,7 +536,7 @@ plotPixels(image = cur_images,
 ```
 
 
-# 2D images P1 CN_2
+# 2E images P1 CN_2
 ```{r, fig.height=12, fig.width=16}
 sce2 <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/sce.rds"))
 
@@ -695,7 +638,7 @@ plotPixels(image = cur_images,
 
 
 
-# to be removed - linear model densities for stages both histologies
+# linear model densities for stages both histologies - to be removed
 not in paper
 ```{r, fig.height=10, fig.width=20}
 library(purrr)
@@ -775,8 +718,114 @@ p
 
 ```
 
+
+# 2F tumor types imaging modules
+we will not subtype LUSC samples because we have too few samples
+```{r}
+ttypes <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/tumor_subtypes.csv")
+
+dat_z <- ttypes %>% left_join(modules, "immucan_id")
+
+dat_z$immucan_id <- NULL
+luad_dat <- dat_z %>%
+  filter(subtype %in% c("bronchioid","squamoid","magnoid")) %>%
+  mutate(across(.cols = -subtype,scale)) %>%
+  group_by(subtype) %>%
+  summarise(across(.fns = mean))
+  
+lusc_dat <- dat_z %>%
+  filter(subtype %in% c("classical","primitive","basal", "secretory")) %>%
+  mutate(across(.cols = -subtype,scale)) %>%
+  group_by(subtype) %>%
+  summarise(across(.fns = mean))
+
+luad_mat <- as.matrix(luad_dat[,-1])
+rownames(luad_mat) <- luad_dat$subtype
+
+lusc_mat <- as.matrix(lusc_dat[,-1])
+rownames(lusc_mat) <- lusc_dat$subtype
+
+
+h1 <- ComplexHeatmap::Heatmap(t(lusc_mat))
+h2 <- ComplexHeatmap::Heatmap(t(luad_mat))
+h1+h2
+# annotation
+ann_df <- data.frame(Subtype = c(unique(luad_dat$subtype)),
+                     subtype_col = c( "blue","deepskyblue","dodgerblue2"))
+ha <- HeatmapAnnotation(subtype = ann_df$Subtype,
+                        col = list(subtype = structure(ann_df$subtype_col,names = ann_df$Subtype)))
+
+h <- ComplexHeatmap::Heatmap(t( as.matrix(luad_dat[,-1])),
+                             name = "mean z_score",
+                             top_annotation = ha)
+
+
+pdf(file = paste0(out_folder,"imaging_modules_for_tumor_subtypes_LUAD.pdf"), width = 4, height = 4)
+draw(h, merge_legend = TRUE)
+dev.off()
+
+
+## this code generate the two heatmaps for LUAD and LUSC together. but we will exclude LUSC because we have too few samples
+# plot_dat <- dat_z %>%
+#   mutate(across(.cols = -subtype,scale)) %>%
+#   group_by(subtype) %>%
+#   summarise(across(.fns = mean))
+# 
+# ann_df <- data.frame(Subtype = c(unique(plot_dat$subtype)),
+#                      Histology = c("LUSC","LUAD","LUSC","LUAD","LUSC","LUSC","LUAD"),
+#                      subtype_col = c("darkgoldenrod1", "lightskyblue","yellow2","deepskyblue","orange3", "burlywood2","dodgerblue2"),
+#                      hist_col = c("orange", "blue", "orange", "blue","orange","orange","blue"))
+# mat <- as.matrix(plot_dat[,-1])
+# rownames(mat) <- plot_dat$subtype
+# ha <- HeatmapAnnotation(subtype = ann_df$Subtype,
+#                         Histology = ann_df$Histology,
+#                         col = list(subtype = structure(ann_df$subtype_col,names = ann_df$Subtype),
+#                                    Histology = structure(ann_df$hist_col,names = ann_df$Histology)))
+# h <- ComplexHeatmap::Heatmap(t(mat),
+#                              name = "mean z_score",
+#                              top_annotation = ha,column_split = ann_df$Histology)
+# 
+# pdf(file = paste0(out_folder,"imaging_modules_for_tumor_subtypes_complex.pdf"), width = 5, height = 4)
+# draw(h, merge_legend = TRUE,
+#                       heatmap_legend_side = "right",
+#                       annotation_legend_side = "right")
+# dev.off()
+```
+
+
+
+# 2G tumor types for stages
+
+```{r}
+scores <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/tumor_subtype_scores.csv")
+
+scores <- left_join(scores, traits,"immucan_id")
+
+p <- scores %>%
+  pivot_longer(cols = 1:3) %>% 
+  filter(simple_stage != "IV",
+         !is.na(simple_stage)) %>%
+  ggplot(aes(x = simple_stage, y = value, fill = simple_stage))+
+  geom_boxplot()+
+  geom_jitter(aes(col = simple_stage),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
+  scale_fill_manual(values = alpha(c("I" = "palevioletred3", "II" = "darkseagreen3", "III" = "dodgerblue"),alpha = 0.6))+
+  scale_color_manual(values = c("I" = "palevioletred3", "II" = "darkseagreen3", "III" = "dodgerblue"))+
+  facet_wrap(~name)+
+  stat_compare_means(aes(group = simple_stage),
+                     comparisons = list(c("I", "II"), c("I","III"), c("II", "III")),
+                     method = "t.test")+
+  theme_bw()+
+  coord_cartesian(ylim = c(-0.7, 1.5))+
+  xlab("Stage")+
+  ylab("Tumor type score")
+
+ggsave(plot = p, path = out_folder,filename = "tumor_types_for_stages_LUAD.pdf",width = 4, height = 3.5,device = cairo_pdf)
+
+```
+
+
 # Stage
-## imaging modules
+## 2H imaging modules
 ```{r}
 dat_z <- left_join(modules, traits, "immucan_id") %>%
   filter(!is.na(simple_stage),
@@ -836,7 +885,7 @@ p <- dat_z %>%
   geom_text(data = summary_dat, aes(x = name,y=0.5,label = paste0("fdr: ",sig_fdr)), inherit.aes = FALSE, size = 2.5)+
   geom_text(data = summary_dat, aes(x = name,y=0.6,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE, size = 2.5)+
   coord_cartesian(ylim = c(-.55,0.6))+
-  ggtitle(label = "Imaging module differences in LUAD")
+  ggtitle(label = "Imaging module differences across stages in LUAD")
   
 p
 
@@ -844,75 +893,9 @@ ggsave(plot = p, path = out_folder,filename = "Imaging_modules_for_stage_LUAD.pd
 
 
 ```
-## RNA 
-```{r}
-dat_z <- left_join(rna, traits, "immucan_id") %>%
-  filter(!is.na(simple_stage),
-         simple_histology == "Adenocarcinoma") %>%
-  pivot_longer(cols = 1:29)
 
 
-sigs <- dat_z %>%
-  select(immucan_id,name, value,simple_stage) %>%
-  mutate(stage = ifelse(simple_stage == "I",1,NA),
-         stage = ifelse(simple_stage == "II",2,stage),
-         stage = ifelse(simple_stage == "III",3,stage),
-         stage = ifelse(simple_stage == "IV",4,stage),
-         stage = as.numeric(as.factor(stage))) %>%
-  filter(stage != 4) %>%
-  group_by(name) %>%
-  nest() %>%
-  mutate(model = map(data, ~ lm(value ~ stage, data = .x)),
-         summary = map(model, broom::tidy)) %>%
-  select(name, summary) %>%
-  unnest(c(summary)) %>%
-  filter(term == "stage") %>%
-  mutate(tech = str_split_i(name,"__",2)) %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(p = p.value,method = "BH"),
-         sig_p = ifelse(p.value < 0.05,TRUE, FALSE),
-         sig_fdr = ifelse(FDR < 0.1,"T", "F"))
-
-
-summary_dat <- sigs %>%
-  filter(sig_p == TRUE) %>%
-  #filter(grepl("CD8_GATA3_BCL2|^CD8_density|CD8_Ki67_density|CD8_TCF7_density|Tumor_IDO1",name)) %>%
-  mutate(y_position = 1000,
-         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
-  ungroup() %>%
-  as.data.frame()
-
-p2 <- dat_z %>%
-  select(immucan_id,name, value,simple_stage) %>%
-  mutate(stage = ifelse(simple_stage == "I",1,NA),
-         stage = ifelse(simple_stage == "II",2,stage),
-         stage = ifelse(simple_stage == "III",3,stage),
-         stage = ifelse(simple_stage == "IV",4,stage),
-         stage = as.numeric(as.factor(stage)),
-         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
-  filter(name %in% summary_dat$name,
-         stage != 4) %>%
-  ggplot(aes(x = name,y = log10(value+1),fill=as.factor(stage))) +
-  geom_boxplot(outliers = FALSE)+
-  geom_jitter(aes(col = as.factor(stage)),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
-  scale_fill_manual(values = alpha(c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"),alpha = 0.6))+
-  scale_color_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
-  theme_bw()+
-  theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust = 1),
-        axis.title = element_blank())+
-  guides(fill=guide_legend(title="Stage"),
-         col=guide_legend(title="Stage"))+
-  geom_text(data = summary_dat, aes(x = name,y=0.2,label = paste0("fdr: ",sig_fdr)), inherit.aes = FALSE)+
-  geom_text(data = summary_dat, aes(x = name,y=0.24,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE)+
-  coord_cartesian(ylim = c(-0.25, 0.25))+
-  ggtitle(label = "RNA module differences in LUAD")
-  
-p2
-
-ggsave(plot = p2, path = out_folder,filename = "RNA_difference_for_stage_LUAD.pdf",width = 4.5, height = 7,device = cairo_pdf)
-```
-
-## 2E linear model densities for stages - LUAD only
+## linear model densities for stages - LUAD only - to be removed
 
 ```{r, fig.height=10, fig.width=30}
 library(purrr)
@@ -989,7 +972,7 @@ ggsave(filename = paste0(out_folder,"2E_linear_model_densities_for_stages_LUAD.p
 ```
 
 
-## fractions in tumor and stroma across stages
+## fractions in tumor and stroma across stages - to be removed
 this code is here for sanity checks. We could not identify any of the either tumor or stroma based cell type fractions associated with stage in a linear model
 ```{r}
 stroma_IF1 <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/celltype_fractions_stroma_compartment_IF1.csv"))
@@ -1060,16 +1043,13 @@ sigs %>%
 ```
 
 
-# tumor types for stage
 
-```{r}
 
-```
 
 
 # Smoking
 
-## imaging
+## 2I imaging
 
 ### imaging modules never vs current
 ```{r}
@@ -1100,7 +1080,7 @@ p3 <- result$plot +
   ggtitle("Current smokers vs Ex-smokers")
 ```
 
-## plot imaging
+### plot imaging
 ```{r, fig.height=4, fig.width= 20}
 p <- cowplot::plot_grid(p1, p2, p3, ncol = 3, rel_widths = c(1.05,0.7,0.7))
 p
@@ -1108,53 +1088,52 @@ p
 ggsave(plot = p, path = out_folder,filename = "Imaging_modules_for_smoking_LUAD.pdf",width = 15, height = 3.75,device = cairo_pdf)
 ```
 
-## RNA
 
-### RNA modules never vs current
+
+## 2J Inflammation signature in smoking 
+
 ```{r}
-dat_z <- left_join(rna, traits, "immucan_id") %>%
-  filter(!is.na(LUAD_vs_LUSC)) %>%
-  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
-  pivot_longer(cols = 1:29)
+cur_dat <- read.table(paste0(mount_path,"data/RNASeq/CURIE/inflammation_quantification_NSCLC2/outputs/pathwayActivity/PathwayActivity_NSCLC2_mlm"))
+my_comp <-  list( c("Current smoker", "Non-smoker"), c("Ex-smoker", "Non-smoker"), c("Current smoker", "Non-smoker") )
 
-result <- lollipop_plot(dat_z, "never_vs_current_smoker", "Current smoker", "Non-smoker")
-p4 <- result$plot+
-    ylab("RNA modules")+
-  ggtitle("Current vs Non-smoker")+
-  theme(axis.title.y = element_text(size= 14))
+cur_dat <- cur_dat %>%
+  as.data.frame() %>%
+  mutate(immucan_id = paste0("LUNG-",rownames(cur_dat))) %>%
+  left_join(traits,by = "immucan_id")
+
+cur_dat <- cur_dat %>%
+  pivot_longer(cols = c(JAK.STAT,NFkB,TNFa))
+p <- cur_dat %>%
+  filter(!is.na(smoking_status)) %>%
+  ggplot(aes(x = smoking_status,y = value, fill = smoking_status))+
+  geom_boxplot(outliers = FALSE)+
+  geom_jitter(aes(color = smoking_status),position = position_jitterdodge(jitter.width = 0.2), size= 1)+
+  facet_wrap(.~name)+
+  scale_fill_manual(values = alpha(c("blue", "lightblue", "cyan3"),alpha = 0.5))+
+  scale_color_manual(values = c("blue", "lightblue", "cyan3"))+
+  stat_compare_means(size = 5,label = "p.signif", comparisons = my_comp,method = "t.test")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 1, size = 16),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 14),
+        legend.text = element_text(size = 14),
+        strip.text.x = element_text(size = 14),
+        legend.position = "bottom",
+        legend.location = "plot")+
+  ylab("Pathway score")+ 
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE))+
+  coord_cartesian(ylim=c(-3, 6))
+
+p 
+
+ggsave(filename = paste0(out_folder,"inflammation_score_for_smoking_status.pdf"),
+       plot = p,
+       device = "pdf",
+       width = 4.5,
+       height = 5)
 ```
 
-
-
-### RNA modules never vs ex
-```{r}
-cur_vec <- c("Co-stimulatory_ligands","Treg_and_Th2_traffic","Macrophage_and_DC_traffic","Tumor-associated_Macrophages",
-                     "MHCII","Th2_signature","M1_signature","Treg","Cancer-associated_fibroblasts","Antitumor_cytokines","Endothelium",
-                     "Myeloid_cells_traffic","Matrix","Co-stimulatory_receptors","Th1_signature","T_cells","MHCI","Angiogenesis",
-                     "Effector_cell_traffic","Checkpoint_molecules","Immune_Suppression_by_Myeloid_Cells","Protumor_cytokines","Matrix_remodeling",
-                     "Neutrophil_signature","Granulocyte_traffic","Effector_cells","B_cells","NK_cells","Tumor_proliferation_rate")
-result <- lollipop_plot(dat_z, "never_vs_Ex_smoker", "Ex-smoker", "Non-smoker", order = FALSE, order_vec = cur_vec)
-p5 <- result$plot+
-  theme(axis.text.y = element_blank())+
-  ggtitle("Ex-smokers vs Non-smokers")
-```
-
-### RNA modules current vs ex
-```{r}
-result <- lollipop_plot(dat_z, "current_vs_Ex_smoker", "Current smoker", "Ex-smoker", order = FALSE, order_vec = cur_vec)
-p6 <- result$plot+
-  theme(axis.text.y = element_blank())+
-  ggtitle("Current smokers vs Ex-smokers")
-```
-
-## plot RNA
-## plot imaging
-```{r, fig.height=5.5, fig.width= 22}
-p <- cowplot::plot_grid(p4, p5, p6, ncol = 3, rel_widths = c(1, 0.7, 0.7))
-p
-```
-
-## 2F diff abundance smoking bubble plot
+# diff abundance smoking bubble plot - to be removed
 
 ### smoking status LUAD
 
@@ -1425,7 +1404,7 @@ ggsave(filename = paste0(out_folder,"2F_diff_abundance_smoking.pdf"),
 
 
 
-# sanity check smoking effects only in LUSC
+## sanity check smoking effects only in LUSC
 ```{r, fig.width=12, fig.height=6}
 condition <- c("Ex-smoker")
 names(condition) <- c("current_vs_Ex_smoker")
@@ -1542,7 +1521,7 @@ p <- cur_dat %>%
 p
 ```
 
-# images for smoking
+# images for smoking - to be removed
 not in paper
 ```{r, fig.height=12, fig.width=16}
 # identify images with high amuounts of differentiall abundant cello clusters 18 from panel 1

@@ -8,6 +8,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
 ```
 
 ```{r, message=FALSE}
@@ -32,11 +33,13 @@ library(imcRtools)
 
 ```{r}
 mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
-out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_3/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_3/"
 
 if (!dir.exists(out_folder)) {
   dir.create(out_folder)
 }
+
+source("code/lollipop_function.R")
 ```
 
 # load data
@@ -47,6 +50,16 @@ dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.
 cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
 clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
 traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
+
+modules <- as.data.frame(readRDS( "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/patient_imaging_meta_cluster_scores.rds"))
+
+rna <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_scores.rds")
+rna$immucan_id  <- rownames(rna)
+rownames(rna) <- NULL
+
+modules <- modules  %>%
+  mutate(immucan_id = rownames(modules))
+rownames(modules) <- NULL
 
 # variables
 data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2))
@@ -59,13 +72,18 @@ hist_col_3 = setNames(c("blue","orange", "gray40"),c("LUAD","LUSC","Other"))
 
 ```
 
-# 3B enrichment in clinical traits
+# 3B enrichment in clinical traits - move to supplements
+
+## LUAD
 ```{r, fig.height=10, fig.width=6}
-cur_traits <- traits %>% select("TPS_score","age_dicho", "gender","stage_1_2","stage_1_3","stage_2_3","LUAD_vs_LUSC","never_vs_current_smoker",
-            "never_vs_Ex_smoker","current_vs_Ex_smoker", "N0_vs_Nx","M0_vs_Mx", "long_survivors","T1_vs_Tother")
-condition <- c("positive","low", "Female","I","I","II","Adenocarcinoma","Non-smoker","Non-smoker","Ex-smoker", "node_neg", "met_neg", "alive","T1")
+cur_traits <- traits %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  dplyr::select("TPS_score","age_dicho", "gender","stage_1_2","stage_1_3","stage_2_3","never_vs_current_smoker",
+                "never_vs_Ex_smoker","current_vs_Ex_smoker", "N0_vs_Nx","M0_vs_Mx", "long_survivors","T1_vs_Tother")
+condition <- c("positive","low", "Female","I","I","II","Non-smoker","Non-smoker","Ex-smoker", "node_neg", "met_neg", "alive","T1")
 
 names(condition) <- colnames(cur_traits)
+
 
 p.list <- list()
 l.list <- list()
@@ -114,7 +132,7 @@ out <- out %>%
          sig = ifelse(FDR < 0.1 & odds_ratio < 1, "DOWN",sig),
          sig = ifelse(is.na(sig),"NOTSIG", sig))
 
-p <- out %>%
+p_LUAD <- out %>%
   ggplot(aes(x=feature, y = TPS_score,col = odds_ratio, size= -log10(p.value)))+
   #geom_tile(aes(fill = sig))+
   #theme_bw()+
@@ -135,18 +153,748 @@ p <- out %>%
         legend.title = element_text(size = 12),
         axis.title.y = element_blank())+
   coord_flip()
+p_LUAD
+
+#ggsave(filename = paste0(out_folder,"3B_TPS_enrichment_in_clinical.pdf"),
+#       plot = p,
+#       device = "pdf",
+#       width = 4.5,
+#       height = 6)
+```
+
+
+## LUSC
+```{r, fig.height=10, fig.width=6}
+cur_traits <- traits %>%
+  filter(LUAD_vs_LUSC == "Squamous cell carcinoma") %>%
+  dplyr::select("TPS_score","age_dicho", "gender","stage_1_2","stage_1_3","stage_2_3","current_vs_Ex_smoker", "N0_vs_Nx","M0_vs_Mx", "long_survivors","T1_vs_Tother")
+condition <- c("positive","low", "Female","I","I","II","Ex-smoker", "node_neg", "met_neg", "alive","T1")
+
+names(condition) <- colnames(cur_traits)
+
+
+p.list <- list()
+l.list <- list()
+for (i in names(condition)) {
+  x <- factor(cur_traits$TPS_score)
+  x <- relevel(x, ref = "negative")
+  
+  y <- factor(unlist(cur_traits[,i]))
+  y <- relevel(y, ref = condition[i])
+
+  p.list[[i]] <- fisher.test(table(x, y))
+  l.list[[i]] <- c(levels(y)[1])
+}
+
+out <- data.frame(feature = names(p.list),
+                  p.value = unlist(lapply(p.list, function(x){
+                    x$p.value})),
+                  odds_ratio = unlist(lapply(p.list, function(x){
+                    x$estimate})),
+                  reference = unlist(l.list))
+
+out <- out[-1,]
+
+out <- out %>%
+  mutate(feature = ifelse(feature == "age_dicho","Old_over_Young", feature),
+         feature = ifelse(feature == "gender","Male_over_Female", feature),
+         feature = ifelse(feature == "stage_1_2","Stage_II_over_I", feature),
+         feature = ifelse(feature == "stage_1_3","Stage_III_over_I", feature),
+         feature = ifelse(feature == "stage_2_3","Stage_III_over_II", feature),
+         feature = ifelse(feature == "LUAD_vs_LUSC","LUSC_over_LUAD", feature),
+         feature = ifelse(feature == "never_vs_current_smoker","Smoker_over_Never-smoker", feature),
+         feature = ifelse(feature == "never_vs_Ex_smoker","Ex-smoker_over_Never-smoker", feature),
+         feature = ifelse(feature == "current_vs_Ex_smoker","Smoker_over_Ex-smoker", feature),
+         feature = ifelse(feature == "N0_vs_Nx","Node-pos_over_Node-neg", feature),
+         feature = ifelse(feature == "M0_vs_Mx","Met-pos_over_Met-neg", feature),
+         feature = ifelse(feature == "long_survivors","Dead_over_Alive", feature),
+         feature = ifelse(feature == "T1_vs_Tother","T1_over_T-other", feature))
+
+
+out <- out %>%
+  mutate(TPS_score = "high",
+         FDR = p.adjust(p.value,method = "BH"),
+         sig = ifelse(p.value < 0.05 & odds_ratio > 1, "UP_trend",NA),
+         sig = ifelse(FDR < 0.1 & odds_ratio > 1, "UP",sig),
+         sig = ifelse(p.value < 0.05 & odds_ratio < 1, "DOWN_trend",sig),
+         sig = ifelse(FDR < 0.1 & odds_ratio < 1, "DOWN",sig),
+         sig = ifelse(is.na(sig),"NOTSIG", sig))
+
+
+p_LUSC <- out %>%
+  ggplot(aes(x=feature, y = TPS_score,col = odds_ratio, size= -log10(p.value)))+
+  #geom_tile(aes(fill = sig))+
+  #theme_bw()+
+  geom_point()+
+  theme_bw()+
+  #scale_colour_viridis_c()+
+  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+  #theme_bw()+
+  scale_color_gradient2(low = "blue",mid = "white",   high = "red",midpoint = 1)+
+  scale_size(range = c(1,4))+
+  new_scale_colour() +
+  geom_point(data = out,shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.5)+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12),
+        axis.title.y = element_blank())+
+  coord_flip()
+p_LUSC
+
+#ggsave(filename = paste0(out_folder,"3B_TPS_enrichment_in_clinical.pdf"),
+#       plot = p,
+#       device = "pdf",
+#       width = 4.5,
+#       height = 6)
+```
+
+```{r, fig.width=10, fig.height=6}
+p <- plot_grid(p_LUAD, p_LUSC)
+p
+```
+
+# TPS
+
+```{r}
+cur_var <- "TPS_score"
+var_A <- "positive"
+var_B <-  "negative"
+col_A <- "orange"
+col_B <- "darkgreen"
+title_name <- "TPS"
+```
+
+```{r}
+table(traits$TPS_score,traits$LUAD_vs_LUSC)
+```
+
+## RNA
+
+### LUAD
+```{r}
+dat_z <- left_join(rna, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUAD") %>%
+  pivot_longer(cols = 1:29)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+p_LUAD <- result$plot +
+  ggtitle(paste0("RNA modules for ", title_name," in LUAD"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p_LUAD
+cur_order <- result$data$name
+
+```
+
+### LUSC
+```{r, fig.height=5, fig.width=15}
+dat_z <- left_join(rna, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUSC") %>%
+  pivot_longer(cols = 1:29)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B,order = FALSE, order_vec = cur_order)
+p_LUSC <- result$plot+ 
+  ggtitle(paste0("RNA modules for ", title_name," in LUSC"))+
+  theme(axis.text.y = element_blank())+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p_LUSC
+
+p <- plot_grid(p_LUAD, p_LUSC, nrow = 1, rel_widths = c(1.1, 0.6))
+p
+ggsave(plot = p, path = out_folder,filename = "3C_RNA_modules_for_TPS.pdf",width = 10, height = 6,device = cairo_pdf)
+
+```
+
+## Imaging modules
+
+### LUAD
+```{r}
+dat_z <- left_join(modules, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUAD") %>%
+  pivot_longer(cols = 1:8)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+p_LUAD <- result$plot +
+  ggtitle(paste0("Imaging modules for ", title_name," in LUAD"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p_LUAD
+cur_order <- result$data$name
+
+```
+
+### LUSC
+```{r, fig.height=5, fig.width=15}
+dat_z <- left_join(modules, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUSC") %>%
+  pivot_longer(cols = 1:8)
+
+result <- lollipop_plot(dat_z,condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B,order = FALSE, order_vec = cur_order)
+p_LUSC <- result$plot+ 
+  ggtitle(paste0("Imaging modules for ", title_name," in LUSC"))+
+  theme(axis.text.y = element_blank())+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p_LUSC
+
+p <- plot_grid(p_LUAD, p_LUSC, nrow = 1, rel_widths = c(1, 0.6))
 p
 
-ggsave(filename = paste0(out_folder,"3B_TPS_enrichment_in_clinical.pdf"),
-       plot = p,
+ggsave(plot = p, path = out_folder,filename = "3D_Imaging_modules_for_TPS.pdf",width = 8, height = 3.5,device = cairo_pdf)
+
+```
+
+## inflammation 
+
+```{r}
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(msigdbr)
+library(singscore)
+
+rna_mat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_mat.rds")
+
+
+# ── gene signatures ────────────────────────────────────────────────────
+hallmark_sets <- msigdbr(species = "Homo sapiens", collection = "H") %>%
+  dplyr::select(gs_name, gene_symbol) %>%
+  split(.$gs_name) %>%
+  lapply(function(x) x$gene_symbol)
+
+# Targeted Hallmark gene sets of interest
+target_sets <- c(
+  "HALLMARK_INFLAMMATORY_RESPONSE",
+  "HALLMARK_INTERFERON_GAMMA_RESPONSE",
+  "HALLMARK_INTERFERON_ALPHA_RESPONSE",
+  "HALLMARK_TNFA_SIGNALING_VIA_NFKB",
+  "HALLMARK_IL6_JAK_STAT3_SIGNALING",
+  "HALLMARK_IL2_STAT5_SIGNALING"
+)
+gs_list_hallmark <- hallmark_sets[intersect(target_sets, names(hallmark_sets))]
+
+# ── 2. Custom gene sets ────────────────────────────────────────────────────────
+# CXCL9/10/11 chemokine axis (T cell recruitment)
+gs_list_custom <- list(
+  CXCL9_10_11_axis = c("CXCL9", "CXCL10", "CXCL11", "CXCR3",
+                       "CXCL13", "CXCR5"),
+  T_cell_activation = c("CD8A", "CD8B", "GZMB", "PRF1", "IFNG",
+                        "TNF", "IL2", "PDCD1", "HAVCR2", "LAG3"),
+  type_I_IFN = c("IFNB1", "IRF7", "MX1", "OAS1", "OAS2", "OAS3",
+                 "ISG15", "IFIT1", "IFIT2", "IFIT3", "RSAD2", "HERC5"),
+  NF_kB_target  = c("NFKB1", "RELA", "RELB", "NFKB2", "REL",
+                    "BCL2L1", "IL1B", "IL6", "CXCL8", "TNF", "ICAM1"),
+  TCR_signaling = c("CD3D", "CD3E", "CD3G", "ZAP70", "LCK", "LAT",
+                    "ITK", "PLCG1", "NFATC1", "NFATC2"),
+  cytotoxic = c("GZMB", "GZMA", "GZMK", "PRF1", "NKG7", "IFNG", "KLRG1"),
+  exhaustion = c("PDCD1","LAG3","HAVCR2","TX","CTLA4", "IDO1")
+  )
+
+all_gs <- c(gs_list_hallmark, gs_list_custom)
+
+# compute score
+rna_for_score <- t(rna_mat)
+
+# Filter gene sets to genes present in the RNA-seq matrix
+all_gs <- lapply(all_gs, function(g) intersect(g, rownames(rna_for_score)))
+all_gs <- all_gs[sapply(all_gs, length) >= 5]
+
+
+
+overlap <- sapply(all_gs, function(g) sum(g %in% rownames(rna_for_score)))
+total   <- sapply(all_gs, length)
+print(data.frame(found = overlap, total = total, pct = round(100 * overlap / total)))
+
+# ── Score with singscore ──────────────────────────────────────────────────────
+ranked <- rankGenes(rna_for_score)
+
+scores_list <- lapply(names(all_gs), function(nm) {
+  sc <- simpleScore(ranked, upSet = all_gs[[nm]], centerScore = TRUE)
+  setNames(sc$TotalScore, rownames(sc))
+})
+
+
+rna_scores <- as.data.frame(do.call(cbind, scores_list))
+colnames(rna_scores) <- names(all_gs)
+rownames(rna_scores) <- colnames(rna_for_score)
+rna_scores$immucan_id <- rownames(rna_scores)
+rownames(rna_scores) <- NULL
+
+```
+
+### LUAD 
+```{r }
+dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUAD") %>%
+  pivot_longer(cols = 1:13)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+
+p_LUAD <- result$plot+
+    ylab("Inf. signatures")+
+    ggtitle(paste0("Inf. signatures for ", title_name," in LUAD"))+
+  theme(axis.title.y = element_blank())+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+
+p_LUAD
+
+cur_order <- result$data$name
+```
+
+### LUSC
+```{r, fig.height=5, fig.width=15}
+dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUSC") %>%
+  pivot_longer(cols = 1:13)
+
+result <- lollipop_plot(dat_z,condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B, order = FALSE, order_vec = cur_order)
+
+p_LUSC <- result$plot+
+    ylab("Inf. signatures")+
+  ggtitle(paste0("Inf. signatures for ", title_name," in LUSC"))+
+  theme(axis.text.y = element_blank())+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p_LUSC
+
+p <- plot_grid(p_LUAD, p_LUSC, nrow = 1, rel_widths = c(1, 0.6))
+
+ggsave(plot = p, path = out_folder,filename = "3E_inflammation_signatures_for_TPS.pdf",width = 12, height = 4.5,device = cairo_pdf)
+```
+
+
+# 3G - Cox model for infiltration
+
+```{r}
+inf_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/infiltration_harmonized.rds"))
+
+# compare densities of infiltrating, bystanding and ignored from IMC1, IMC2 and mIF
+inf_dat <- inf_dat %>%
+  group_by(immucan_id,tech) %>%
+  mutate(total_CD8 = sum(bystanding,ignored,infiltrating,na.rm = TRUE)/im_size,
+         bystanding = round(bystanding/im_size),
+         ignored = round(ignored/im_size),
+         infiltrating = round(infiltrating/im_size)) %>%
+  ungroup()
+
+
+p1 <- inf_dat %>%
+  ggplot()+
+  geom_density(aes(x = bystanding, col = tech), lwd = 1)+
+  ggtitle("bystanding")
+p2 <- inf_dat %>%
+  ggplot()+
+  geom_density(aes(x = ignored, col = tech), lwd = 1)+
+  ggtitle("ignored")
+p3 <- inf_dat %>%
+  ggplot()+
+  geom_density(aes(x = infiltrating, col = tech), lwd = 1)+
+  ggtitle("infiltrating")
+
+plot_grid(p1, p2,p3)
+
+# define interactor over bystander ratio
+inf_dat <- inf_dat %>%
+  group_by(immucan_id, tech) %>%
+  mutate(int_over_bystander = (infiltrating+bystanding)/ignored)
+  
+inf_dat %>%
+  ggplot()+
+  geom_density(aes(x = int_over_bystander, col = tech), lwd = 1)+
+  ggtitle("infiltrating")
+
+inf_dat[(is.infinite(inf_dat$int_over_bystander)),]$int_over_bystander <- NA
+
+# we will average the ratios across technologies
+inf_dat <- inf_dat %>%
+  group_by(immucan_id) %>%
+  mutate(mean_inf_ratio = mean(int_over_bystander,na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(mean_inf_ratio_dicho = ntile(mean_inf_ratio,2),
+         mean_inf_ratio_dicho = ifelse(mean_inf_ratio_dicho == 2, "high", "low"))
+
+res <- left_join(inf_dat %>% dplyr::select(immucan_id,mean_inf_ratio_dicho) %>% distinct(), traits,"immucan_id")
+
+cm_LUSC <- coxph( Surv(time_to_event, censoring) ~  mean_inf_ratio_dicho ,data = as.data.frame(res) %>% filter(simple_histology == "Squamous cell carcinoma"))
+cm_LUAD <- coxph( Surv(time_to_event, censoring) ~  mean_inf_ratio_dicho ,data = as.data.frame(res) %>% filter(simple_histology == "Adenocarcinoma"))
+
+dfLUAD <- data.frame(histology = "LUAD",
+                     HR = summary(cm_LUAD)$coefficients[,"exp(coef)"],
+                     p.value = summary(cm_LUAD)$coefficients[, "Pr(>|z|)"],
+                     lower_conf = summary(cm_LUAD)$conf.int[, "lower .95"],
+                     upper_conf = summary(cm_LUAD)$conf.int[, "upper .95"]) 
+dfLUSC <- data.frame(histology = "LUSC",
+                     HR = summary(cm_LUSC)$coefficients[,"exp(coef)"],
+                     p.value = summary(cm_LUSC)$coefficients[, "Pr(>|z|)"],
+                     lower_conf = summary(cm_LUSC)$conf.int[, "lower .95"],
+                     upper_conf = summary(cm_LUSC)$conf.int[, "upper .95"]) 
+df1 <- rbind(dfLUAD,dfLUSC)
+
+p1 <- df1 %>%
+  ggplot(aes(x = HR,y = histology, col = histology))+
+  geom_point(size = 2)+
+  geom_errorbar(aes(xmin=lower_conf, xmax = upper_conf),lwd =1,width = 0.3)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust= 1))+
+  #scale_y_discrete(labels = function(x) str_split_i(x,"_",2))+
+  scale_x_log10()+
+  theme_bw()+
+  geom_vline(xintercept = 1,linetype = "dashed")+
+  geom_text(aes(label = paste0("p : ",round(p.value,digits = 3))),
+            col = "black",
+            vjust = -1,
+            inherit.aes = TRUE)+
+  scale_color_manual(values = c("LUAD" = "blue", "LUSC" = "orange"))+
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.position = "none",
+        axis.title.y = element_blank(),
+        plot.title = element_text(hjust = 0.5))+
+  ggtitle("HR for low infiltration ratio")
+  p1
+
+ggsave(filename = paste0(out_folder,"3G_cox_model_infiltration.pdf"),
+       plot = p1,
        device = "pdf",
-       width = 4.5,
-       height = 6)
+       width = 3,
+       height = 2)
+```
+
+check if infiltration ratio also works for each individual modality
+```{r}
+res <- inf_dat %>%
+  filter(tech  == "IMC1") %>%
+  group_by(immucan_id) %>%
+  ungroup() %>%
+  mutate(mean_inf_ratio_dicho = ntile(int_over_bystander,2),
+         mean_inf_ratio_dicho = ifelse(mean_inf_ratio_dicho == 2, "high", "low"))
+
+res <- left_join(res, traits,"immucan_id")
+p1 <- ggforest(coxph( Surv(time_to_event, censoring) ~  mean_inf_ratio_dicho ,data = as.data.frame(res) %>% filter(simple_histology == "Squamous cell carcinoma")))
+p2 <- ggforest(coxph( Surv(time_to_event, censoring) ~ mean_inf_ratio_dicho,data = as.data.frame(res) %>% filter(simple_histology == "Adenocarcinoma")))
+p <- plot_grid(p1, p2,ncol = 1)
+p
+
+# check individual techs IMC2
+res <- inf_dat %>%
+  filter(tech  == "IMC2") %>%
+  group_by(immucan_id) %>%
+  ungroup() %>%
+  mutate(mean_inf_ratio_dicho = ntile(int_over_bystander,2),
+         mean_inf_ratio_dicho = ifelse(mean_inf_ratio_dicho == 2, "high", "low"))
+
+res <- left_join(res, traits,"immucan_id")
+p1 <- ggforest(coxph( Surv(time_to_event, censoring) ~  mean_inf_ratio_dicho ,data = as.data.frame(res) %>% filter(simple_histology == "Squamous cell carcinoma")))
+p2 <- ggforest(coxph( Surv(time_to_event, censoring) ~ mean_inf_ratio_dicho,data = as.data.frame(res) %>% filter(simple_histology == "Adenocarcinoma")))
+p <- plot_grid(p1, p2,ncol = 1)
+p
+
+# check individual techs mIF
+res <- inf_dat %>%
+  filter(tech  == "mIF") %>%
+  ungroup() %>%
+  mutate(mean_inf_ratio_dicho = ntile(int_over_bystander,2),
+         mean_inf_ratio_dicho = ifelse(mean_inf_ratio_dicho == 2, "high", "low"))
+
+res <- left_join(res, traits,"immucan_id")
+p1 <- ggforest(coxph( Surv(time_to_event, censoring) ~  mean_inf_ratio_dicho ,data = as.data.frame(res) %>% filter(simple_histology == "Squamous cell carcinoma")))
+p2 <- ggforest(coxph( Surv(time_to_event, censoring) ~ mean_inf_ratio_dicho,data = as.data.frame(res) %>% filter(simple_histology == "Adenocarcinoma")))
+p <- plot_grid(p1, p2,ncol = 1)
+p
+
+# correlation mIF CD8 and TPS
+res <- left_join(inf_dat,traits,"immucan_id")
+res %>%
+  filter(tech == "mIF") %>%
+  ggplot(aes(x = TPS, y = total_CD8))+
+  geom_point()
 ```
 
 
 
-# 3C diff abundance TPS
+# tumor type enrichment TPS
+
+```{r}
+scores <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/tumor_subtype_scores.csv")
+
+scores <- left_join(scores, traits,"immucan_id")
+
+p <- scores %>%
+  pivot_longer(cols = 1:3) %>% 
+  filter(LUAD_vs_LUSC == "Adenocarcinoma",
+         !is.na(TPS_score)) %>%
+  ggplot(aes(x = TPS_score, y = value, fill = TPS_score))+
+  geom_boxplot()+
+  geom_jitter(aes(col = TPS_score),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
+  scale_fill_manual(values = alpha(c("positive" = "orange", "negative" = "darkgreen"),alpha = 0.6))+
+  scale_color_manual(values = c("positive" = "orange", "negative" = "darkgreen"))+
+  facet_wrap(~name)+
+  stat_compare_means(method = "t.test",label.y = 1, size = 3,label = "p.format")+
+  theme_bw()+
+  coord_cartesian(ylim = c(-0.7, 1))+
+  xlab("TPS score")+
+  ylab("Tumor type score")+
+  theme(axis.text.x = element_text(angle = 90, vjust = .05, hjust = 1),
+        axis.title.x = element_blank())
+  
+p
+ggsave(plot = p, path = out_folder,filename = "3H_tumor_types_for_TPS_LUAD.pdf",width = 4, height = 3.5,device = cairo_pdf)
+```
+
+# tumor type enrichment TMB
+
+```{r}
+scores <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/tumor_subtype_scores.csv")
+
+scores <- left_join(scores, traits,"immucan_id")
+
+p <- scores %>%
+  pivot_longer(cols = 1:3) %>% 
+  filter(LUAD_vs_LUSC == "Adenocarcinoma",
+         !is.na(TMB_score)) %>%
+  ggplot(aes(x = TMB_score, y = value, fill = TMB_score))+
+  geom_boxplot()+
+  geom_jitter(aes(col = TMB_score),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
+  scale_fill_manual(values = alpha(c("high" = "blue", "low" = "red"),alpha = 0.6))+
+  scale_color_manual(values = c("high" = "blue", "low" = "red"))+
+  facet_wrap(~name)+
+  stat_compare_means(method = "t.test",label.y = 1, size = 3,label = "p.format")+
+  theme_bw()+
+  coord_cartesian(ylim = c(-0.7, 1))+
+  xlab("TPS score")+
+  ylab("Tumor type score")+
+  theme(axis.text.x = element_text(angle = 90, vjust = .05, hjust = 1),
+        axis.title.x = element_blank())
+  
+p
+ggsave(plot = p, path = out_folder,filename = "3I_tumor_types_for_TMB_LUAD.pdf",width = 4, height = 3.5,device = cairo_pdf)
+```
+
+
+
+# TMB
+
+```{r}
+unique(traits$TMB_score)
+cur_var <- "TMB_score"
+var_A <- "high"
+var_B <-  "low"
+col_A <- "blue"
+col_B <- "red"
+title_name <- "TMB"
+```
+
+```{r}
+table(traits$TMB_score,traits$LUAD_vs_LUSC)
+```
+
+## RNA
+
+### LUAD
+```{r}
+dat_z <- left_join(rna, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUAD") %>%
+  pivot_longer(cols = 1:29)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+p_LUAD <- result$plot +
+  ggtitle(paste0("RNA modules for ", title_name," in LUAD"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p_LUAD
+cur_order <- result$data$name
+
+```
+
+### LUSC
+```{r, fig.height=5, fig.width=15}
+dat_z <- left_join(rna, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUSC") %>%
+  pivot_longer(cols = 1:29)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B,order = FALSE, order_vec = cur_order)
+p_LUSC <- result$plot+ 
+  ggtitle(paste0("RNA modules for ", title_name," in LUSC"))+
+  theme(axis.text.y = element_blank())+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p_LUSC
+
+p <- plot_grid(p_LUAD, p_LUSC, nrow = 1, rel_widths = c(1, 0.6))
+
+ggsave(plot = p, path = out_folder,filename = "3J_RNA modues_for_TPS.pdf",width = 10, height = 6,device = cairo_pdf)
+```
+
+## Imaging modules
+
+### LUAD
+```{r}
+dat_z <- left_join(modules, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUAD") %>%
+  pivot_longer(cols = 1:8)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+p_LUAD <- result$plot +
+  ggtitle(paste0("Imaging modules for ", title_name," in LUAD"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p_LUAD
+cur_order <- result$data$name
+
+```
+
+### LUSC
+```{r, fig.height=5, fig.width=15}
+dat_z <- left_join(modules, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUSC") %>%
+  pivot_longer(cols = 1:8)
+
+result <- lollipop_plot(dat_z,condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B,order = FALSE, order_vec = cur_order)
+p_LUSC <- result$plot+ 
+  ggtitle(paste0("Imaging modules for ", title_name," in LUSC"))+
+  theme(axis.text.y = element_blank())+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p_LUSC
+
+p <- plot_grid(p_LUAD, p_LUSC, nrow = 1, rel_widths = c(1, 0.6))
+p
+
+ggsave(plot = p, path = out_folder,filename = "3K_Imaging_modules_for_TMB.pdf",width = 8, height = 3.5,device = cairo_pdf)
+```
+
+## inflammation 
+
+### get gene signatures
+```{r}
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(msigdbr)
+library(singscore)
+
+rna_mat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_mat.rds")
+
+
+# ── gene signatures ────────────────────────────────────────────────────
+hallmark_sets <- msigdbr(species = "Homo sapiens", collection = "H") %>%
+  dplyr::select(gs_name, gene_symbol) %>%
+  split(.$gs_name) %>%
+  lapply(function(x) x$gene_symbol)
+
+# Targeted Hallmark gene sets of interest
+target_sets <- c(
+  "HALLMARK_INFLAMMATORY_RESPONSE",
+  "HALLMARK_INTERFERON_GAMMA_RESPONSE",
+  "HALLMARK_INTERFERON_ALPHA_RESPONSE",
+  "HALLMARK_TNFA_SIGNALING_VIA_NFKB",
+  "HALLMARK_IL6_JAK_STAT3_SIGNALING",
+  "HALLMARK_IL2_STAT5_SIGNALING"
+)
+gs_list_hallmark <- hallmark_sets[intersect(target_sets, names(hallmark_sets))]
+
+# ── 2. Custom gene sets ────────────────────────────────────────────────────────
+# CXCL9/10/11 chemokine axis (T cell recruitment)
+gs_list_custom <- list(
+  CXCL9_10_11_axis = c("CXCL9", "CXCL10", "CXCL11", "CXCR3",
+                       "CXCL13", "CXCR5"),
+  T_cell_activation = c("CD8A", "CD8B", "GZMB", "PRF1", "IFNG",
+                        "TNF", "IL2", "PDCD1", "HAVCR2", "LAG3"),
+  type_I_IFN = c("IFNB1", "IRF7", "MX1", "OAS1", "OAS2", "OAS3",
+                 "ISG15", "IFIT1", "IFIT2", "IFIT3", "RSAD2", "HERC5"),
+  NF_kB_target  = c("NFKB1", "RELA", "RELB", "NFKB2", "REL",
+                    "BCL2L1", "IL1B", "IL6", "CXCL8", "TNF", "ICAM1"),
+  TCR_signaling = c("CD3D", "CD3E", "CD3G", "ZAP70", "LCK", "LAT",
+                    "ITK", "PLCG1", "NFATC1", "NFATC2"),
+  cytotoxic = c("GZMB", "GZMA", "GZMK", "PRF1", "NKG7", "IFNG", "KLRG1"),
+  exhaustion = c("PDCD1","LAG3","HAVCR2","TX","CTLA4", "IDO1")
+  )
+
+all_gs <- c(gs_list_hallmark, gs_list_custom)
+
+# compute score
+rna_for_score <- t(rna_mat)
+
+# Filter gene sets to genes present in the RNA-seq matrix
+all_gs <- lapply(all_gs, function(g) intersect(g, rownames(rna_for_score)))
+all_gs <- all_gs[sapply(all_gs, length) >= 5]
+
+
+
+overlap <- sapply(all_gs, function(g) sum(g %in% rownames(rna_for_score)))
+total   <- sapply(all_gs, length)
+print(data.frame(found = overlap, total = total, pct = round(100 * overlap / total)))
+
+# ── Score with singscore ──────────────────────────────────────────────────────
+ranked <- rankGenes(rna_for_score)
+
+scores_list <- lapply(names(all_gs), function(nm) {
+  sc <- simpleScore(ranked, upSet = all_gs[[nm]], centerScore = TRUE)
+  setNames(sc$TotalScore, rownames(sc))
+})
+
+
+rna_scores <- as.data.frame(do.call(cbind, scores_list))
+colnames(rna_scores) <- names(all_gs)
+rownames(rna_scores) <- colnames(rna_for_score)
+rna_scores$immucan_id <- rownames(rna_scores)
+rownames(rna_scores) <- NULL
+
+```
+
+### LUAD 
+```{r }
+dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUAD") %>%
+  pivot_longer(cols = 1:13)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+
+p_LUAD <- result$plot+
+    ylab("Inflammation signatures")+
+    ggtitle(paste0("Inflammation signatures for ", title_name," in LUAD"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+
+p_LUAD
+
+cur_order <- result$data$name
+```
+
+### LUSC
+```{r, fig.height=5, fig.width=15}
+dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUSC") %>%
+  pivot_longer(cols = 1:13)
+
+result <- lollipop_plot(dat_z,condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B, order = FALSE, order_vec = cur_order)
+
+p_LUSC <- result$plot+
+    ylab("Inflammation signatures")+
+  ggtitle(paste0("Inflammation signatures for ", title_name," in LUSC"))+
+  theme(axis.text.y = element_blank())+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+
+p_LUSC
+
+p <- plot_grid(p_LUAD, p_LUSC, nrow = 1, rel_widths = c(1, 0.6))
+p
+ggsave(plot = p, path = out_folder,filename = "3L_inflammation_signatures_for_TMB.pdf",width = 12, height = 4.5,device = cairo_pdf)
+
+```
+
+
+
+
+---------------------------------------------
+--- to be deleted ---------------------------
+---------------------------------------------
+
+
+# 3C diff abundance TPS - to be deleted or supps
 
 we will estimate the dispersion from the whole data
 ```{r, fig.height=20, fig.width=10}
@@ -268,151 +1016,6 @@ ggsave(filename = paste0(out_folder,"3C_diff_abundance_TPS_LUSC_LUAD_bubble_plot
        height = 19)
 ```
 
-# 3G - Cox model for infiltration
-
-```{r}
-inf_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/infiltration_harmonized.rds"))
-
-# compare densities of infiltrating, bystanding and ignored from IMC1, IMC2 and mIF
-inf_dat <- inf_dat %>%
-  group_by(immucan_id,tech) %>%
-  mutate(total_CD8 = sum(bystanding,ignored,infiltrating,na.rm = TRUE)/im_size,
-         bystanding = round(bystanding/im_size),
-         ignored = round(ignored/im_size),
-         infiltrating = round(infiltrating/im_size)) %>%
-  ungroup()
-
-
-p1 <- inf_dat %>%
-  ggplot()+
-  geom_density(aes(x = bystanding, col = tech), lwd = 1)+
-  ggtitle("bystanding")
-p2 <- inf_dat %>%
-  ggplot()+
-  geom_density(aes(x = ignored, col = tech), lwd = 1)+
-  ggtitle("ignored")
-p3 <- inf_dat %>%
-  ggplot()+
-  geom_density(aes(x = infiltrating, col = tech), lwd = 1)+
-  ggtitle("infiltrating")
-
-plot_grid(p1, p2,p3)
-
-# define interactor over bystander ratio
-inf_dat <- inf_dat %>%
-  group_by(immucan_id, tech) %>%
-  mutate(int_over_bystander = (infiltrating+bystanding)/ignored)
-  
-inf_dat %>%
-  ggplot()+
-  geom_density(aes(x = int_over_bystander, col = tech), lwd = 1)+
-  ggtitle("infiltrating")
-
-inf_dat[(is.infinite(inf_dat$int_over_bystander)),]$int_over_bystander <- NA
-
-# we will average the ratios across technologies
-inf_dat <- inf_dat %>%
-  group_by(immucan_id) %>%
-  mutate(mean_inf_ratio = mean(int_over_bystander,na.rm = TRUE)) %>%
-  ungroup() %>%
-  mutate(mean_inf_ratio_dicho = ntile(mean_inf_ratio,2),
-         mean_inf_ratio_dicho = ifelse(mean_inf_ratio_dicho == 2, "high", "low"))
-
-res <- left_join(inf_dat %>% select(immucan_id,mean_inf_ratio_dicho) %>% distinct(), traits,"immucan_id")
-
-cm_LUSC <- coxph( Surv(time_to_event, censoring) ~  mean_inf_ratio_dicho ,data = as.data.frame(res) %>% filter(simple_histology == "Squamous cell carcinoma"))
-cm_LUAD <- coxph( Surv(time_to_event, censoring) ~  mean_inf_ratio_dicho ,data = as.data.frame(res) %>% filter(simple_histology == "Adenocarcinoma"))
-
-dfLUAD <- data.frame(histology = "LUAD",
-                     HR = summary(cm_LUAD)$coefficients[,"exp(coef)"],
-                     p.value = summary(cm_LUAD)$coefficients[, "Pr(>|z|)"],
-                     lower_conf = summary(cm_LUAD)$conf.int[, "lower .95"],
-                     upper_conf = summary(cm_LUAD)$conf.int[, "upper .95"]) 
-dfLUSC <- data.frame(histology = "LUSC",
-                     HR = summary(cm_LUSC)$coefficients[,"exp(coef)"],
-                     p.value = summary(cm_LUSC)$coefficients[, "Pr(>|z|)"],
-                     lower_conf = summary(cm_LUSC)$conf.int[, "lower .95"],
-                     upper_conf = summary(cm_LUSC)$conf.int[, "upper .95"]) 
-df1 <- rbind(dfLUAD,dfLUSC)
-
-p1 <- df1 %>%
-  ggplot(aes(x = HR,y = histology, col = histology))+
-  geom_point(size = 2)+
-  geom_errorbar(aes(xmin=lower_conf, xmax = upper_conf),lwd =1,width = 0.3)+
-  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust= 1))+
-  #scale_y_discrete(labels = function(x) str_split_i(x,"_",2))+
-  scale_x_log10()+
-  theme_bw()+
-  geom_vline(xintercept = 1,linetype = "dashed")+
-  geom_text(aes(label = paste0("p : ",round(p.value,digits = 3))),
-            col = "black",
-            vjust = -1,
-            inherit.aes = TRUE)+
-  scale_color_manual(values = c("LUAD" = "blue", "LUSC" = "orange"))+
-  theme(axis.text.x = element_text(size = 12),
-        axis.text.y = element_text(size = 12),
-        legend.position = "none",
-        axis.title.y = element_blank(),
-        plot.title = element_text(hjust = 0.5))+
-  ggtitle("HR for low infiltration ratio")
-  p1
-
-ggsave(filename = paste0(out_folder,"3G_cox_model_infiltration.pdf"),
-       plot = p1,
-       device = "pdf",
-       width = 3,
-       height = 2)
-```
-
-check if infiltration ratio also works for each individual modality
-```{r}
-res <- inf_dat %>%
-  filter(tech  == "IMC1") %>%
-  group_by(immucan_id) %>%
-  ungroup() %>%
-  mutate(mean_inf_ratio_dicho = ntile(int_over_bystander,2),
-         mean_inf_ratio_dicho = ifelse(mean_inf_ratio_dicho == 2, "high", "low"))
-
-res <- left_join(res, traits,"immucan_id")
-p1 <- ggforest(coxph( Surv(time_to_event, censoring) ~  mean_inf_ratio_dicho ,data = as.data.frame(res) %>% filter(simple_histology == "Squamous cell carcinoma")))
-p2 <- ggforest(coxph( Surv(time_to_event, censoring) ~ mean_inf_ratio_dicho,data = as.data.frame(res) %>% filter(simple_histology == "Adenocarcinoma")))
-p <- plot_grid(p1, p2,ncol = 1)
-p
-
-# check individual techs IMC2
-res <- inf_dat %>%
-  filter(tech  == "IMC2") %>%
-  group_by(immucan_id) %>%
-  ungroup() %>%
-  mutate(mean_inf_ratio_dicho = ntile(int_over_bystander,2),
-         mean_inf_ratio_dicho = ifelse(mean_inf_ratio_dicho == 2, "high", "low"))
-
-res <- left_join(res, traits,"immucan_id")
-p1 <- ggforest(coxph( Surv(time_to_event, censoring) ~  mean_inf_ratio_dicho ,data = as.data.frame(res) %>% filter(simple_histology == "Squamous cell carcinoma")))
-p2 <- ggforest(coxph( Surv(time_to_event, censoring) ~ mean_inf_ratio_dicho,data = as.data.frame(res) %>% filter(simple_histology == "Adenocarcinoma")))
-p <- plot_grid(p1, p2,ncol = 1)
-p
-
-# check individual techs mIF
-res <- inf_dat %>%
-  filter(tech  == "mIF") %>%
-  ungroup() %>%
-  mutate(mean_inf_ratio_dicho = ntile(int_over_bystander,2),
-         mean_inf_ratio_dicho = ifelse(mean_inf_ratio_dicho == 2, "high", "low"))
-
-res <- left_join(res, traits,"immucan_id")
-p1 <- ggforest(coxph( Surv(time_to_event, censoring) ~  mean_inf_ratio_dicho ,data = as.data.frame(res) %>% filter(simple_histology == "Squamous cell carcinoma")))
-p2 <- ggforest(coxph( Surv(time_to_event, censoring) ~ mean_inf_ratio_dicho,data = as.data.frame(res) %>% filter(simple_histology == "Adenocarcinoma")))
-p <- plot_grid(p1, p2,ncol = 1)
-p
-
-# correlation mIF CD8 and TPS
-res <- left_join(inf_dat,traits,"immucan_id")
-res %>%
-  filter(tech == "mIF") %>%
-  ggplot(aes(x = TPS, y = total_CD8))+
-  geom_point()
-```
 
 # 3D correlation of T cell density and TPS
 

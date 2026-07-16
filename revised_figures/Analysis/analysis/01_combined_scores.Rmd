@@ -47,7 +47,7 @@ if (!dir.exists(out_folder)) {
 ## clinical
 note: the clinical data is owned by EORTC and needs to be obtained from them. The following code will not work if the data has not been obtained
 ```{r}
-clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+clin_dat <- read_csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/clinical.csv")
 ```
 
 ## tmb
