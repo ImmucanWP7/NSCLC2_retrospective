@@ -1,0 +1,217 @@
+---
+title: "Oncosubtypes"
+author: "Daniel Schulz"
+date: "2026-07-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# libraries
+```{r}
+library(OncoSubtype)
+library(ComplexHeatmap)
+library(circlize)
+```
+
+# load data
+
+```{r}
+rna_mat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_mat.rds")
+rna_mat <- t(rna_mat)
+
+# split RNA mat by histology
+clin <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/all_traits.csv")
+LUAD <- clin %>% filter(simple_histology == "Adenocarcinoma") %>% pull(immucan_id)
+LUSC <- clin %>% filter(simple_histology == "Squamous cell carcinoma") %>% pull(immucan_id)
+
+clin <- clin %>%
+  mutate(LUAD_vs_LUSC = case_when(
+    LUAD_vs_LUSC == "Adenocarcinoma"          ~ "LUAD",
+    LUAD_vs_LUSC == "Squamous cell carcinoma" ~ "LUSC",
+    TRUE                                       ~ "Other"
+  ))
+#  clinical annotation
+clin$simple_histology
+clin$EGFR
+clin$KRAS
+clin$TP53
+clin$TPS_score
+```
+
+# predict subtypes
+```{r}
+rna_LUAD <- rna_mat[,colnames(rna_mat) %in% LUAD]
+rna_LUSC <- rna_mat[,colnames(rna_mat) %in% LUSC]
+
+# Median-center your expression matrix first
+data_LUAD <- get_median_centered(rna_LUAD, log2 = FALSE)
+data_LUSC <- get_median_centered(rna_LUSC, log2 = FALSE)
+
+# LUAD: returns bronchioid / magnoid / squamoid (= TRU / PP / PI)
+output_luad <- centroids_subtype(data_LUAD, disease = 'LUAD')
+
+# LUSC: returns basal / classical / secretory / primitive
+output_lusc <- centroids_subtype(data_LUSC, disease = 'LUSC')
+
+table(output_luad@subtypes)  # bronchioid / magnoid / squamoid
+table(output_lusc@subtypes)  # basal / classical / secretory / primitive
+
+
+# QC
+top_genes_LUAD <- luad_centroids %>%
+  mutate(range = apply(., 1, function(x) max(x) - min(x))) %>%
+  slice_max(range, n = 100) %>%
+  rownames()
+top_genes_LUSC <- lusc_centroids %>%
+  mutate(range = apply(., 1, function(x) max(x) - min(x))) %>%
+  slice_max(range, n = 100) %>%
+  rownames()
+
+top_genes <- c(top_genes_LUAD, top_genes_LUSC)
+
+# ── Build subtype vector (patient ID → subtype label) ─────────────────────────
+# @subtypes may or may not be named; use input colnames to be safe
+luad_sub    <- setNames(as.character(output_luad@subtypes), colnames(rna_LUAD))
+lusc_sub    <- setNames(as.character(output_lusc@subtypes), colnames(rna_LUSC))
+subtype_all <- c(luad_sub, lusc_sub)
+
+# get scores
+sc <- as.data.frame(output_luad@score)
+sc$immucan_id <- rownames(sc)
+rownames(sc) <- NULL
+# export data
+tumor_subtypes <- data.frame(immucan_id = names(subtype_all),
+                             subtype = subtype_all)
+
+write.csv(tumor_subtypes,"/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/tumor_subtypes.csv", row.names = FALSE, quote = FALSE)
+write.csv(sc,"/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/tumor_subtype_scores.csv", row.names = FALSE, quote = FALSE)
+```
+
+# Heatmap
+```{r}
+
+# ── Build annotation data frame for all patients ──────────────────────────────
+pt_ids <- colnames(rna_mat)
+idx    <- match(pt_ids, clin$immucan_id)
+ann_df <- data.frame(
+  subtype   = subtype_all[pt_ids],
+  histology = clin$LUAD_vs_LUSC[idx],
+  EGFR      = as.character(clin$EGFR[idx]),
+  KRAS      = as.character(clin$KRAS[idx]),
+  TP53      = as.character(clin$TP53[idx]),
+  TPS       = as.character(clin$TPS_score[idx]) == "positive",
+  row.names = pt_ids,
+  stringsAsFactors = FALSE
+)
+
+# Order columns: LUAD subtypes first, then LUSC, NA last
+subtype_order <- c("bronchioid", "magnoid", "squamoid",
+                   "basal", "classical", "secretory", "primitive")
+col_order <- order(
+  match(ann_df$subtype, subtype_order, nomatch = length(subtype_order) + 1),
+  na.last = TRUE
+)
+ann_df <- ann_df[col_order, ]
+pt_ids_sorted <- rownames(ann_df)
+
+# ── Row ordering: sort genes by which subtype centroid they are maximal in ─────
+sort_by_centroid <- function(genes, cent_mat) {
+  g <- genes[genes %in% rownames(cent_mat)]
+  names(sort(apply(cent_mat[g, , drop = FALSE], 1, which.max)))
+}
+luad_g <- sort_by_centroid(top_genes_LUAD, luad_centroids)
+lusc_g <- sort_by_centroid(top_genes_LUSC, lusc_centroids)
+luad_g <- luad_g[luad_g %in% rownames(rna_mat)]
+lusc_g <- lusc_g[lusc_g %in% rownames(rna_mat)]
+row_order <- c(luad_g, lusc_g)
+
+row_split_vec <- factor(
+  ifelse(row_order %in% top_genes_LUAD, "LUAD genes", "LUSC genes"),
+  levels = c("LUAD genes", "LUSC genes")
+)
+
+# ── Z-score within each histology to reveal within-histology subtype signal ───
+# All-patient z-scoring lets between-histology differences dominate, masking
+# the subtler within-histology subtype variation. Score each gene set only
+# against patients of the matching histology.
+luad_pts <- pt_ids_sorted[pt_ids_sorted %in% colnames(rna_LUAD)]
+lusc_pts <- pt_ids_sorted[pt_ids_sorted %in% colnames(rna_LUSC)]
+na_pts   <- setdiff(pt_ids_sorted, c(luad_pts, lusc_pts))
+
+z_luad <- t(scale(t(rna_mat[luad_g, luad_pts, drop = FALSE])))
+z_lusc <- t(scale(t(rna_mat[lusc_g, lusc_pts, drop = FALSE])))
+
+all_pts <- c(luad_pts, lusc_pts, na_pts)
+heatmap_mat <- matrix(NA,
+  nrow = length(row_order), ncol = length(all_pts),
+  dimnames = list(row_order, all_pts))
+heatmap_mat[luad_g, luad_pts] <- z_luad
+heatmap_mat[lusc_g, lusc_pts] <- z_lusc
+
+ann_df <- ann_df[all_pts, ]
+
+# ── Colors ────────────────────────────────────────────────────────────────────
+subtype_pal <- c(
+  bronchioid = "#4DBBD5", magnoid   = "#00A087", squamoid  = "#3C5488",
+  basal      = "#E64B35", classical = "#F39B7F", secretory = "#8491B4",
+  primitive  = "#B09C85"
+)
+
+# Auto-detect histology color keys from actual values in the data
+hist_vals <- sort(unique(na.omit(ann_df$histology)))
+hist_pal  <- setNames(c("#4DBBD5", "#E64B35", "orange")[seq_along(hist_vals)], hist_vals)
+
+# Mutations stored as TRUE/FALSE: TRUE = mutated (red), FALSE = WT (grey)
+mut_col <- function(x) {
+  vals <- sort(unique(na.omit(x)))
+  c(setNames(rep("#E41A1C", sum(vals == "TRUE")),  vals[vals == "TRUE"]),
+    setNames(rep("#D9D9D9", sum(vals == "FALSE")), vals[vals == "FALSE"]))
+}
+
+col_ann <- HeatmapAnnotation(
+  subtype   = ann_df$subtype,
+  histology = ann_df$histology,
+  EGFR      = ann_df$EGFR,
+  KRAS      = ann_df$KRAS,
+  TP53      = ann_df$TP53,
+  TPS       = ann_df$TPS,
+  col = list(
+    subtype   = subtype_pal,
+    histology = hist_pal,
+    EGFR      = mut_col(ann_df$EGFR),
+    KRAS      = mut_col(ann_df$KRAS),
+    TP53      = mut_col(ann_df$TP53),
+    TPS       = mut_col(ann_df$TPS)
+  ),
+  na_col               = "grey80",
+  annotation_name_side = "left",
+  annotation_name_gp   = gpar(fontsize = 9)
+)
+
+# ── Heatmap 2: all-patient z-score (original view) ───────────────────────────
+heatmap_mat_all <- t(scale(t(rna_mat[row_order, all_pts, drop = FALSE])))
+
+ht2 <- Heatmap(
+  heatmap_mat_all,
+  col                   = colorRamp2(c(-2, 0, 2), c("blue", "white", "red")),
+  top_annotation        = col_ann,
+  cluster_rows          = FALSE,
+  cluster_columns       = FALSE,
+  row_split             = row_split_vec,
+  column_split          = ann_df$histology,
+  cluster_row_slices    = FALSE,
+  cluster_column_slices = FALSE,
+  show_column_names     = FALSE,
+  show_row_names        = TRUE,
+  row_names_gp = gpar(fontsize = 3)
+)
+
+pdf(file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_3_supp/tumor_subtypes.pdf",width = 8,height = 8)
+draw(ht2)
+dev.off()
+```
+
+# export scores
