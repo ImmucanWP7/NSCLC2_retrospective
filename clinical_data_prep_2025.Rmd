@@ -1,0 +1,329 @@
+---
+title: "20230825_prepare_clinical"
+author: "Daniel Schulz"
+date: "2025"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+
+
+```
+
+```{r}
+clin_dat <- readxl::read_xlsx("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2.xlsx")
+```
+
+
+# convert date columns to dates
+```{r}
+clin_dat$date_of_diagnosis <- as.Date(clin_dat$date_of_diagnosis)
+clin_dat$last_FU <- as.Date(clin_dat$last_FU)
+```
+
+# time to event
+
+```{r}
+clin_dat <- clin_dat %>%
+  mutate(time_to_event = ifelse(is.na(time_to_event),last_FU-date_of_diagnosis,time_to_event),
+         censoring = ifelse(death == "Yes",1,0),
+         simple_histology = WHO_classification,
+         primary_localization = parimary_localizatoin,
+         simple_stage = gsub(pattern = "A|B","",stage),
+         simple_stage = gsub(pattern = "Stage ","",simple_stage))
+
+clin_dat$parimary_localizatoin <- NULL
+clin_dat$WHO_classification <- NULL
+```
+
+# clean histology
+
+```{r}
+detailed_hist <- readxl::read_xlsx("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/detailed_histology.xlsx")
+
+colnames(detailed_hist) <- c("immucan_id","det_hist")
+
+clin_dat <- left_join(clin_dat, detailed_hist,"immucan_id")
+
+clin_dat <- clin_dat %>%
+  mutate(detailed_histology = str_split(string = det_hist,"/ ",simplify = TRUE)[,2],
+         detailed_histology = ifelse(detailed_histology == "",gsub("Other (specify below): ","",det_hist), detailed_histology),
+         detailed_histology = gsub("Other \\(specify below\\)\\: ","",detailed_histology))
+
+
+
+test <- clin_dat %>%
+  #filter(grepl("Other",detailed_histology)) %>%
+  select(simple_histology,det_hist,detailed_histology)
+
+clin_dat <- clin_dat %>%
+  mutate(simple_histology = ifelse(grepl("Other",simple_histology),detailed_histology,simple_histology),
+         simple_histology = ifelse(simple_histology == "Large cell neuroendocrine carcinoma (LCNEC) ","Large cell neuroendocrine carcinoma (LCNEC)",simple_histology),
+         simple_histology = ifelse(grepl("Carcinosarcoma|Other|Small cell carcinoma|Pleomorphic",simple_histology), "Other",simple_histology),
+         detailed_histology = ifelse(detailed_histology == "Micropapillary Adeno ","Micropapillary Adeno",detailed_histology),
+         detailed_histology = ifelse(detailed_histology == "Lepidic Adeno ","Lepidic Adeno",detailed_histology),
+         detailed_histology = ifelse(detailed_histology == "Non-keratinizing SqCC ","Non-keratinizing SqCC",detailed_histology),
+         detailed_histology = ifelse(detailed_histology == "Papillary Adeno ","Papillary Adeno",detailed_histology),
+         detailed_histology = ifelse(detailed_histology == "Solid Adeno ","Solid Adeno",detailed_histology),
+         detailed_histology = ifelse(detailed_histology == "Invasive mucinous Adeno ","Invasive mucinous Adeno",detailed_histology),
+         detailed_histology = ifelse(detailed_histology == "Keratinizing SqCC ","Keratinizing SqCC",detailed_histology),
+         detailed_histology = ifelse(detailed_histology == "Other ","Other",detailed_histology),
+         detailed_histology = ifelse(detailed_histology == "Large cell neuroendocrine carcinoma (LCNEC) ","Large cell neuroendocrine carcinoma (LCNEC)",detailed_histology),
+         detailed_histology = ifelse(detailed_histology == "Acinar Adeno ","Acinar Adeno",detailed_histology),
+         detailed_histology = ifelse(detailed_histology == "Enteric Adeno ","Enteric Adeno",detailed_histology),
+         # we will use the short cut for large cell neuroendocrine carcinoma
+         simple_histology = ifelse(simple_histology == "Large cell neuroendocrine carcinoma (LCNEC)","LCNEC", simple_histology))
+
+clin_dat$det_hist <- NULL
+table(clin_dat$detailed_histology)
+table(clin_dat$simple_histology)
+
+clin_dat <- clin_dat %>%
+  mutate(simple_histology = ifelse(is.na(simple_histology),"unknown",simple_histology))
+unique(clin_dat$simple_histology)
+```
+
+
+
+
+# Comparison to previous file
+```{r}
+clin_dat1 <- read_csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230405_Marie_curated/20230719_NSCLC2_curated.csv")
+clin_dat1$immucan_id <- clin_dat1$immucan_patient_id
+clin_dat1$immucan_patient_id <- NULL
+
+dat <- left_join(clin_dat1,clin_dat,"immucan_id",suffix= c("Aug","Sep"))
+
+dat %>%
+  select(immucan_id,time_to_eventAug,time_to_eventSep, simple_stageAug, simple_stageSep)
+dat$simple_stageAug == dat$simple_stageSep
+dat$simple_histologyAug == dat$simple_histologySep
+dat$time_to_eventAug == dat$time_to_eventSep
+dat$censoringAug == dat$censoringSep
+dat$smoking_statusAug == dat$smoking_statusSep
+
+```
+
+# Generate cohort stats
+```{r}
+# gender
+dplyr::count(clin_dat, gender)
+dplyr::count(clin_dat, adjuvant_treatment)
+dplyr::count(clin_dat, neo_adjuvant_treatment)
+dplyr::count(clin_dat, simple_stage)
+dplyr::count(clin_dat, simple_histology)
+dplyr::count(clin_dat, smoking_status)
+
+```
+
+# generate long survivor info for modeling
+
+
+```{r}
+clin_dat <- clin_dat %>%
+  mutate(long_survivors = NA,
+         long_survivors = ifelse(time_to_event > 1095 & censoring == 0, "alive", long_survivors),
+         long_survivors = ifelse(censoring == 1, "dead", long_survivors))
+
+```
+
+# add TNM stage info
+
+```{r}
+TNM <- readxl::read_xlsx("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2 TNM.xlsx", col_names = FALSE)
+colnames(TNM) <- c("immucan_id","T_stage","N_stage","M_stage")
+table(TNM$T_stage)
+TNM <- TNM %>% 
+  mutate(T_stage = gsub("cT","pT",T_stage),
+         T_stage = gsub("UNK",NA,T_stage),
+         N_stage = gsub("pNx|UNK",NA,N_stage),
+         N_stage = gsub("cN","pN",N_stage),
+         M_stage = gsub("pMx|UNK",NA,M_stage),
+         M_stage = gsub("cM","pM",M_stage))
+
+size_dict <- data.frame(primary_tumor_size = c("1","1-2cm","3-4cm","4-5cm","5-7cm","7cm_plus"),
+                        tumor_size_integer = c(1,2,4,5,7,8),
+                        T_stage = c("pT1a","pT1b","pT2a","pT2b","pT3","pT4"))
+
+TNM <- left_join(TNM,size_dict,"T_stage")
+clin_dat <- left_join(clin_dat,TNM,"immucan_id")
+
+clin_dat <- clin_dat %>%
+  mutate(T_stage = gsub("p","",T_stage),
+         N_stage = gsub("p","",N_stage),
+         M_stage = gsub("p","",M_stage))
+```
+
+# corrections
+
+we will add some manual corrections which have been reported
+causes. However, those causes are still associated with the lung cancer disease and we will keep them
+LUNG-NSCLC2-0568 – chronic disease
+LUNG-NSCLC2-0613 – cardiovascular disease
+LUNG-NSCLC2-0641 - cardiovascular disease
+LUNG-NSCLC2-0650 - cardiovascular disease
+
+some staging errors are manually corrected
+
+```{r}
+clin_dat <- clin_dat %>%
+  mutate(stage = ifelse(immucan_id == "LUNG-NSCLC2-0623","Stage IIIA",stage),
+         T_stage = ifelse(immucan_id == "LUNG-NSCLC2-0623","T3",T_stage),
+         N_stage = ifelse(immucan_id == "LUNG-NSCLC2-0623","N0",N_stage),
+         M_stage = ifelse(immucan_id == "LUNG-NSCLC2-0623","M0",M_stage),
+         N_stage = ifelse(immucan_id == "LUNG-NSCLC2-0626","N1",N_stage),
+         N_stage = ifelse(immucan_id == "LUNG-NSCLC2-0720","N0",N_stage),
+         stage = ifelse(immucan_id == "LUNG-NSCLC2-0722","Stage IIB",stage),
+         N_stage = ifelse(immucan_id == "LUNG-NSCLC2-0722","N0",N_stage),
+         #censoring = ifelse(immucan_id == "LUNG-NSCLC2-0568",0,censoring),
+         #censoring = ifelse(immucan_id == "LUNG-NSCLC2-0613",0,censoring),
+         #censoring = ifelse(immucan_id == "LUNG-NSCLC2-0641",0,censoring),
+         #censoring = ifelse(immucan_id == "LUNG-NSCLC2-0650",0,censoring),
+         simple_stage = gsub(pattern = "A|B","",stage),
+         simple_stage = gsub(pattern = "Stage ","",simple_stage))
+
+```
+
+## OS corrections
+
+There was an export error in the time to event data from Robin. we will fix it below:
+
+```{r}
+os <- read_tsv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/OS_days.txt")
+colnames(os) <- c("immucan_id", "OS_new")
+
+dat <- left_join(clin_dat, os, "immucan_id")
+
+dat$Stage <- dat$simple_stage
+dat <- dat %>%
+  mutate(Stage = ifelse(Stage == "I","1",Stage),
+         Stage = ifelse(Stage == "II","2",Stage),
+         Stage = ifelse(Stage == "III","3",Stage),
+         Stage = ifelse(Stage == "IV","4",Stage))
+surv_fit <- survfit(Surv(OS_new, censoring) ~ Stage, data = dat)
+
+p <- ggsurvplot(surv_fit, data = dat, risk.table = TRUE, pval = TRUE,palette = c("palevioletred3","darkseagreen3","dodgerblue", "darkorange"))
+
+p <- plot_grid(p$plot,p$table,ncol = 1, rel_heights = c(1,0.5))
+p
+
+clin_dat <- left_join(clin_dat, os, "immucan_id")
+clin_dat$time_to_event <- clin_dat$OS_new
+clin_dat$OS_new <- NULL
+```
+
+
+
+
+# add scores
+pathological TIL score
+tumor area score
+```{r}
+tumor_area <- readxl::read_xlsx("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/TumorArea_SampleID.xlsx")
+TILs <- read_tsv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/TILs_TumorArea_NSCLC2.txt")
+
+# merge TILS score
+dict <- c("none","mild","moderate","severe")
+names(dict) <- c(0,1,2,3) 
+TILs$TIL_score <- dict[as.character(TILs$lymphocyte_infiltration)]
+TILs <- TILs %>%
+  mutate(immucan_id = immucan_patient_id) %>%
+  select(-immucan_patient_id)
+
+clin_dat <- left_join(clin_dat,TILs[,c("immucan_id","TIL_score")],"immucan_id")
+
+# merge tumor area
+patient_lookup <- readRDS("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/SampleId_to_immucan_patient_id.rds")
+patient_lookup <- patient_lookup %>%
+  mutate(ibbl_kit_ids = str_split(SampleId,"-",simplify = TRUE)[,1],
+         immucan_patient_id = ifelse(ibbl_kit_ids == 10040831,"LUNG-NSCLC2-0598",immucan_patient_id),
+         immucan_id = immucan_patient_id) %>%
+  select(-immucan_patient_id, -SampleId) %>%
+  distinct()
+
+# patient LUNG-NSCLC2-0598 has to samples. However, for H&E and for IF we can only find one sample on the KMS. Therefore we will only keep the tumor area of that one sample.
+tumor_area <- tumor_area %>%
+  mutate(ibbl_kit_ids = str_split(`SPECTA Lung samples in IMMUcan`,"-",simplify = TRUE)[,1]) %>%
+  select(-`SPECTA Lung samples in IMMUcan`)
+tumor_area <- tumor_area %>%
+  left_join(patient_lookup,"ibbl_kit_ids") %>%
+  filter(ibbl_kit_ids != "10040831")
+
+clin_dat <- clin_dat %>%
+  left_join(tumor_area,"immucan_id") %>%
+  mutate(tumor_area_mm_square = `Tumor surface area (mmÂ²)`) %>%
+  select(-`Tumor surface area (mmÂ²)`)
+```
+
+# smoking time
+
+```{r}
+smok <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/NSCLC2_Smoking.csv",sep = ";")
+smok$ceased_smoking <- as.Date(smok$CIG_SUENDAT,format = "%d.%m.%Y")
+clin_dat <- clin_dat %>%
+  left_join(smok,"immucan_id") %>%
+  mutate(time_since_stopped_smoking = ifelse(smoking_status == "Ex-smoker",date_of_diagnosis-ceased_smoking,NA),
+         long_term_ex_smoker = ifelse(time_since_stopped_smoking >365,TRUE,FALSE))
+
+# update smoking status
+clin_dat <- clin_dat %>%
+  mutate(smoking_status = ifelse(smoking_status == "Ex-smoker" & time_since_stopped_smoking < 365 | smoking_status == "Ex-smoker" & is.na(time_since_stopped_smoking),"Current smoker",smoking_status))
+
+# conflicting data from the patients will be cleaned. non-smokers that have number of cigarettes per year not equal 0 will be set to NA in the smoking status.
+clin_dat <- clin_dat %>%
+  mutate(smoking_status = 
+           # Modify "Current smoker" to "Ex-smokers" if they stopped since < 1y
+           ifelse((smoking_status == "Ex-smoker" & time_since_stopped_smoking < 365) | (smoking_status == "Ex-smoker" & is.na(time_since_stopped_smoking)),"Current smoker",
+                  ifelse(smoking_status == "Ex-smoker", "Ex-smoker",
+                         ifelse(smoking_status == "Current smoker", "Current smoker",
+                                # Modify "Non-smoker" to "NA" if they declared avg nb cigarettes >0
+                                # there are 34 patients that have conflicting data with regards to cigarettes
+                                ifelse(smoking_status=="Non-smoker" & average_number_of_cigarettes==0, "Non-smoker", NA))))) 
+
+```
+
+
+# prepare clean dichotomomized columns
+
+```{r}
+clin_dat <- clin_dat %>% mutate(stage_1_2 = ifelse(simple_stage %in% c("III","IV"),NA,simple_stage)) 
+clin_dat <- clin_dat %>% mutate(stage_1_3 = ifelse(simple_stage %in% c("II","IV"),NA,simple_stage)) 
+clin_dat <- clin_dat %>% mutate(stage_2_3 = ifelse(simple_stage %in% c("I","IV"),NA,simple_stage))
+
+clin_dat <- clin_dat %>% mutate(never_vs_current_smoker = ifelse(smoking_status %in% c("Ex-smoker"),NA,smoking_status))
+clin_dat <- clin_dat %>% mutate(never_vs_Ex_smoker = ifelse(smoking_status %in% c("Current smoker"),NA,smoking_status))
+clin_dat <- clin_dat %>% mutate(current_vs_Ex_smoker = ifelse(smoking_status %in% c("Non-smoker"),NA,smoking_status))
+
+clin_dat <- clin_dat %>% mutate(age_dicho = ifelse(age_at_diagnosis > 65, "high","low"))
+
+clin_dat <- clin_dat %>% mutate(LUAD_vs_LUSC = ifelse(!simple_histology %in% c("Adenocarcinoma","Squamous cell carcinoma"),NA,simple_histology))
+
+clin_dat <- clin_dat %>% mutate(T1_vs_Tother = ifelse(T_stage %in% c("T1a","T1b"),"T1","T2+"))
+
+clin_dat <- clin_dat %>% mutate(N0_vs_Nx = ifelse(N_stage %in% c("N1","N2"),"node_pos","node_neg"))
+clin_dat <- clin_dat %>% mutate(N0_vs_Nx = ifelse(is.na(N_stage) ,NA,N0_vs_Nx))
+
+clin_dat <- clin_dat %>% mutate(M0_vs_Mx = ifelse(M_stage %in% c("M1a","M1b"),"met_pos","met_neg"))
+clin_dat <- clin_dat %>% mutate(M0_vs_Mx = ifelse(is.na(M_stage) ,NA,M0_vs_Mx))
+
+clin_dat <- clin_dat %>% mutate(TIL_mild_severe = ifelse(TIL_score %in% c("moderate", "none"),NA,TIL_score))
+clin_dat <- clin_dat %>% mutate(TIL_moderate_severe = ifelse(TIL_score %in% c("mild", "none"),NA,TIL_score))
+```
+
+# fix comma
+
+```{r}
+clin_dat <- clin_dat %>%
+  mutate(detailed_histology = gsub(",", "", detailed_histology))
+```
+
+
+
+```{r}
+write.csv(clin_dat,"/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/clinical.csv", quote = FALSE, row.names = FALSE)
+```
