@@ -176,7 +176,7 @@ meta_col <- setNames(
   as.character(1:N_META_CLUSTERS))
 ```
 
-# Figure of imaging clusters
+# S2A Figure of imaging clusters
 ```{r, fig.height=8, fig.width=9}
 
 # Features in original co-variance dendrogram order (shows correlation blocks)
@@ -199,7 +199,7 @@ panel_pal <- setNames(
   sort(unique(panel_sorted)))
 
 row_ann <- rowAnnotation(
-  #Meta    = as.character(meta_sorted),
+  #Meta = meta_sorted,
   Panel   = panel_sorted,
   Cluster = as.character(cl_sorted),
   col     = list(Meta    = meta_col,
@@ -216,17 +216,18 @@ ht_cor <- Heatmap(
   name              = "Pearson r",
   col               = cor_col,
   cluster_rows      = FALSE,
-  row_title = NULL,
   cluster_columns   = FALSE,
   row_split         = factor(cl_sorted, levels = 1:K),
   column_split      = factor(cl_sorted, levels = 1:K),
   show_row_names    = FALSE,
   show_column_names = FALSE,
   left_annotation   = row_ann,
+  row_title         = paste0("C", 1:K),   # one label per split level, in order 1:K
   column_title      = paste0("Imaging feature correlations  (",
                               length(feat_sorted), " features, ", K, " clusters)"),
   column_title_gp   = gpar(fontsize = 12),
   row_title_gp      = gpar(fontsize = 10),
+  row_title_rot = 0,
   column_title_rot  = 0,
   heatmap_legend_param = list(title = "Pearson r")
 )
@@ -235,11 +236,10 @@ pdf("/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_2_s
     width = 14, height = 8)
 draw(ht_cor)
 dev.off()
-cat("Feature correlation heatmap saved.\n")
 ```
 
-
-```{r, fig.height=15, fig.width=10}
+to be deleted
+```{r, fig.height=15, fig.width=10, eval = FALSE}
 # Patient ordering: Ward.D2 HC on cluster scores (NA-tolerant mean scores)
 cs_complete <- cluster_scores[rowSums(is.na(cluster_scores)) == 0, , drop = FALSE]
 pat_hc      <- hclust(dist(cs_complete, method = "euclidean"), method = "ward.D2")
@@ -327,8 +327,11 @@ cat("Feature × patient heatmap saved.\n")
 
 ```
 
-
+# 2A imaging modules
 ```{r, fig.height=8, fig.width=10}
+meta_cluster_names <-structure(c("Highly_inflamed","Thelper_MHCII", "Mixed","Inflamed_proliferating","Medium_inflamed","Proliferating","Neutrophils","Cold"),
+                               names = c(paste0("M",c(1:8))))
+
 # ── 9. Figure: cluster × Bagaev RNA axis correlation heatmap ─────────────────
 # Rows (imaging clusters) ordered by cl_hc2, split by meta-cluster.
 # RNA axes (columns) ordered by rna_hc2.
@@ -340,7 +343,8 @@ meta_cl_ordered <- meta_cl[rownames(cl_rna_ordered)]
 row_ann_rna <- rowAnnotation(
   Meta = as.character(meta_cl_ordered),
   col  = list(Meta = meta_col),
-  annotation_name_gp = gpar(fontsize = 8),
+  annotation_name_gp = gpar(fontsize = 10),
+  annotation_name_rot = 45,
   width = unit(4, "mm"),
   show_legend = FALSE)
 
@@ -354,18 +358,19 @@ ht_rna <- Heatmap(
   cluster_rows      = FALSE,
   cluster_columns   = FALSE,
   row_split         = factor(meta_cl_ordered, levels = 1:N_META_CLUSTERS),
-  row_names_gp      = gpar(fontsize = 12),
-  column_names_gp   = gpar(fontsize = 12),
+  row_names_gp      = gpar(fontsize = 14),
+  column_names_gp   = gpar(fontsize = 13),
   row_title_rot = 0,
   column_names_rot  = 45,
-  row_labels        = paste0(rownames(cl_rna_ordered), " (",
-                              table(feat_cl)[sub("^C0*", "", rownames(cl_rna_ordered))],
-                              ")"),
+  #row_labels        = paste0(rownames(cl_rna_ordered), " (",
+  #                            table(feat_cl)[sub("^C0*", "", rownames(cl_rna_ordered))],
+  #                            ")"),
+  row_labels        = rownames(cl_rna_ordered),
   left_annotation   = row_ann_rna,
   row_title         = meta_cluster_names[paste0("M", 1:N_META_CLUSTERS)],
-  row_title_gp      = gpar(fontsize = 12, fontface = "bold"),
-  column_title      = "Imaging feature clusters × Bagaev RNA axes",
-  column_title_gp   = gpar(fontsize = 11),
+  row_title_gp      = gpar(fontsize = 14, fontface = "bold"),
+  column_title      = "Imaging modules",
+  column_title_gp   = gpar(fontsize = 14),
   cell_fun          = function(j, i, x, y, width, height, fill) {
     r <- cl_rna_ordered[i, j]
     if (!is.na(r) && abs(r) >= 0.3)
@@ -373,7 +378,7 @@ ht_rna <- Heatmap(
   },
   heatmap_legend_param = list(
     title       = "Pearson r",
-    title_gp    = gpar(fontsize = 14, fontface = "bold"),
+    title_gp    = gpar(fontsize = 14),
     labels_gp   = gpar(fontsize = 12),
     legend_height = unit(6, "cm"),
     grid_width  = unit(0.6, "cm")
@@ -385,8 +390,6 @@ pdf("/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_2/2
     height = 12)
 draw(ht_rna)
 dev.off()
-cat("Cluster × RNA correlation heatmap saved.\n")
-
 ```
 
 
@@ -517,12 +520,12 @@ write.csv(
 
 ```{r}
 mofa <- readRDS( '/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/MOFA/mofa_V6_minor.rds')
-lf_raw <- as.data.frame(get_factors(mofa))
+
+lf_raw <- as.data.frame(get_factors(mofa)[["group1"]])   # or [[1]]
 
 lf_raw <- lf_raw %>%
   mutate(immucan_id = rownames(lf_raw),
          immucan_id = gsub("_","-",immucan_id))
-colnames(lf_raw) <- gsub("group1\\.","",colnames(lf_raw))
 
 meta_scores <- as.data.frame(meta_scores)
 meta_scores$immucan_id <- rownames(meta_scores)
