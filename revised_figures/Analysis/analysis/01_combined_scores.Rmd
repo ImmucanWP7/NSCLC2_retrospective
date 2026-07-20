@@ -107,9 +107,22 @@ write.csv(PDL1_score,file = paste0(out_folder,"PDL1_score",".csv"), row.names = 
 mut_new <- read.csv(paste0(mount_path,"data/WES/data/Rout/20260210_mutations_all.csv"))
 # Matrix
 mut_new <- mut_new %>%
-  filter(if_all(starts_with("FILTER_"), ~ . == "keep"),
-         COSMIC == TRUE) %>%
+  filter(if_all(starts_with("FILTER_"), ~ . == "keep")) %>%
   dplyr::rename(Gene = gene)
+
+
+# apply stringency filters:
+VAF <- 0.05
+#ref_VAF <- 0.01
+min_VAR_counts <- 8
+min_cov <- 100
+disruptive_variants <- TRUE
+
+mut_new <- mut_new %>%
+  filter(gt_AF > VAF,
+         gt_DP > min_cov,
+         var_counts > min_VAR_counts,
+         if(disruptive_variants == TRUE) FILTER_type == "keep" else FILTER_type %in% c("keep", "remove"))
 
 mut_new <- mut_new %>%
   group_by(immucan_id, Gene, .drop = FALSE) %>%
