@@ -42,6 +42,9 @@ ms  <- as.matrix(meta_scores[shared, , drop = FALSE])
 cor_mat <- cor(img, ms, use = "pairwise.complete.obs")  # features × meta-clusters
 cat("Correlation matrix:", nrow(cor_mat), "features ×", ncol(cor_mat), "meta-clusters\n")
 
+
+# save cor mat
+write.csv(as.data.frame(cor_mat),file.path(OUT,"image_feature_module_correlation.csv"))
 # ── Top N features per meta-cluster ──────────────────────────────────────────
 plot_df <- do.call(rbind, lapply(colnames(cor_mat), function(mc) {
   r     <- cor_mat[, mc]
