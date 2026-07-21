@@ -77,7 +77,7 @@ dat_z <- left_join(rna, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   pivot_longer(cols = 1:29)
 
-result <- lollipop_plot(dat_z, condition = "LUAD_vs_LUSC", var_A = "LUAD", var_B = "LUSC", col_A = "blue", col_B = "orange")
+result <- lollipop_plot(dat_z, condition = "LUAD_vs_LUSC", var_A = "LUAD", var_B = "LUSC", col_A = "blue", col_B = "orange",zscore_data = TRUE)
 p <- result$plot +
   ggtitle(paste0("RNA modules for Histology"))+
   coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))+
@@ -94,16 +94,6 @@ ggsave(plot = p, path = out_folder,filename = "RNA_difference_for_histology.pdf"
 
 ## 2C imaging modules for histology
 ```{r, fig.height=10, fig.width=8}
-left_join(modules, traits, "immucan_id") %>%
-  filter(!is.na(LUAD_vs_LUSC)) %>%
-  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
-  pivot_longer(cols = 1:8) %>%
-  ggplot(aes(x = LUAD_vs_LUSC,y = value))+
-  geom_boxplot()+
-  facet_wrap(.~name, scales = "free")+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
-  ggpubr::stat_compare_means(label.y = )
-
 dat_z <- left_join(modules, traits, "immucan_id") %>%
   filter(!is.na(LUAD_vs_LUSC)) %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
@@ -225,74 +215,6 @@ p
 ggsave(plot = p, path = out_folder,filename = "alternative_inflammation.pdf",width = 10, height = 6 ,device = cairo_pdf)
 
 ```
-
-## to  be removed
-```{r}
-left_join(modules, traits, "immucan_id") %>%
-  filter(!is.na(TPS_score)) %>%
-  pivot_longer(cols = 1:8) %>%
-  ggplot(aes(x = TPS_score,y = value))+
-  geom_boxplot()+
-  facet_wrap(.~name)+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
-  ggpubr::stat_compare_means(method = "t.test")
-
-left_join(modules, traits, "immucan_id") %>%
-  filter(!is.na(TMB_score)) %>%
-  pivot_longer(cols = 1:8) %>%
-  ggplot(aes(x = TMB_score,y = value))+
-  geom_boxplot()+
-  facet_wrap(.~name)+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
-  ggpubr::stat_compare_means(method = "t.test")
-
-left_join(modules, traits, "immucan_id") %>%
-  filter(!is.na(EGFR),
-         LUAD_vs_LUSC == "Adenocarcinoma") %>%
-  pivot_longer(cols = 1:8) %>%
-  ggplot(aes(x = EGFR,y = value))+
-  geom_boxplot()+
-  facet_wrap(.~name)+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
-  ggpubr::stat_compare_means(method = "t.test")
-
-left_join(modules, traits, "immucan_id") %>%
-  filter(!is.na(KRAS),
-         LUAD_vs_LUSC == "Adenocarcinoma") %>%
-  pivot_longer(cols = 1:8) %>%
-  ggplot(aes(x = KRAS,y = value))+
-  geom_boxplot()+
-  facet_wrap(.~name)+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
-  ggpubr::stat_compare_means(method = "t.test")
-
-left_join(modules, traits, "immucan_id") %>%
-  filter(!is.na(simple_stage),
-         simple_stage != "IV") %>%
-  pivot_longer(cols = 1:8) %>%
-  ggplot(aes(x = simple_stage,y = value))+
-  geom_boxplot()+
-  facet_wrap(.~name)+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
-  ggpubr::stat_compare_means()
-
-```
-
-```{r}
-left_join(modules, traits, "immucan_id") %>%
-  left_join(inf_dat,"immucan_id") %>%
-  mutate(inf_score = as.factor(ntile(x = mean_inf_ratio, n = 2))) %>%
-  filter(!is.na(inf_score)) %>%
-  pivot_longer(cols = 1:8) %>%
-  select(immucan_id, name, value, inf_score) %>%
-  ggplot(aes(x = inf_score,y = value))+
-  geom_boxplot()+
-    facet_wrap(.~name)+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
-  ggpubr::stat_compare_means()
-```
-
-
 
 
 # 2A diff abundance histology - move to supplements
@@ -781,6 +703,7 @@ p
 # 2F tumor types imaging modules
 we will not subtype LUSC samples because we have too few samples
 ```{r}
+library(ComplexHeatmap)
 ttypes <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/tumor_subtypes.csv")
 
 dat_z <- ttypes %>% left_join(modules, "immucan_id")
@@ -794,7 +717,7 @@ luad_dat <- dat_z %>%
   
 lusc_dat <- dat_z %>%
   filter(subtype %in% c("classical","primitive","basal", "secretory")) %>%
-  mutate(across(.cols = -subtype,scale)) %>%
+  #mutate(across(.cols = -subtype,scale)) %>%
   group_by(subtype) %>%
   summarise(across(.fns = mean))
 
@@ -818,6 +741,14 @@ h <- ComplexHeatmap::Heatmap(t( as.matrix(luad_dat[,-1])),
                              name = "mean z_score",
                              top_annotation = ha)
 
+z_col <- circlize::colorRamp2(c(-1, 0, 1), c("#2166AC", "white", "#B2182B"))
+
+h <- ComplexHeatmap::Heatmap(
+  t(as.matrix(luad_dat[,-1])),
+  name = "mean z_score",
+  col  = z_col,
+  top_annotation = ha
+)
 
 pdf(file = paste0(out_folder,"imaging_modules_for_tumor_subtypes_LUAD.pdf"), width = 4.5, height = 4)
 draw(h, merge_legend = TRUE)
@@ -1123,7 +1054,7 @@ p1 <- result$plot+
   ggtitle("Current smokers vs Non-smokers")+
   ylab("Imaging modules")+
   theme(axis.title.y = element_text(size= 14))+
-  coord_cartesian(xlim = c(-0.8,0.9))
+  coord_cartesian(xlim = c(-0.6,0.6))
 p1
 
 cur_order <- result$data$name

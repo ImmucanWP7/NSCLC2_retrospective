@@ -334,7 +334,7 @@ p2
 sigs
 ```
 
-# S3B TCGA across stages adenocarcinoma to be deleted 
+#  to be deleted - S3B TCGA across stages adenocarcinoma
 ```{r}
 tcga <- read.csv(paste0(mount_path,"data/RNAseq/luad_tcga_pan_can_atlas_2018/luad_tcga_pan_can_atlas_2018/xcell_between_samples_scores.csv"), sep = "\t")
 tcga_patient <- read.csv(paste0(mount_path,"data/RNAseq/luad_tcga_pan_can_atlas_2018/luad_tcga_pan_can_atlas_2018/data_clinical_patient.txt"), sep = "\t")
@@ -410,7 +410,7 @@ tcga %>%
 
 
 
-# deconvolution of RNAseq - to be deleted
+# to be deleted - deconvolution of RNAseq
 ```{r, fig.width=25, fig.height=8}
 dat <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/RNAseq/xcell_results/xCell_TPM_norm_for_xCell_xCell_1129103125.txt", sep = "\t")
 dat_t <- as.data.frame(t(dat[,-1]))
@@ -495,7 +495,7 @@ dat_t %>%
 
 
 
-# diff abundance stages bubble plot - to be deleted
+#  to be deleted -  diff abundance stages bubble plot
 not in paper
 here we will estimate the dispersion across the whole data set and then do the linear model of count comparison only for the groups of interest.
 ```{r, fig.height=8, fig.width=10}
@@ -851,7 +851,7 @@ p
 ```
 
 
-# S3C linear regression for stage for LUSC - to be deleted
+#  to be deleted -  S3C linear regression for stage for LUSC
 
 ```{r, fig.width=10}
 library(purrr)
@@ -1024,7 +1024,7 @@ dat_z <- left_join(rna, traits, "immucan_id") %>%
   filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
   pivot_longer(cols = 1:29)
 
-result <- lollipop_plot(dat_z, "never_vs_current_smoker", "Current smoker", "Non-smoker",col_A = "blue", col_B = "cyan")
+result <- lollipop_plot(dat_z, "never_vs_current_smoker", "Current smoker", "Non-smoker",col_A = "blue", col_B = "cyan", zscore_data = TRUE)
 order_vec <- result$data %>%
   arrange(delta_z) %>%
   pull(name)
@@ -1040,7 +1040,7 @@ p4
 
 ### RNA modules never vs ex
 ```{r}
-result <- lollipop_plot(dat_z, "never_vs_Ex_smoker", "Ex-smoker", "Non-smoker", order = FALSE, order_vec = order_vec)
+result <- lollipop_plot(dat_z, "never_vs_Ex_smoker", "Ex-smoker", "Non-smoker",col_A = "lightblue",col_B ="cyan", order = FALSE, order_vec = order_vec,zscore_data = TRUE)
 p5 <- result$plot+
   theme(axis.text.y = element_blank())+
   ggtitle("Ex-smokers vs Non-smokers")
@@ -1049,10 +1049,11 @@ p5
 
 ### RNA modules current vs ex
 ```{r}
-result <- lollipop_plot(dat_z, "current_vs_Ex_smoker", "Current smoker", "Ex-smoker", order = FALSE, order_vec = order_vec)
+result <- lollipop_plot(dat_z, "current_vs_Ex_smoker", "Current smoker", "Ex-smoker", col_A = "blue",col_B ="lightblue", order = FALSE, order_vec = order_vec,zscore_data = TRUE)
 p6 <- result$plot+
   theme(axis.text.y = element_blank())+
   ggtitle("Current smokers vs Ex-smokers")
+p6
 ```
 
 ### plot RNA
@@ -1144,7 +1145,7 @@ dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
   filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
   pivot_longer(cols = 1:13)
 
-result <- lollipop_plot(dat_z, "never_vs_current_smoker", "Current smoker", "Non-smoker", col_A = "blue", col_B = "cyan")
+result <- lollipop_plot(dat_z, "never_vs_current_smoker", "Current smoker", "Non-smoker", col_A = "blue", col_B = "cyan", zscore_data = TRUE)
 p <- result$plot+
     ylab("RNA modules")+
   ggtitle("Current vs Non-smoker")+
