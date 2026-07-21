@@ -7,6 +7,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
 ```
 
 
@@ -25,11 +26,12 @@ library(ggrepel)
 
 ```{r}
 mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
-out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_4/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_4/"
 
 if (!dir.exists(out_folder)) {
   dir.create(out_folder)
 }
+source("code/lollipop_function.R")
 ```
 
 
@@ -40,9 +42,20 @@ we will load the data we generated at the beginning of figure 2
 dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/abundances_dat.rds"))
 dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
 cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
-clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/clinical.csv")
 int_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/interaction_dat.rds"))
 traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
+
+modules <- as.data.frame(readRDS( "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/patient_imaging_meta_cluster_scores.rds"))
+
+rna <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_scores.rds")
+rna$immucan_id  <- rownames(rna)
+rownames(rna) <- NULL
+
+modules <- modules  %>%
+  mutate(immucan_id = rownames(modules))
+rownames(modules) <- NULL
+
 
 # variables
 data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2))
@@ -50,12 +63,2102 @@ data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2
 
 # 4A Waterfall plot
 
-The code for this plot is here: [here](../../WES/analysis/immucan_nsclc2_wes_tableReport.Rmd)
+The code for this plot is here: [here](../../WES/analysis/oncoplot.Rmd)
+
+# 4B Mutations 
+
+```{r}
+# ============================================================
+# TME vs. driver mutation status analysis - stratified by histology
+#
+# Assumes:
+#   - One row per patient/tumor
+#   - 8 TME measurement columns, already z-scored (continuous)
+#   - 6 binary (0/1) mutation columns: EGFR, KRAS, STK11, KEAP1, PIK3CA, CDKN2A
+#   - A histology column with values "LUAD" / "LUSC"
+#
+# WHY STRATIFY BY HISTOLOGY:
+# Histology is a major confounder here, not just an imbalance issue. EGFR,
+# KRAS, STK11, and KEAP1 are classic LUAD-enriched drivers and are expected
+# to be rare/near-absent in LUSC. PIK3CA occurs only once in the LUAD
+# samples in this cohort - with essentially zero variance there it cannot
+# be tested in LUAD at all, but occurs at usable frequency in LUSC. Rather
+# than adding histology as a simple covariate (which would not solve the
+# "one mutant sample" problem for PIK3CA in LUAD, and would force one model
+# structure onto two biologically different populations), the cleanest
+# approach is to run separate gene panels per histology:
+#   - LUAD: EGFR, KRAS, STK11, KEAP1, CDKN2A   (PIK3CA excluded - see above)
+#   - LUSC: CDKN2A, PIK3CA                      (EGFR/KRAS/STK11/KEAP1 excluded
+#                                                 - expected too rare in LUSC)
+# CDKN2A is analysed in both strata since it's not histology-restricted here.
+#
+# Implements the tiered comparison strategy, run separately within each
+# histology stratum where applicable:
+#   Tier 1: EGFR vs KRAS vs driver-negative (mutually exclusive backbone) - LUAD only
+#   Tier 2: within KRAS-mutant tumors, STK11/KEAP1 co-mutation stratification - LUAD only
+#   Tier 3: multivariate model per TME outcome, all mutations in that stratum's
+#           panel as covariates (LUAD panel includes KRAS:STK11 / KRAS:KEAP1
+#           interaction terms; LUSC panel has no interaction terms specified)
+#   Tier 4: simple univariate mut-vs-wt t-test per mutation, per TME outcome,
+#           disregarding all other mutations' status. Compared side-by-side
+#           against Tier 3 in a combined heatmap, per stratum.
+#
+# NOTE on CDKN2A: in NSCLC this is frequently inactivated by homozygous
+# deletion rather than point mutation. If your CDKN2A column is derived only
+# from small-variant VCF calls, it likely undercounts true CDKN2A loss unless
+# you've merged in copy-number data.
+# ============================================================
+
+library(tidyverse)
+library(broom)
+
+# data
+dat_z <- left_join(modules, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         EGFR = ifelse(EGFR == TRUE, 1,0),
+         KRAS = ifelse(KRAS == TRUE, 1,0),
+         STK11 = ifelse(STK11 == TRUE, 1,0),
+         KEAP1 = ifelse(KEAP1 == TRUE, 1,0),
+         PIK3CA = ifelse(PIK3CA == TRUE, 1,0),
+         CDKN2A = ifelse(CDKN2A == TRUE, 1, 0))
+
+# ---- 1. Config: EDIT these to match your actual column names ----
+tme_cols  <- colnames(dat_z)[1:8]
+histology_col  <- "LUAD_vs_LUSC"                              # expects values "LUAD" / "LUSC"
+mut_cols_luad  <- c("EGFR", "KRAS", "STK11", "KEAP1", "CDKN2A", "TP53")   # PIK3CA excluded: ~1 case in LUAD
+mut_cols_lusc  <- c("CDKN2A", "PIK3CA", "TP53")                            # EGFR/KRAS/STK11/KEAP1 excluded in LUSC
+min_group_n    <- 5   # minimum mutant (or wt) count required to test a gene in a stratum
+
+df<- dat_z %>%
+  dplyr::select(all_of(c(tme_cols,mut_cols_luad, mut_cols_lusc, histology_col))) %>%
+  filter(!is.na(STK11)) # we will remove two patients that have missing genomic information
+
+# sanity checks
+stopifnot(all(tme_cols %in% names(df)))
+stopifnot(histology_col %in% names(df))
+all_mut_cols <- union(mut_cols_luad, mut_cols_lusc)
+stopifnot(all(all_mut_cols %in% names(df)))
+df[all_mut_cols] <- lapply(df[all_mut_cols], as.integer)  # ensure 0/1 numeric
+
+cat("\n--- Histology counts ---\n")
+print(table(df[[histology_col]]))
+
+df_luad <- df %>% filter(.data[[histology_col]] == "LUAD")
+df_lusc <- df %>% filter(.data[[histology_col]] == "LUSC")
+
+cat(sprintf("\nLUAD n = %d, LUSC n = %d\n", nrow(df_luad), nrow(df_lusc)))
+
+# ---- 2. Helper functions ----
+
+# Drops a mutation from testing if it has fewer than min_group_n carriers
+# (or fewer than min_group_n wt), rather than letting t.test()/lm() error out
+# or silently return an unstable estimate.
+check_group_size <- function(data, mut_var, min_n = min_group_n) {
+  tab <- table(data[[mut_var]])
+  if (length(tab) < 2 || min(tab) < min_n) {
+    message(sprintf(
+      "  -> dropping %s: insufficient variation/group size (counts: %s)",
+      mut_var, paste(names(tab), tab, sep = "=", collapse = ", ")
+    ))
+    return(FALSE)
+  }
+  TRUE
+}
 
 
-# 4B Driver mutations
+run_tier4 <- function(data, tme_cols, mut_cols) {
+  valid_muts <- mut_cols[sapply(mut_cols, function(m) check_group_size(data, m))]
 
-## LUAD
+  expand_grid(tme_var = tme_cols, mut_var = valid_muts) %>%
+    pmap_dfr(function(tme_var, mut_var) {
+      grp <- factor(data[[mut_var]], levels = c(0, 1), labels = c("wt", "mut"))
+      tt  <- t.test(data[[tme_var]] ~ grp)
+      diff_mut_minus_wt <- unname(tt$estimate["mean in group mut"] - tt$estimate["mean in group wt"])
+      tibble(tme_var = tme_var, mut_var = mut_var, estimate = diff_mut_minus_wt, p_value = tt$p.value)
+    }) %>%
+    group_by(mut_var) %>%
+    mutate(p_fdr = p.adjust(p_value, method = "BH"),
+           p_fdr = p_value) %>%
+    ungroup() %>%
+    arrange(p_fdr)
+}
+
+# ---- 4. Tier 2 (LUAD only): within KRAS-mutant tumors, STK11/KEAP1 co-mutation ----
+kras_df_luad <- df_luad %>%
+  filter(KRAS == 1) %>%
+  mutate(co_mut = if_else(STK11 == 1 | KEAP1 == 1,
+                           "STK11_or_KEAP1_altered", "KRAS_only"))
+
+cat("\n--- [LUAD] Tier 2 group sizes (within KRAS-mutant tumors) ---\n")
+print(table(kras_df_luad$co_mut))
+
+tier2_results_luad <- map_dfr(tme_cols, function(tme) {
+  wt <- t.test(kras_df_luad[[tme]] ~ kras_df_luad$co_mut)
+  tibble(tme_var = tme, wilcox_p = wt$p.value)
+})
+tier2_results_luad$fdr <- p.adjust(tier2_results_luad$wilcox_p, method = "BH")
+cat("\n--- [LUAD] Tier 2: STK11/KEAP1 co-mutation effect within KRAS-mutant tumors ---\n")
+print(tier2_results_luad)
+
+# ---- 4b. Tier 2 visualization: KRAS-only vs STK11/KEAP1-altered, per TME score ----
+# Panels ordered by FDR (strongest hits first, e.g. Cold/Neutrophils) so the
+# STK11/KEAP1 "immune-cold" signature is easy to spot at a glance.
+kras_long_luad <- kras_df_luad %>%
+  dplyr::select(all_of(tme_cols), co_mut) %>%
+  pivot_longer(cols = all_of(tme_cols), names_to = "tme_var", values_to = "z_score")
+
+tme_order_tier2 <- tier2_results_luad %>% arrange(fdr) %>% pull(tme_var)
+kras_long_luad$tme_var <- factor(kras_long_luad$tme_var, levels = tme_order_tier2)
+
+tier2_sig_labels <- tier2_results_luad %>%
+  mutate(
+    tme_var = factor(tme_var, levels = tme_order_tier2),
+    label = case_when(
+      fdr < 0.001 ~ "***",
+      fdr < 0.01  ~ "**",
+      fdr < 0.05  ~ "*",
+      TRUE        ~ paste0("p=", signif(wilcox_p, 2))
+    )
+  )
+
+tier2_plot <- ggplot(kras_long_luad, aes(x = co_mut, y = z_score, fill = co_mut)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.6) +
+  geom_jitter(width = 0.15, size = 1, alpha = 0.5) +
+  facet_wrap(~tme_var, nrow = 2) +
+  geom_text(data = tier2_sig_labels, aes(x = 1.5, y = Inf, label = label),
+            inherit.aes = FALSE, vjust = 1.5, size = 3.5) +
+  scale_fill_manual(values = c("KRAS_only" = "grey70", "STK11_or_KEAP1_altered" = "firebrick")) +
+  theme_minimal() +
+  labs(
+    title = "KRAS-mutant LUAD: STK11/KEAP1 co-mutation vs. KRAS-only",
+    subtitle = "Labels show FDR stars where significant, else raw Wilcoxon p",
+    x = NULL, y = "TME z-score", fill = "Group"
+  ) +
+  theme(legend.position = "bottom")
+
+print(tier2_plot)
+#ggsave("tme_kras_costk11keap1_boxplot.png", tier2_plot, width = 9, height = 6, dpi = 300)
+
+# ---- 4c. Encode KRAS+STK11/KEAP1 co-mutation as its own predictor ----
+# split KRAS-mutant tumors into two
+# mutually exclusive, directly-plottable predictors:
+#   - KRAS_only:          KRAS-mutant, no STK11/KEAP1 alteration
+#   - KRAS_STK11KEAP1_co: KRAS-mutant WITH STK11 and/or KEAP1 alteration
+# STK11 and KEAP1 are left as-is (they still capture any STK11/KEAP1
+# mutation regardless of KRAS status).
+#
+
+df_luad <- df_luad %>%
+  mutate(
+    KRAS_only          = as.integer(KRAS == 1 & STK11 == 0 & KEAP1 == 0),
+    KRAS_co = as.integer(KRAS == 1 & (STK11 == 1 | KEAP1 == 1))
+  )
+
+# Check whether STK11/KEAP1 mutations occur meaningfully outside the KRAS-
+# mutant group. Tested this on synthetic data: if STK11/KEAP1 occur almost
+# exclusively within KRAS-mutant tumors (as expected from the literature),
+# keeping them as standalone predictors alongside KRAS_STK11KEAP1_co makes
+# them strongly collinear with it (VIF ~6-10 in the test), which *dilutes*
+# the co-mutation signal across three correlated terms instead of clarifying
+# it - the opposite of what we want. In that case, drop the standalone
+# STK11/KEAP1 terms and let the composite carry that signal on its own.
+stk11_keap1_outside_kras <- sum((df_luad$STK11 == 1 | df_luad$KEAP1 == 1) & df_luad$KRAS == 0)
+cat(sprintf("\n[LUAD] STK11/KEAP1-mutant tumors outside the KRAS-mutant group: %d\n",
+            stk11_keap1_outside_kras))
+
+if (stk11_keap1_outside_kras < min_group_n) {
+  message("  -> STK11/KEAP1 occur almost exclusively within KRAS-mutant tumors here; ",
+          "dropping standalone STK11/KEAP1 terms to avoid collinearity with KRAS_STK11KEAP1_co.")
+  mut_cols_luad_v2 <- c("EGFR", "KRAS_only", "CDKN2A", "KRAS_STK11KEAP1_co")
+} else {
+  mut_cols_luad_v2 <- c("EGFR", "KRAS_only", "STK11", "KEAP1", "CDKN2A", "KRAS_co", "TP53")
+}
+
+# ---- 5. Tier 3 + Tier 4 (LUAD): expanded panel including the co-mutation predictor ----
+
+tier4_luad <- run_tier4(df_luad, tme_cols, mut_cols_luad_v2)
+
+pluad <- tier4_luad %>%
+ ggplot(aes(x = mut_var, y = tme_var, fill = estimate)) +
+    geom_tile() +
+    geom_text(aes(label = ifelse(p_fdr < 0.05, "*", "")), color = "black") +
+    scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+    #facet_wrap(~method) +
+    theme_minimal() +
+    labs(
+      title = "Drivers LUAD",
+      subtitle = "* = P < 0.05 ",
+      x = "Mutation", y = "Imaging module", fill = paste0("Δ z-score")
+    )+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+pluad
+
+# ============================================================
+# LUSC stratum: CDKN2A, PIK3CA
+# ============================================================
+
+tier4_lusc <- run_tier4(df_lusc, tme_cols, mut_cols_lusc)
+
+plusc <- tier4_lusc %>%
+ ggplot(aes(x = mut_var, y = tme_var, fill = estimate)) +
+    geom_tile() +
+    geom_text(aes(label = ifelse(p_fdr < 0.05, "*", "")), color = "black") +
+    scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+    #facet_wrap(~method) +
+    theme_minimal() +
+    labs(
+      title = "Drivers LUSC",
+      subtitle = "* = P < 0.05 ",
+      x = "Mutation", y = "Imaging module", fill = paste0("Δ z-score")
+    )+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+plusc
+
+p <- plot_grid(pluad, plusc,ncol= 1 )
+p
+
+ggsave(plot = p, path = out_folder,filename = "3B_Imaging_modules_drivers.pdf",width = 5, height = 8,device = cairo_pdf)
+
+#ggsave("tme_mutation_heatmap_LUSC.png", heatmap_lusc, width = 8, height = 6, dpi = 300)
+```
+# to be deleted
+## EGFR mutation
+
+```{r}
+cur_var <- "EGFR"
+var_A <- "mut"
+var_B <-  "wt"
+col_A <- "blue"
+col_B <- "red"
+title_name <- "EGFR"
+```
+
+```{r}
+table(traits$EGFR, traits$LUAD_vs_LUSC)
+```
+
+## regression based
+```{r}
+dat_z <- left_join(modules, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         EGFR = ifelse(EGFR == TRUE, 1,0),
+         KRAS = ifelse(KRAS == TRUE, 1,0),
+         STK11 = ifelse(STK11 == TRUE, 1,0),
+         KEAP1 = ifelse(KEAP1 == TRUE, 1,0),
+         PIK3CA = ifelse(PIK3CA == TRUE, 1,0),
+         CDKN2A = ifelse(CDKN2A == TRUE, 1, 0))
+
+dat_z
+
+# ============================================================
+# TME vs. driver mutation status analysis
+#
+# Assumes:
+#   - One row per patient/tumor
+#   - 8 TME measurement columns, already z-scored (continuous)
+#   - 6 binary (0/1) mutation columns: EGFR, KRAS, STK11, KEAP1, PIK3CA, CDKN2A
+#
+# Implements the tiered comparison strategy:
+#   Tier 1: EGFR vs KRAS vs driver-negative (mutually exclusive backbone)
+#   Tier 2: within KRAS-mutant tumors, STK11/KEAP1 co-mutation stratification
+#   Tier 3: multivariate model per TME outcome, all 6 mutations as covariates,
+#           with KRAS:STK11 / KRAS:KEAP1 interaction terms
+#
+# NOTE on CDKN2A: in NSCLC this is frequently inactivated by homozygous
+# deletion rather than point mutation. If your CDKN2A column is derived only
+# from small-variant VCF calls, it likely undercounts true CDKN2A loss unless
+# you've merged in copy-number data.
+# ============================================================
+
+library(tidyverse)
+library(broom)
+library(car)      # for VIF
+# install.packages(c("tidyverse", "broom", "car")) if any are missing
+
+# ---- 1. Config: EDIT these to match your actual column names ----
+data_path <- "your_data.csv"     # path to your table
+tme_cols  <- colnames(dat_z)[1:8]
+mut_cols  <- c("EGFR", "KRAS", "STK11", "KEAP1")
+
+df<- dat_z %>%
+  dplyr::select(all_of(c(tme_cols,mut_cols)))
+
+# sanity checks
+stopifnot(all(tme_cols %in% names(df)))
+stopifnot(all(mut_cols %in% names(df)))
+df[mut_cols] <- lapply(df[mut_cols], as.integer)  # ensure 0/1 numeric
+
+# ---- 2. Tier 1: EGFR vs KRAS vs driver-negative backbone ----
+df <- df %>%
+  mutate(driver_group = case_when(
+    EGFR == 1 & KRAS == 1 ~ "EGFR_KRAS_co",   # should be rare; inspect if non-trivial
+    EGFR == 1              ~ "EGFR",
+    KRAS == 1              ~ "KRAS",
+    TRUE                    ~ "driver_negative"
+  ))
+
+cat("\n--- Tier 1 group sizes ---\n")
+print(table(df$driver_group))
+
+# Overall test per TME score (Kruskal-Wallis, non-parametric, robust to small groups)
+tier1_results <- map_dfr(tme_cols, function(tme) {
+  kw <- kruskal.test(df[[tme]] ~ df$driver_group)
+  tibble(tme_var = tme, kw_p = kw$p.value)
+})
+
+
+tier1_results$kw_fdr <- p.adjust(tier1_results$kw_p, method = "BH")
+cat("\n--- Tier 1: omnibus test per TME variable ---\n")
+print(tier1_results)
+
+# Pairwise post-hoc comparisons (EGFR vs KRAS, EGFR vs driver-negative, KRAS vs driver-negative)
+tier1_pairwise <- map_dfr(tme_cols, function(tme) {
+  pw <- pairwise.wilcox.test(df[[tme]], df$driver_group, p.adjust.method = "none")
+  as.data.frame(as.table(pw$p.value)) %>%
+    dplyr::rename(group1 = Var1, group2 = Var2, p_raw = Freq) %>%
+    mutate(tme_var = tme) %>%
+    filter(!is.na(p_raw))
+})
+tier1_pairwise$p_fdr <- p.adjust(tier1_pairwise$p_raw, method = "BH")
+cat("\n--- Tier 1: pairwise comparisons (FDR-corrected) ---\n")
+print(tier1_pairwise)
+
+# ---- 3. Tier 2: within KRAS-mutant tumors, STK11/KEAP1 co-mutation ----
+kras_df <- df %>%
+  filter(KRAS == 1) %>%
+  mutate(co_mut = if_else(STK11 == 1 | KEAP1 == 1,
+                           "STK11_or_KEAP1_altered", "KRAS_only"))
+
+cat("\n--- Tier 2 group sizes (within KRAS-mutant tumors) ---\n")
+print(table(kras_df$co_mut))
+
+tier2_results <- map_dfr(tme_cols, function(tme) {
+  wt <- wilcox.test(kras_df[[tme]] ~ kras_df$co_mut)
+  tibble(tme_var = tme, wilcox_p = wt$p.value)
+})
+tier2_results$fdr <- p.adjust(tier2_results$wilcox_p, method = "BH")
+cat("\n--- Tier 2: STK11/KEAP1 co-mutation effect within KRAS-mutant tumors ---\n")
+print(tier2_results)
+
+# ---- 4. Tier 3: multivariate model, all 6 mutations, per TME outcome ----
+# KRAS:STK11 and KRAS:KEAP1 interactions directly test whether co-mutation
+# modifies the KRAS-associated TME effect (rather than relying only on the
+# Tier 2 subgroup test).
+tier3_results <- map_dfr(tme_cols, function(tme) {
+  form <- as.formula(paste0(
+    tme, " ~ EGFR + KRAS + STK11 + KEAP1 + PIK3CA + CDKN2A + KRAS:STK11 + KRAS:KEAP1"
+  ))
+  fit <- lm(form, data = df)
+  tidy(fit) %>% mutate(tme_var = tme)
+})
+
+tier3_results <- tier3_results %>%
+  filter(term != "(Intercept)") %>%
+  group_by(term) %>%
+  mutate(p_fdr = p.adjust(p.value, method = "BH")) %>%
+  ungroup() %>%
+  arrange(p_fdr)
+
+cat("\n--- Tier 3: multivariate model results (FDR-corrected within each term) ---\n")
+print(tier3_results, n = Inf)
+
+# ---- 5. Diagnostics ----
+cat("\n--- Mutation frequencies (check for underpowered subgroups) ---\n")
+print(sapply(df[mut_cols], table))
+
+cat("\n--- Multicollinearity check (VIF), example on first TME variable ---\n")
+example_fit <- lm(
+  as.formula(paste0(tme_cols[1], " ~ EGFR + KRAS + STK11 + KEAP1 + PIK3CA + CDKN2A")),
+  data = df
+)
+print(vif(example_fit))
+
+# ---- 6. Visualization: effect size heatmap (main effects only) ----
+heatmap_plot <- tier3_results %>%
+  filter(!str_detect(term, ":")) %>%
+  ggplot(aes(x = term, y = tme_var, fill = estimate)) +
+  geom_tile() +
+  geom_text(aes(label = ifelse(p.value < 0.05, "*", "")), color = "black") +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+  theme_minimal() +
+  labs(
+    title = "Mutation-associated TME effect sizes",
+    subtitle = "* = P < 0.05 (within term, across TME variables)",
+    x = "Mutation", y = "TME measurement", fill = "Beta"
+  )
+
+print(heatmap_plot)
+#ggsave("tme_mutation_heatmap.png", heatmap_plot, width = 7, height = 6, dpi = 300)
+
+
+# ---- 7. Tier 4: univariate mut-vs-wt t-test per mutation, ignoring other mutations ----
+# Uses Welch's t-test (unequal variance, the standard default) since the TME
+# scores are z-scored/normally distributed. Each mutation is tested completely
+# independently of the other 5 - no adjustment, no interaction terms.
+tier4_results <- expand_grid(tme_var = tme_cols, mut_var = mut_cols) %>%
+  pmap_dfr(function(tme_var, mut_var) {
+    grp <- factor(df[[mut_var]], levels = c(0, 1), labels = c("wt", "mut"))
+    tt  <- t.test(df[[tme_var]] ~ grp)
+    diff_mut_minus_wt <- unname(tt$estimate["mean in group mut"] - tt$estimate["mean in group wt"])
+    tibble(tme_var = tme_var, mut_var = mut_var,
+           estimate = diff_mut_minus_wt, p_value = tt$p.value)
+  })
+ 
+tier4_results <- tier4_results %>%
+  group_by(mut_var) %>%
+  mutate(p_fdr = p.adjust(p_value, method = "BH")) %>%
+  ungroup() %>%
+  arrange(p_fdr)
+ 
+cat("\n--- Tier 4: univariate mut-vs-wt t-tests (FDR-corrected within each mutation) ---\n")
+print(tier4_results, n = Inf)
+ 
+# ---- 8. Tier 3 vs Tier 4 comparison heatmap ----
+# Same color scale and gene ordering across both panels so differences are
+# purely due to adjustment (Tier 3, multivariate) vs. no adjustment (Tier 4,
+# univariate). Large discrepancies for a gene point to confounding by its
+# co-occurring mutations (e.g. KRAS appearing "significant" alone but losing
+# signal once STK11/KEAP1 co-mutation is accounted for, or vice versa).
+comparison_effects <- bind_rows(
+  tier3_results %>%
+    filter(!str_detect(term, ":")) %>%
+    transmute(method = "Multivariate LM (Tier 3)", mut_var = term, tme_var, estimate, p_fdr),
+  tier4_results %>%
+    transmute(method = "Univariate t-test (Tier 4)", mut_var, tme_var, estimate, p_fdr)
+)
+ 
+comparison_effects$mut_var <- factor(comparison_effects$mut_var, levels = mut_cols)
+comparison_effects$method  <- factor(comparison_effects$method,
+                                      levels = c("Univariate t-test (Tier 4)", "Multivariate LM (Tier 3)"))
+ 
+comparison_heatmap <- comparison_effects %>%
+  ggplot(aes(x = mut_var, y = tme_var, fill = estimate)) +
+  geom_tile() +
+  geom_text(aes(label = ifelse(p_fdr < 0.05, "*", "")), color = "black") +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+  facet_wrap(~method) +
+  theme_minimal() +
+  labs(
+    title = "TME effect sizes: univariate t-test vs. multivariate linear model",
+    subtitle = "* = FDR < 0.05 (within mutation/term, across TME variables)",
+    x = "Mutation", y = "TME measurement", fill = "Effect\n(mut - wt / beta)"
+  )
+print(comparison_heatmap)
+```
+
+
+```{r}
+# ============================================================
+# TME vs. driver mutation status analysis - stratified by histology
+#
+# Assumes:
+#   - One row per patient/tumor
+#   - 8 TME measurement columns, already z-scored (continuous)
+#   - 6 binary (0/1) mutation columns: EGFR, KRAS, STK11, KEAP1, PIK3CA, CDKN2A
+#   - A histology column with values "LUAD" / "LUSC"
+#
+# WHY STRATIFY BY HISTOLOGY:
+# Histology is a major confounder here, not just an imbalance issue. EGFR,
+# KRAS, STK11, and KEAP1 are classic LUAD-enriched drivers and are expected
+# to be rare/near-absent in LUSC. PIK3CA occurs only once in the LUAD
+# samples in this cohort - with essentially zero variance there it cannot
+# be tested in LUAD at all, but occurs at usable frequency in LUSC. Rather
+# than adding histology as a simple covariate (which would not solve the
+# "one mutant sample" problem for PIK3CA in LUAD, and would force one model
+# structure onto two biologically different populations), the cleanest
+# approach is to run separate gene panels per histology:
+#   - LUAD: EGFR, KRAS, STK11, KEAP1, CDKN2A   (PIK3CA excluded - see above)
+#   - LUSC: CDKN2A, PIK3CA                      (EGFR/KRAS/STK11/KEAP1 excluded
+#                                                 - expected too rare in LUSC)
+# CDKN2A is analysed in both strata since it's not histology-restricted here.
+#
+# Implements the tiered comparison strategy, run separately within each
+# histology stratum where applicable:
+#   Tier 1: EGFR vs KRAS vs driver-negative (mutually exclusive backbone) - LUAD only
+#   Tier 2: within KRAS-mutant tumors, STK11/KEAP1 co-mutation stratification - LUAD only
+#   Tier 3: multivariate model per TME outcome, all mutations in that stratum's
+#           panel as covariates (LUAD panel includes KRAS:STK11 / KRAS:KEAP1
+#           interaction terms; LUSC panel has no interaction terms specified)
+#   Tier 4: simple univariate mut-vs-wt t-test per mutation, per TME outcome,
+#           disregarding all other mutations' status. Compared side-by-side
+#           against Tier 3 in a combined heatmap, per stratum.
+#
+# NOTE on CDKN2A: in NSCLC this is frequently inactivated by homozygous
+# deletion rather than point mutation. If your CDKN2A column is derived only
+# from small-variant VCF calls, it likely undercounts true CDKN2A loss unless
+# you've merged in copy-number data.
+# ============================================================
+
+library(tidyverse)
+library(broom)
+library(car)      # for VIF
+# install.packages(c("tidyverse", "broom", "car")) if any are missing
+
+# ---- 1. Config: EDIT these to match your actual column names ----
+tme_cols  <- colnames(dat_z)[1:8]
+histology_col  <- "LUAD_vs_LUSC"                              # expects values "LUAD" / "LUSC"
+mut_cols_luad  <- c("EGFR", "KRAS", "STK11", "KEAP1", "CDKN2A")   # PIK3CA excluded: ~1 case in LUAD
+mut_cols_lusc  <- c("CDKN2A", "PIK3CA")                            # EGFR/KRAS/STK11/KEAP1 excluded in LUSC
+min_group_n    <- 5   # minimum mutant (or wt) count required to test a gene in a stratum
+
+df<- dat_z %>%
+  dplyr::select(all_of(c(tme_cols,mut_cols_luad,mut_cols_lusc, histology_col)))
+
+# sanity checks
+stopifnot(all(tme_cols %in% names(df)))
+stopifnot(histology_col %in% names(df))
+all_mut_cols <- union(mut_cols_luad, mut_cols_lusc)
+stopifnot(all(all_mut_cols %in% names(df)))
+df[all_mut_cols] <- lapply(df[all_mut_cols], as.integer)  # ensure 0/1 numeric
+
+cat("\n--- Histology counts ---\n")
+print(table(df[[histology_col]]))
+
+df_luad <- df %>% filter(.data[[histology_col]] == "LUAD")
+df_lusc <- df %>% filter(.data[[histology_col]] == "LUSC")
+
+cat(sprintf("\nLUAD n = %d, LUSC n = %d\n", nrow(df_luad), nrow(df_lusc)))
+
+# ---- 2. Helper functions ----
+
+# Drops a mutation from testing if it has fewer than min_group_n carriers
+# (or fewer than min_group_n wt), rather than letting t.test()/lm() error out
+# or silently return an unstable estimate.
+check_group_size <- function(data, mut_var, min_n = min_group_n) {
+  tab <- table(data[[mut_var]])
+  if (length(tab) < 2 || min(tab) < min_n) {
+    message(sprintf(
+      "  -> dropping %s: insufficient variation/group size (counts: %s)",
+      mut_var, paste(names(tab), tab, sep = "=", collapse = ", ")
+    ))
+    return(FALSE)
+  }
+  TRUE
+}
+
+run_tier3 <- function(data, tme_cols, mut_cols, interaction_terms = character(0), hist = "LUAD") {
+  if(hist == "LUAD"){
+    valid_muts <- mut_cols[sapply(mut_cols, function(m) check_group_size(data, m))]
+    valid_interactions <- interaction_terms[sapply(interaction_terms, function(term) {
+      parts <- str_split(term, ":")[[1]]
+      all(parts %in% valid_muts)
+    })]
+    rhs <- paste(c(valid_muts, valid_interactions), collapse = " + ")} else {
+      rhs <- paste(c(mut_cols_lusc), collapse = " + ")
+    }
+
+
+  map_dfr(tme_cols, function(tme) {
+    form <- as.formula(paste0(tme, " ~ ", rhs))
+    fit <- lm(form, data = data)
+    tidy(fit) %>% mutate(tme_var = tme)
+  }) %>%
+    filter(term != "(Intercept)") %>%
+    group_by(term) %>%
+    mutate(p_value = p.value,
+           p_fdr = p.adjust(p.value, method = "BH")) %>%
+    ungroup() %>%
+    arrange(p_fdr)
+}
+
+run_tier4 <- function(data, tme_cols, mut_cols) {
+  valid_muts <- mut_cols[sapply(mut_cols, function(m) check_group_size(data, m))]
+
+  expand_grid(tme_var = tme_cols, mut_var = valid_muts) %>%
+    pmap_dfr(function(tme_var, mut_var) {
+      grp <- factor(data[[mut_var]], levels = c(0, 1), labels = c("wt", "mut"))
+      tt  <- t.test(data[[tme_var]] ~ grp)
+      diff_mut_minus_wt <- unname(tt$estimate["mean in group mut"] - tt$estimate["mean in group wt"])
+      tibble(tme_var = tme_var, mut_var = mut_var, estimate = diff_mut_minus_wt, p_value = tt$p.value)
+    }) %>%
+    group_by(mut_var) %>%
+    mutate(p_fdr = p.adjust(p_value, method = "BH")) %>%
+    ungroup() %>%
+    arrange(p_fdr)
+}
+
+make_comparison_heatmap <- function(tier3_res, tier4_res, mut_order, title_suffix) {
+  combined <- bind_rows(
+    tier3_res %>%
+      filter(!str_detect(term, ":")) %>%
+      transmute(method = "Multivariate LM", mut_var = term, tme_var, estimate, p_fdr, p_value),
+    tier4_res %>%
+      transmute(method = "Univariate t-test", mut_var, tme_var, estimate, p_fdr, p_value)
+  )
+  #combined$mut_var <- factor(combined$mut_var, levels = mut_order)
+  #combined$method  <- factor(combined$method, levels = c("Univariate t-test", "Multivariate LM"))
+
+  combined %>%
+    ggplot(aes(x = mut_var, y = tme_var, fill = estimate)) +
+    geom_tile() +
+    geom_text(aes(label = ifelse(p_value < 0.05, "*", "")), color = "black") +
+    scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+    facet_wrap(~method) +
+    theme_minimal() +
+    labs(
+      title = paste0("TME effect sizes: univariate vs. multivariate (", title_suffix, ")"),
+      subtitle = "* = p < 0.05 (within mutation/term, across TME variables)",
+      x = "Mutation", y = "TME measurement", fill = "Effect"
+    )
+}
+
+# ============================================================
+# LUAD stratum: EGFR, KRAS, STK11, KEAP1, CDKN2A
+# ============================================================
+
+# ---- 3. Tier 1 (LUAD only): EGFR vs KRAS vs driver-negative backbone ----
+df_luad <- df_luad %>%
+  mutate(driver_group = case_when(
+    EGFR == 1 & KRAS == 1 ~ "EGFR_KRAS_co",   # should be rare; inspect if non-trivial
+    EGFR == 1              ~ "EGFR",
+    KRAS == 1              ~ "KRAS",
+    TRUE                    ~ "driver_negative"
+  ))
+
+cat("\n--- [LUAD] Tier 1 group sizes ---\n")
+print(table(df_luad$driver_group))
+
+tier1_results_luad <- map_dfr(tme_cols, function(tme) {
+  kw <- kruskal.test(df_luad[[tme]] ~ df_luad$driver_group)
+  tibble(tme_var = tme, kw_p = kw$p.value)
+})
+tier1_results_luad$kw_fdr <- p.adjust(tier1_results_luad$kw_p, method = "BH")
+cat("\n--- [LUAD] Tier 1: omnibus test per TME variable ---\n")
+print(tier1_results_luad)
+
+tier1_pairwise_luad <- map_dfr(tme_cols, function(tme) {
+  pw <- pairwise.wilcox.test(df_luad[[tme]], df_luad$driver_group, p.adjust.method = "none")
+  as.data.frame(as.table(pw$p.value)) %>%
+    dplyr::rename(group1 = Var1, group2 = Var2, p_raw = Freq) %>%
+    mutate(tme_var = tme) %>%
+    filter(!is.na(p_raw))
+})
+tier1_pairwise_luad$p_fdr <- p.adjust(tier1_pairwise_luad$p_raw, method = "BH")
+cat("\n--- [LUAD] Tier 1: pairwise comparisons (FDR-corrected) ---\n")
+print(tier1_pairwise_luad)
+
+# ---- 4. Tier 2 (LUAD only): within KRAS-mutant tumors, STK11/KEAP1 co-mutation ----
+kras_df_luad <- df_luad %>%
+  filter(KRAS == 1) %>%
+  mutate(co_mut = if_else(STK11 == 1 | KEAP1 == 1,
+                           "STK11_or_KEAP1_altered", "KRAS_only"))
+
+cat("\n--- [LUAD] Tier 2 group sizes (within KRAS-mutant tumors) ---\n")
+print(table(kras_df_luad$co_mut))
+
+tier2_results_luad <- map_dfr(tme_cols, function(tme) {
+  wt <- t.test(kras_df_luad[[tme]] ~ kras_df_luad$co_mut)
+  tibble(tme_var = tme, p = wt$p.value)
+})
+tier2_results_luad$fdr <- p.adjust(tier2_results_luad$p, method = "BH")
+cat("\n--- [LUAD] Tier 2: STK11/KEAP1 co-mutation effect within KRAS-mutant tumors ---\n")
+print(tier2_results_luad)
+
+kras_long_luad <- kras_df_luad %>%
+  dplyr::select(all_of(tme_cols), co_mut) %>%
+  pivot_longer(cols = all_of(tme_cols), names_to = "tme_var", values_to = "z_score")
+ 
+tme_order_tier2 <- tier2_results_luad %>% arrange(fdr) %>% pull(tme_var)
+kras_long_luad$tme_var <- factor(kras_long_luad$tme_var, levels = tme_order_tier2)
+ 
+tier2_sig_labels <- tier2_results_luad %>%
+  mutate(
+    tme_var = factor(tme_var, levels = tme_order_tier2),
+    label = case_when(
+      fdr < 0.001 ~ "***",
+      fdr < 0.01  ~ "**",
+      fdr < 0.05  ~ "*",
+      TRUE        ~ paste0("p=", signif(p, 2))
+    )
+  )
+ 
+tier2_plot <- ggplot(kras_long_luad, aes(x = co_mut, y = z_score, fill = co_mut)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.6) +
+  geom_jitter(width = 0.15, size = 1, alpha = 0.5) +
+  facet_wrap(~tme_var, nrow = 2) +
+  geom_text(data = tier2_sig_labels, aes(x = 1.5, y = Inf, label = label),
+            inherit.aes = FALSE, vjust = 1.5, size = 3.5) +
+  scale_fill_manual(values = c("KRAS_only" = "grey70", "STK11_or_KEAP1_altered" = "firebrick")) +
+  theme_minimal() +
+  labs(
+    title = "KRAS-mutant LUAD: STK11/KEAP1 co-mutation vs. KRAS-only",
+    subtitle = "Labels show FDR stars where significant, else raw Wilcoxon p",
+    x = NULL, y = "TME z-score", fill = "Group"
+  ) +
+  theme(legend.position = "bottom")
+ 
+print(tier2_plot)
+
+# ---- 5. Tier 3 + Tier 4 (LUAD): all 5 LUAD-panel mutations ----
+tier3_luad <- run_tier3(df_luad, tme_cols, mut_cols_luad,
+                         interaction_terms = c("KRAS:STK11", "KRAS:KEAP1"))
+cat("\n--- [LUAD] Tier 3: multivariate model results (FDR-corrected within each term) ---\n")
+print(tier3_luad, n = Inf)
+
+tier4_luad <- run_tier4(df_luad, tme_cols, mut_cols_luad)
+cat("\n--- [LUAD] Tier 4: univariate mut-vs-wt t-tests (FDR-corrected within each mutation) ---\n")
+print(tier4_luad, n = Inf)
+
+cat("\n--- [LUAD] Multicollinearity check (VIF), example on first TME variable ---\n")
+example_fit_luad <- lm(
+  as.formula(paste0(tme_cols[1], " ~ ", paste(mut_cols_luad, collapse = " + "))),
+  data = df_luad
+)
+print(vif(example_fit_luad))
+
+heatmap_luad <- make_comparison_heatmap(tier3_luad, tier4_luad, mut_cols_luad, "LUAD")
+print(heatmap_luad)
+#ggsave("tme_mutation_heatmap_LUAD.png", heatmap_luad, width = 10, height = 6, dpi = 300)
+
+# ============================================================
+# LUSC stratum: CDKN2A, PIK3CA
+# (No EGFR/KRAS backbone here - Tier 1/2 don't apply to LUSC)
+# ============================================================
+
+cat("\n--- [LUSC] mutation counts ---\n")
+print(sapply(df_lusc[mut_cols_lusc], table))
+
+tier3_lusc <- run_tier3(df_lusc, tme_cols, mut_cols_lusc, interaction_terms = character(0), hist = "LUSC")
+cat("\n--- [LUSC] Tier 3: multivariate model results (FDR-corrected within each term) ---\n")
+print(tier3_lusc, n = Inf)
+
+tier4_lusc <- run_tier4(df_lusc, tme_cols, mut_cols_lusc)
+cat("\n--- [LUSC] Tier 4: univariate mut-vs-wt t-tests (FDR-corrected within each mutation) ---\n")
+print(tier4_lusc, n = Inf)
+
+heatmap_lusc <- make_comparison_heatmap(tier3_lusc, tier4_lusc, mut_cols_lusc, "LUSC")
+print(heatmap_lusc)
+#ggsave("tme_mutation_heatmap_LUSC.png", heatmap_lusc, width = 8, height = 6, dpi = 300)
+```
+
+
+## reg based final
+
+```{r}
+# ============================================================
+# TME vs. driver mutation status analysis - stratified by histology
+#
+# Assumes:
+#   - One row per patient/tumor
+#   - 8 TME measurement columns, already z-scored (continuous)
+#   - 6 binary (0/1) mutation columns: EGFR, KRAS, STK11, KEAP1, PIK3CA, CDKN2A
+#   - A histology column with values "LUAD" / "LUSC"
+#
+# WHY STRATIFY BY HISTOLOGY:
+# Histology is a major confounder here, not just an imbalance issue. EGFR,
+# KRAS, STK11, and KEAP1 are classic LUAD-enriched drivers and are expected
+# to be rare/near-absent in LUSC. PIK3CA occurs only once in the LUAD
+# samples in this cohort - with essentially zero variance there it cannot
+# be tested in LUAD at all, but occurs at usable frequency in LUSC. Rather
+# than adding histology as a simple covariate (which would not solve the
+# "one mutant sample" problem for PIK3CA in LUAD, and would force one model
+# structure onto two biologically different populations), the cleanest
+# approach is to run separate gene panels per histology:
+#   - LUAD: EGFR, KRAS, STK11, KEAP1, CDKN2A   (PIK3CA excluded - see above)
+#   - LUSC: CDKN2A, PIK3CA                      (EGFR/KRAS/STK11/KEAP1 excluded
+#                                                 - expected too rare in LUSC)
+# CDKN2A is analysed in both strata since it's not histology-restricted here.
+#
+# Implements the tiered comparison strategy, run separately within each
+# histology stratum where applicable:
+#   Tier 1: EGFR vs KRAS vs driver-negative (mutually exclusive backbone) - LUAD only
+#   Tier 2: within KRAS-mutant tumors, STK11/KEAP1 co-mutation stratification - LUAD only
+#   Tier 3: multivariate model per TME outcome, all mutations in that stratum's
+#           panel as covariates (LUAD panel includes KRAS:STK11 / KRAS:KEAP1
+#           interaction terms; LUSC panel has no interaction terms specified)
+#   Tier 4: simple univariate mut-vs-wt t-test per mutation, per TME outcome,
+#           disregarding all other mutations' status. Compared side-by-side
+#           against Tier 3 in a combined heatmap, per stratum.
+#
+# NOTE on CDKN2A: in NSCLC this is frequently inactivated by homozygous
+# deletion rather than point mutation. If your CDKN2A column is derived only
+# from small-variant VCF calls, it likely undercounts true CDKN2A loss unless
+# you've merged in copy-number data.
+# ============================================================
+
+library(tidyverse)
+library(broom)
+library(car)      # for VIF
+# install.packages(c("tidyverse", "broom", "car")) if any are missing
+
+# ---- 1. Config: EDIT these to match your actual column names ----
+tme_cols  <- colnames(dat_z)[1:8]
+histology_col  <- "LUAD_vs_LUSC"                              # expects values "LUAD" / "LUSC"
+mut_cols_luad  <- c("EGFR", "KRAS", "STK11", "KEAP1", "CDKN2A")   # PIK3CA excluded: ~1 case in LUAD
+mut_cols_lusc  <- c("CDKN2A", "PIK3CA")                            # EGFR/KRAS/STK11/KEAP1 excluded in LUSC
+min_group_n    <- 5   # minimum mutant (or wt) count required to test a gene in a stratum
+
+df<- dat_z %>%
+  dplyr::select(all_of(c(tme_cols,mut_cols_luad, mut_cols_lusc, histology_col))) %>%
+  filter(!is.na(STK11)) # we will remove two patients that have missing genomic information
+
+# sanity checks
+stopifnot(all(tme_cols %in% names(df)))
+stopifnot(histology_col %in% names(df))
+all_mut_cols <- union(mut_cols_luad, mut_cols_lusc)
+stopifnot(all(all_mut_cols %in% names(df)))
+df[all_mut_cols] <- lapply(df[all_mut_cols], as.integer)  # ensure 0/1 numeric
+
+cat("\n--- Histology counts ---\n")
+print(table(df[[histology_col]]))
+
+df_luad <- df %>% filter(.data[[histology_col]] == "LUAD")
+df_lusc <- df %>% filter(.data[[histology_col]] == "LUSC")
+
+cat(sprintf("\nLUAD n = %d, LUSC n = %d\n", nrow(df_luad), nrow(df_lusc)))
+
+# ---- 2. Helper functions ----
+
+# Drops a mutation from testing if it has fewer than min_group_n carriers
+# (or fewer than min_group_n wt), rather than letting t.test()/lm() error out
+# or silently return an unstable estimate.
+check_group_size <- function(data, mut_var, min_n = min_group_n) {
+  tab <- table(data[[mut_var]])
+  if (length(tab) < 2 || min(tab) < min_n) {
+    message(sprintf(
+      "  -> dropping %s: insufficient variation/group size (counts: %s)",
+      mut_var, paste(names(tab), tab, sep = "=", collapse = ", ")
+    ))
+    return(FALSE)
+  }
+  TRUE
+}
+
+
+run_tier3 <- function(data, tme_cols, mut_cols) {
+  valid_muts <- mut_cols[sapply(mut_cols, function(m) check_group_size(data, m))]
+  
+  rhs <- paste(c(valid_muts), collapse = " + ")
+  
+  map_dfr(tme_cols, function(tme) {
+    form <- as.formula(paste0(tme, " ~ ", rhs))
+    fit <- lm(form, data = data)
+    tidy(fit) %>% mutate(tme_var = tme)
+  }) %>%
+    filter(term != "(Intercept)") %>%
+    group_by(term) %>%
+    mutate(p_fdr = p.adjust(p.value, method = "BH"),
+           p_fdr = p.value) %>%
+    ungroup() %>%
+    arrange(p_fdr)
+}
+
+run_tier4 <- function(data, tme_cols, mut_cols) {
+  valid_muts <- mut_cols[sapply(mut_cols, function(m) check_group_size(data, m))]
+
+  expand_grid(tme_var = tme_cols, mut_var = valid_muts) %>%
+    pmap_dfr(function(tme_var, mut_var) {
+      grp <- factor(data[[mut_var]], levels = c(0, 1), labels = c("wt", "mut"))
+      tt  <- t.test(data[[tme_var]] ~ grp)
+      diff_mut_minus_wt <- unname(tt$estimate["mean in group mut"] - tt$estimate["mean in group wt"])
+      tibble(tme_var = tme_var, mut_var = mut_var, estimate = diff_mut_minus_wt, p_value = tt$p.value)
+    }) %>%
+    group_by(mut_var) %>%
+    mutate(p_fdr = p.adjust(p_value, method = "BH"),
+           p_fdr = p_value) %>%
+    ungroup() %>%
+    arrange(p_fdr)
+}
+
+make_comparison_heatmap <- function(tier3_res, tier4_res, mut_order, title_suffix) {
+  combined <- bind_rows(
+    tier3_res %>%
+      filter(!str_detect(term, ":")) %>%
+      transmute(method = "Multivariate LM", mut_var = term, tme_var, estimate, p_fdr),
+    tier4_res %>%
+      transmute(method = "Univariate t-test", mut_var, tme_var, estimate, p_fdr)
+  )
+  combined$mut_var <- factor(combined$mut_var, levels = mut_order)
+  combined$method  <- factor(combined$method, levels = c("Univariate t-test", "Multivariate LM"))
+
+  combined %>%
+    ggplot(aes(x = mut_var, y = tme_var, fill = estimate)) +
+    geom_tile() +
+    geom_text(aes(label = ifelse(p_fdr < 0.05, "*", "")), color = "black") +
+    scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+    facet_wrap(~method) +
+    theme_minimal() +
+    labs(
+      title = paste0("TME effect sizes: univariate vs. multivariate (", title_suffix, ")"),
+      subtitle = "* = P < 0.05 (within mutation/term, across TME variables)",
+      x = "Mutation", y = "TME measurement", fill = "Effect"
+    )
+}
+
+# ============================================================
+# LUAD stratum: EGFR, KRAS, STK11, KEAP1, CDKN2A
+# ============================================================
+
+# ---- 3. Tier 1 (LUAD only): EGFR vs KRAS vs driver-negative backbone ----
+df_luad <- df_luad %>%
+  mutate(driver_group = case_when(
+    EGFR == 1 & KRAS == 1 ~ "EGFR_KRAS_co",   # should be rare; inspect if non-trivial
+    EGFR == 1              ~ "EGFR",
+    KRAS == 1              ~ "KRAS",
+    TRUE                    ~ "driver_negative"
+  ))
+
+cat("\n--- [LUAD] Tier 1 group sizes ---\n")
+print(table(df_luad$driver_group))
+
+tier1_results_luad <- map_dfr(tme_cols, function(tme) {
+  kw <- kruskal.test(df_luad[[tme]] ~ df_luad$driver_group)
+  tibble(tme_var = tme, kw_p = kw$p.value)
+})
+tier1_results_luad$kw_fdr <- p.adjust(tier1_results_luad$kw_p, method = "BH")
+cat("\n--- [LUAD] Tier 1: omnibus test per TME variable ---\n")
+print(tier1_results_luad)
+
+tier1_pairwise_luad <- map_dfr(tme_cols, function(tme) {
+  pw <- pairwise.t.test(df_luad[[tme]], df_luad$driver_group, p.adjust.method = "none")
+  as.data.frame(as.table(pw$p.value)) %>%
+    dplyr::rename(group1 = Var1, group2 = Var2, p_raw = Freq) %>%
+    mutate(tme_var = tme) %>%
+    filter(!is.na(p_raw))
+})
+tier1_pairwise_luad$p_fdr <- p.adjust(tier1_pairwise_luad$p_raw, method = "BH")
+cat("\n--- [LUAD] Tier 1: pairwise comparisons (FDR-corrected) ---\n")
+print(tier1_pairwise_luad)
+
+# ---- 4. Tier 2 (LUAD only): within KRAS-mutant tumors, STK11/KEAP1 co-mutation ----
+kras_df_luad <- df_luad %>%
+  filter(KRAS == 1) %>%
+  mutate(co_mut = if_else(STK11 == 1 | KEAP1 == 1,
+                           "STK11_or_KEAP1_altered", "KRAS_only"))
+
+cat("\n--- [LUAD] Tier 2 group sizes (within KRAS-mutant tumors) ---\n")
+print(table(kras_df_luad$co_mut))
+
+tier2_results_luad <- map_dfr(tme_cols, function(tme) {
+  wt <- t.test(kras_df_luad[[tme]] ~ kras_df_luad$co_mut)
+  tibble(tme_var = tme, wilcox_p = wt$p.value)
+})
+tier2_results_luad$fdr <- p.adjust(tier2_results_luad$wilcox_p, method = "BH")
+cat("\n--- [LUAD] Tier 2: STK11/KEAP1 co-mutation effect within KRAS-mutant tumors ---\n")
+print(tier2_results_luad)
+
+# ---- 4b. Tier 2 visualization: KRAS-only vs STK11/KEAP1-altered, per TME score ----
+# Panels ordered by FDR (strongest hits first, e.g. Cold/Neutrophils) so the
+# STK11/KEAP1 "immune-cold" signature is easy to spot at a glance.
+kras_long_luad <- kras_df_luad %>%
+  dplyr::select(all_of(tme_cols), co_mut) %>%
+  pivot_longer(cols = all_of(tme_cols), names_to = "tme_var", values_to = "z_score")
+
+tme_order_tier2 <- tier2_results_luad %>% arrange(fdr) %>% pull(tme_var)
+kras_long_luad$tme_var <- factor(kras_long_luad$tme_var, levels = tme_order_tier2)
+
+tier2_sig_labels <- tier2_results_luad %>%
+  mutate(
+    tme_var = factor(tme_var, levels = tme_order_tier2),
+    label = case_when(
+      fdr < 0.001 ~ "***",
+      fdr < 0.01  ~ "**",
+      fdr < 0.05  ~ "*",
+      TRUE        ~ paste0("p=", signif(wilcox_p, 2))
+    )
+  )
+
+tier2_plot <- ggplot(kras_long_luad, aes(x = co_mut, y = z_score, fill = co_mut)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.6) +
+  geom_jitter(width = 0.15, size = 1, alpha = 0.5) +
+  facet_wrap(~tme_var, nrow = 2) +
+  geom_text(data = tier2_sig_labels, aes(x = 1.5, y = Inf, label = label),
+            inherit.aes = FALSE, vjust = 1.5, size = 3.5) +
+  scale_fill_manual(values = c("KRAS_only" = "grey70", "STK11_or_KEAP1_altered" = "firebrick")) +
+  theme_minimal() +
+  labs(
+    title = "KRAS-mutant LUAD: STK11/KEAP1 co-mutation vs. KRAS-only",
+    subtitle = "Labels show FDR stars where significant, else raw Wilcoxon p",
+    x = NULL, y = "TME z-score", fill = "Group"
+  ) +
+  theme(legend.position = "bottom")
+
+print(tier2_plot)
+#ggsave("tme_kras_costk11keap1_boxplot.png", tier2_plot, width = 9, height = 6, dpi = 300)
+
+# ---- 4c. Encode KRAS+STK11/KEAP1 co-mutation as its own predictor ----
+# Instead of relying on KRAS:STK11 / KRAS:KEAP1 interaction terms (which are
+# underpowered in a small co-mutated subgroup and were being filtered out of
+# the comparison heatmap entirely - !str_detect(term, ":") - so that signal
+# was never actually visible there), split KRAS-mutant tumors into two
+# mutually exclusive, directly-plottable predictors:
+#   - KRAS_only:          KRAS-mutant, no STK11/KEAP1 alteration
+#   - KRAS_STK11KEAP1_co: KRAS-mutant WITH STK11 and/or KEAP1 alteration
+# STK11 and KEAP1 are left as-is (they still capture any STK11/KEAP1
+# mutation regardless of KRAS status).
+#
+# NOTE on comparator groups: this changes what "wt" means for the co-mutation
+# effect. Tier 2 (above) compares co-mutated vs. KRAS-only *within KRAS-mutant
+# tumors only* - a matched, within-driver comparison. KRAS_STK11KEAP1_co in
+# Tier 3/4 below compares co-mutated (=1) vs. everyone else (=0), i.e. EGFR-
+# mutant, driver-negative, AND KRAS-only tumors combined - a broader, less
+# matched comparator. Treat the two as complementary views, not interchangeable.
+df_luad <- df_luad %>%
+  mutate(
+    KRAS_only          = as.integer(KRAS == 1 & STK11 == 0 & KEAP1 == 0),
+    KRAS_STK11KEAP1_co = as.integer(KRAS == 1 & (STK11 == 1 | KEAP1 == 1))
+  )
+
+# Check whether STK11/KEAP1 mutations occur meaningfully outside the KRAS-
+# mutant group. Tested this on synthetic data: if STK11/KEAP1 occur almost
+# exclusively within KRAS-mutant tumors (as expected from the literature),
+# keeping them as standalone predictors alongside KRAS_STK11KEAP1_co makes
+# them strongly collinear with it (VIF ~6-10 in the test), which *dilutes*
+# the co-mutation signal across three correlated terms instead of clarifying
+# it - the opposite of what we want. In that case, drop the standalone
+# STK11/KEAP1 terms and let the composite carry that signal on its own.
+stk11_keap1_outside_kras <- sum((df_luad$STK11 == 1 | df_luad$KEAP1 == 1) & df_luad$KRAS == 0)
+cat(sprintf("\n[LUAD] STK11/KEAP1-mutant tumors outside the KRAS-mutant group: %d\n",
+            stk11_keap1_outside_kras))
+
+if (stk11_keap1_outside_kras < min_group_n) {
+  message("  -> STK11/KEAP1 occur almost exclusively within KRAS-mutant tumors here; ",
+          "dropping standalone STK11/KEAP1 terms to avoid collinearity with KRAS_STK11KEAP1_co.")
+  mut_cols_luad_v2 <- c("EGFR", "KRAS_only", "CDKN2A", "KRAS_STK11KEAP1_co")
+} else {
+  mut_cols_luad_v2 <- c("EGFR", "KRAS_only", "STK11", "KEAP1", "CDKN2A", "KRAS_STK11KEAP1_co")
+}
+
+# ---- 5. Tier 3 + Tier 4 (LUAD): expanded panel including the co-mutation predictor ----
+# No interaction terms needed anymore - the co-mutation effect is now its own
+# main-effect column and will appear directly in the heatmap.
+tier3_luad <- run_tier3(df_luad, tme_cols, mut_cols_luad_v2)
+cat("\n--- [LUAD] Tier 3: multivariate model results (FDR-corrected within each term) ---\n")
+print(tier3_luad, n = Inf)
+
+tier4_luad <- run_tier4(df_luad, tme_cols, mut_cols_luad_v2)
+cat("\n--- [LUAD] Tier 4: univariate mut-vs-wt t-tests (FDR-corrected within each mutation) ---\n")
+print(tier4_luad, n = Inf)
+
+cat("\n--- [LUAD] Multicollinearity check (VIF), example on first TME variable ---\n")
+example_fit_luad <- lm(
+  as.formula(paste0(tme_cols[1], " ~ ", paste(mut_cols_luad_v2, collapse = " + "))),
+  data = df_luad
+)
+
+heatmap_luad <- make_comparison_heatmap(tier3_luad, tier4_luad, mut_cols_luad_v2, "LUAD")
+print(heatmap_luad)
+#ggsave("tme_mutation_heatmap_LUAD.png", heatmap_luad, width = 11, height = 6, dpi = 300)
+pluad <- tier4_luad %>%
+ ggplot(aes(x = mut_var, y = tme_var, fill = estimate)) +
+    geom_tile() +
+    geom_text(aes(label = ifelse(p_fdr < 0.05, "*", "")), color = "black") +
+    scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+    #facet_wrap(~method) +
+    theme_minimal() +
+    labs(
+      title = "TME effect sizes: univariate t.test",
+      subtitle = "* = P < 0.05 ",
+      x = "Mutation", y = "Imaging module", fill = paste0("Δ z-score")
+    )+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+pluad
+# ============================================================
+# LUSC stratum: CDKN2A, PIK3CA
+# (No EGFR/KRAS backbone here - Tier 1/2 don't apply to LUSC)
+# ============================================================
+
+cat("\n--- [LUSC] mutation counts ---\n")
+print(sapply(df_lusc[mut_cols_lusc], table))
+
+tier3_lusc <- run_tier3(df_lusc, tme_cols, mut_cols_lusc)
+cat("\n--- [LUSC] Tier 3: multivariate model results (FDR-corrected within each term) ---\n")
+print(tier3_lusc, n = Inf)
+
+tier4_lusc <- run_tier4(df_lusc, tme_cols, mut_cols_lusc)
+cat("\n--- [LUSC] Tier 4: univariate mut-vs-wt t-tests (FDR-corrected within each mutation) ---\n")
+print(tier4_lusc, n = Inf)
+
+heatmap_lusc <- make_comparison_heatmap(tier3_lusc, tier4_lusc, mut_cols_lusc, "LUSC")
+print(heatmap_lusc)
+
+plusc <- tier4_lusc %>%
+ ggplot(aes(x = mut_var, y = tme_var, fill = estimate)) +
+    geom_tile() +
+    geom_text(aes(label = ifelse(p_fdr < 0.05, "*", "")), color = "black") +
+    scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+    #facet_wrap(~method) +
+    theme_minimal() +
+    labs(
+      title = "TME effect sizes: univariate t.test",
+      subtitle = "* = P < 0.05 ",
+      x = "Mutation", y = "Imaging module", fill = paste0("Δ z-score")
+    )+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+plusc
+#ggsave("tme_mutation_heatmap_LUSC.png", heatmap_lusc, width = 8, height = 6, dpi = 300)
+```
+
+
+```{r}
+v1 <- df_luad %>%
+  filter(EGFR == 1) %>%
+  pull(Thelper_MHCII)
+
+v2 <- df_luad %>%
+  filter(EGFR == 0) %>%
+  pull(Thelper_MHCII)
+
+t.test(v1, v2)
+mean(v1)
+mean(v2)
+```
+
+
+## imaging modules
+
+
+```{r}
+dat_z <- left_join(modules, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         EGFR = ifelse(EGFR == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUAD")
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+pivot_longer(cols = 1:8)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B, zscore_data = FALSE)
+result$data
+p_LUAD <- result$plot +
+  ggtitle(paste0("Imaging modules for ", title_name," in LUAD"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p_LUAD
+```
+
+## RNA modules
+
+```{r}
+dat_z <- left_join(rna, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         EGFR = ifelse(EGFR == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUAD")
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+pivot_longer(cols = 1:29)
+
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B,zscore_data = TRUE)
+result$data
+p_LUAD <- result$plot +
+  ggtitle(paste0("RNA modules for ", title_name," in LUAD"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p_LUAD
+```
+
+## inflammation 
+
+### get gene signatures
+```{r}
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(msigdbr)
+library(singscore)
+
+rna_mat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_mat.rds")
+
+
+# ── gene signatures ────────────────────────────────────────────────────
+hallmark_sets <- msigdbr(species = "Homo sapiens", collection = "H") %>%
+  dplyr::select(gs_name, gene_symbol) %>%
+  split(.$gs_name) %>%
+  lapply(function(x) x$gene_symbol)
+
+# Targeted Hallmark gene sets of interest
+target_sets <- c(
+  "HALLMARK_INFLAMMATORY_RESPONSE",
+  "HALLMARK_INTERFERON_GAMMA_RESPONSE",
+  "HALLMARK_INTERFERON_ALPHA_RESPONSE",
+  "HALLMARK_TNFA_SIGNALING_VIA_NFKB",
+  "HALLMARK_IL6_JAK_STAT3_SIGNALING",
+  "HALLMARK_IL2_STAT5_SIGNALING"
+)
+gs_list_hallmark <- hallmark_sets[intersect(target_sets, names(hallmark_sets))]
+
+# ── 2. Custom gene sets ────────────────────────────────────────────────────────
+# CXCL9/10/11 chemokine axis (T cell recruitment)
+gs_list_custom <- list(
+  CXCL9_10_11_axis = c("CXCL9", "CXCL10", "CXCL11", "CXCR3",
+                       "CXCL13", "CXCR5"),
+  T_cell_activation = c("CD8A", "CD8B", "GZMB", "PRF1", "IFNG",
+                        "TNF", "IL2", "PDCD1", "HAVCR2", "LAG3"),
+  type_I_IFN = c("IFNB1", "IRF7", "MX1", "OAS1", "OAS2", "OAS3",
+                 "ISG15", "IFIT1", "IFIT2", "IFIT3", "RSAD2", "HERC5"),
+  NF_kB_target  = c("NFKB1", "RELA", "RELB", "NFKB2", "REL",
+                    "BCL2L1", "IL1B", "IL6", "CXCL8", "TNF", "ICAM1"),
+  TCR_signaling = c("CD3D", "CD3E", "CD3G", "ZAP70", "LCK", "LAT",
+                    "ITK", "PLCG1", "NFATC1", "NFATC2"),
+  cytotoxic = c("GZMB", "GZMA", "GZMK", "PRF1", "NKG7", "IFNG", "KLRG1"),
+  exhaustion = c("PDCD1","LAG3","HAVCR2","TX","CTLA4", "IDO1")
+  )
+
+all_gs <- c(gs_list_hallmark, gs_list_custom)
+
+# compute score
+rna_for_score <- t(rna_mat)
+
+# Filter gene sets to genes present in the RNA-seq matrix
+all_gs <- lapply(all_gs, function(g) intersect(g, rownames(rna_for_score)))
+all_gs <- all_gs[sapply(all_gs, length) >= 5]
+
+
+
+overlap <- sapply(all_gs, function(g) sum(g %in% rownames(rna_for_score)))
+total   <- sapply(all_gs, length)
+print(data.frame(found = overlap, total = total, pct = round(100 * overlap / total)))
+
+# ── Score with singscore ──────────────────────────────────────────────────────
+ranked <- rankGenes(rna_for_score)
+
+scores_list <- lapply(names(all_gs), function(nm) {
+  sc <- simpleScore(ranked, upSet = all_gs[[nm]], centerScore = TRUE)
+  setNames(sc$TotalScore, rownames(sc))
+})
+
+
+rna_scores <- as.data.frame(do.call(cbind, scores_list))
+colnames(rna_scores) <- names(all_gs)
+rownames(rna_scores) <- colnames(rna_for_score)
+rna_scores$immucan_id <- rownames(rna_scores)
+rownames(rna_scores) <- NULL
+
+```
+
+### LUAD 
+```{r }
+dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         EGFR = ifelse(EGFR == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUAD")
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+  pivot_longer(cols = 1:13)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+
+p_LUAD <- result$plot+
+    ylab("Inf. signatures")+
+    ggtitle(paste0("Inf. signatures for ", title_name," in LUAD"))+
+  theme(axis.title.y = element_blank())+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+
+p_LUAD
+```
+
+
+
+
+
+## sanity check
+
+```{r, fig.width=12}
+ctr <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/image_feature_module_correlation.csv")
+im <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/imaging_mat.rds")
+feats <- ctr %>% 
+  arrange(desc(Proliferating)) %>%
+  slice_head(n = 20) %>%
+  pull(X)
+  
+im %>%
+  dplyr::select(all_of(feats)) %>%
+  mutate(immucan_id = rownames(im)) %>%
+  pivot_longer(-immucan_id) %>%
+  left_join(traits, "immucan_id") %>%
+  filter(!is.na(EGFR),
+         LUAD_vs_LUSC == "Adenocarcinoma",
+         KRAS == FALSE,
+         STK11 == FALSE,
+         TP53 == FALSE) %>%
+  mutate(EGFR = ifelse(EGFR == TRUE, "mut", "wt")) %>%
+  ggplot(aes(x = name,y = value, fill = EGFR))+
+  geom_boxplot()+
+  scale_y_log10()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust= 1))+
+  stat_compare_means(method = "wilcox.test",label = "p.format")
+
+feats <- ctr %>% 
+  arrange(desc(Neutrophils)) %>%
+  slice_head(n = 20) %>%
+  pull(X)
+  
+im %>%
+  dplyr::select(all_of(feats)) %>%
+  mutate(immucan_id = rownames(im)) %>%
+  pivot_longer(-immucan_id) %>%
+  left_join(traits, "immucan_id") %>%
+  filter(!is.na(EGFR),
+         LUAD_vs_LUSC == "Adenocarcinoma",
+         KRAS == FALSE,
+         STK11 == FALSE,
+         TP53 == FALSE) %>%
+  mutate(EGFR = ifelse(EGFR == TRUE, "mut", "wt")) %>%
+  ggplot(aes(x = name,y = value, fill = EGFR))+
+  geom_boxplot()+
+  scale_y_log10()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust= 1))+
+  stat_compare_means(method = "wilcox.test",label = "p.format")
+
+feats <- ctr %>% 
+  arrange(desc(Thelper_MHCII)) %>%
+  slice_head(n = 20) %>%
+  pull(X)
+  
+im %>%
+  dplyr::select(all_of(feats)) %>%
+  mutate(immucan_id = rownames(im)) %>%
+  pivot_longer(-immucan_id) %>%
+  left_join(traits, "immucan_id") %>%
+  filter(!is.na(EGFR),
+         LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  mutate(EGFR = ifelse(EGFR == TRUE, "mut", "wt")) %>%
+  ggplot(aes(x = name,y = value, fill = EGFR))+
+  geom_boxplot()+
+  scale_y_log10()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust= 1))+
+  stat_compare_means(method = "wilcox.test",label = "p.format")
+```
+
+
+## KRAS mutation
+
+```{r}
+cur_var <- "KRAS"
+var_A <- "mut"
+var_B <-  "wt"
+col_A <- "blue"
+col_B <- "red"
+title_name <- "KRAS"
+```
+
+```{r}
+table(traits$KRAS, traits$LUAD_vs_LUSC)
+```
+
+## imaging modules
+
+```{r}
+dat_z <- left_join(modules, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         KRAS = ifelse(KRAS == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUAD")
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+  pivot_longer(cols = 1:8)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+p_LUAD <- result$plot +
+  ggtitle(paste0("Imaging modules for ", title_name," in LUAD"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p_LUAD
+```
+
+## RNA modules
+
+```{r}
+dat_z <- left_join(rna, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         KRAS = ifelse(KRAS == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUAD",
+         TP53 == FALSE,
+         EGFR == FALSE,
+         STK11 == FALSE) 
+
+
+print(table(dat_z[[cur_var]]))
+dat_z <- dat_z%>%
+  pivot_longer(cols = 1:29)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+p_LUAD <- result$plot +
+  ggtitle(paste0("Imaging modules for ", title_name," in LUAD"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p_LUAD
+```
+
+## inflammation 
+
+### LUAD 
+```{r }
+dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         KRAS = ifelse(KRAS == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUAD",
+         TP53 == FALSE,
+         EGFR == FALSE,
+         STK11 == FALSE)
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+  pivot_longer(cols = 1:13)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+
+p_LUAD <- result$plot+
+    ylab("Inf. signatures")+
+    ggtitle(paste0("Inf. signatures for ", title_name," in LUAD"))+
+  theme(axis.title.y = element_blank())+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+
+p_LUAD
+```
+
+
+
+
+
+## sanity check
+```{r, fig.width=12}
+ctr <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/image_feature_module_correlation.csv")
+im <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/imaging_mat.rds")
+feats <- ctr %>% 
+  arrange(desc(Thelper_MHCII)) %>%
+  slice_head(n = 20) %>%
+  pull(X)
+  
+im %>%
+  dplyr::select(all_of(feats)) %>%
+  mutate(immucan_id = rownames(im)) %>%
+  pivot_longer(-immucan_id) %>%
+  left_join(traits, "immucan_id") %>%
+  filter(!is.na(KRAS),
+         LUAD_vs_LUSC == "Adenocarcinoma",
+         EGFR == FALSE,
+         STK11 == FALSE,
+         TP53 == FALSE) %>%
+  mutate(KRAS = ifelse(KRAS == TRUE, "mut", "wt")) %>%
+  ggplot(aes(x = name,y = value, fill = KRAS))+
+  geom_boxplot()+
+  scale_y_log10()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust= 1))+
+  stat_compare_means(method = "wilcox.test",label = "p.format")
+
+feats <- ctr %>% 
+  arrange(desc(Neutrophils)) %>%
+  slice_head(n = 20) %>%
+  pull(X)
+  
+im %>%
+  dplyr::select(all_of(feats)) %>%
+  mutate(immucan_id = rownames(im)) %>%
+  pivot_longer(-immucan_id) %>%
+  left_join(traits, "immucan_id") %>%
+  filter(!is.na(KRAS),
+         LUAD_vs_LUSC == "Adenocarcinoma",
+         EGFR == FALSE,
+         STK11 == FALSE,
+         TP53 == FALSE) %>%
+  mutate(KRAS = ifelse(KRAS == TRUE, "mut", "wt")) %>%
+  ggplot(aes(x = name,y = value, fill = KRAS))+
+  geom_boxplot()+
+  scale_y_log10()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust= 1))+
+  stat_compare_means(method = "wilcox.test",label = "p.format")
+
+feats <- ctr %>% 
+  arrange(desc(Thelper_MHCII)) %>%
+  slice_head(n = 20) %>%
+  pull(X)
+  
+im %>%
+  dplyr::select(all_of(feats)) %>%
+  mutate(immucan_id = rownames(im)) %>%
+  pivot_longer(-immucan_id) %>%
+  left_join(traits, "immucan_id") %>%
+  filter(!is.na(EGFR),
+         LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  mutate(EGFR = ifelse(EGFR == TRUE, "mut", "wt")) %>%
+  ggplot(aes(x = name,y = value, fill = EGFR))+
+  geom_boxplot()+
+  scale_y_log10()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust= 1))+
+  stat_comp
+
+# STK11 mutation
+
+```{r}
+cur_var <- "STK11"
+var_A <- "mut"
+var_B <-  "wt"
+col_A <- "blue"
+col_B <- "red"
+title_name <- "STK11"
+```
+
+```{r}
+table(traits$STK11, traits$LUAD_vs_LUSC)
+```
+
+
+## STK11 mutation
+
+```{r}
+cur_var <- "STK11"
+var_A <- "mut"
+var_B <-  "wt"
+col_A <- "blue"
+col_B <- "red"
+title_name <- "STK11"
+```
+
+```{r}
+table(traits$STK11, traits$LUAD_vs_LUSC)
+```
+
+## imaging modules
+
+```{r}
+dat_z <- left_join(modules, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         STK11 = ifelse(STK11 == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUAD",
+         EGFR == FALSE,
+         KRAS == FALSE,
+         TP53 == FALSE)
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+  pivot_longer(cols = 1:8)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+p_LUAD <- result$plot +
+  ggtitle(paste0("Imaging modules for ", title_name," in LUAD"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p_LUAD
+```
+
+## RNA modules
+
+```{r}
+dat_z <- left_join(rna, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         STK11 = ifelse(STK11 == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUAD",
+         EGFR == FALSE,
+         KRAS == FALSE,
+         TP53 == FALSE)
+
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+  pivot_longer(cols = 1:29)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+p_LUAD <- result$plot +
+  ggtitle(paste0("Imaging modules for ", title_name," in LUAD"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p_LUAD
+```
+
+## inflammation 
+
+### LUAD 
+```{r }
+dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         STK11 = ifelse(STK11 == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUAD",
+         EGFR == FALSE,
+         KRAS == FALSE,
+         TP53 == FALSE)
+
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+  pivot_longer(cols = 1:13)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+
+p_LUAD <- result$plot+
+    ylab("Inf. signatures")+
+    ggtitle(paste0("Inf. signatures for ", title_name," in LUAD"))+
+  theme(axis.title.y = element_blank())+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+
+p_LUAD
+
+cur_order <- result$data$name
+```
+
+
+
+
+
+## sanity check
+
+```{r}
+ctr <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/image_feature_module_correlation.csv")
+im <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/imaging_mat.rds")
+feats <- ctr %>% 
+  arrange(desc(Neutrophils)) %>%
+  slice_head(n = 20) %>%
+  pull(X)
+  
+im %>%
+  dplyr::select(all_of(feats)) %>%
+  mutate(immucan_id = rownames(im)) %>%
+  pivot_longer(-immucan_id) %>%
+  left_join(traits, "immucan_id") %>%
+  filter(!is.na(STK11),
+         LUAD_vs_LUSC == "Adenocarcinoma",
+         EGFR == FALSE,
+         KRAS == FALSE,
+         TP53 == FALSE) %>%
+  mutate(STK11 = ifelse(STK11 == TRUE, "mut", "wt")) %>%
+  ggplot(aes(x = name,y = value, fill = STK11))+
+  geom_boxplot()+
+  scale_y_log10()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust= 1))+
+  stat_compare_means(method = "wilcox.test",label = "p.format")
+
+```
+
+
+
+
+## PIK3CA mutation
+
+```{r}
+cur_var <- "PIK3CA"
+var_A <- "mut"
+var_B <-  "wt"
+col_A <- "blue"
+col_B <- "red"
+title_name <- "PIK3CA"
+```
+
+```{r}
+table(traits$PIK3CA, traits$LUAD_vs_LUSC)
+```
+
+## imaging modules
+
+```{r}
+dat_z <- left_join(modules, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         PIK3CA = ifelse(PIK3CA == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUSC")
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+pivot_longer(cols = 1:8)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+p <- result$plot +
+  ggtitle(paste0("Imaging modules for ", title_name," in LUSC"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p
+```
+
+## RNA modules
+
+```{r}
+dat_z <- left_join(rna, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         PIK3CA = ifelse(PIK3CA == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUSC")
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+pivot_longer(cols = 1:29)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+p <- result$plot +
+  ggtitle(paste0("Imaging modules for ", title_name," in LUSC"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p
+```
+
+## inflammation 
+
+### LUSC 
+```{r }
+dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         PIK3CA = ifelse(PIK3CA == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUSC")
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+pivot_longer(cols = 1:13)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+
+p <- result$plot+
+    ylab("Inf. signatures")+
+    ggtitle(paste0("Inf. signatures for ", title_name," in LUSC"))+
+  theme(axis.title.y = element_blank())+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+
+p
+```
+
+
+
+## CDKN2A mutation
+
+```{r}
+cur_var <- "CDKN2A"
+var_A <- "mut"
+var_B <-  "wt"
+col_A <- "blue"
+col_B <- "red"
+title_name <- "CDKN2A"
+```
+
+```{r}
+table(traits$CDKN2A, traits$LUAD_vs_LUSC)
+```
+
+## imaging modules
+
+```{r}
+dat_z <- left_join(modules, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         CDKN2A = ifelse(CDKN2A == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUSC")
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+pivot_longer(cols = 1:8)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+result$data
+p <- result$plot +
+  ggtitle(paste0("Imaging modules for ", title_name," in LUSC"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p
+```
+
+## RNA modules
+
+```{r}
+dat_z <- left_join(rna, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         CDKN2A = ifelse(CDKN2A == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUSC")
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+pivot_longer(cols = 1:29)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+p <- result$plot +
+  ggtitle(paste0("Imaging modules for ", title_name," in LUSC"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p
+```
+
+## inflammation 
+
+### LUSC
+```{r }
+dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         CDKN2A = ifelse(CDKN2A == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUSC")
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+pivot_longer(cols = 1:13)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+
+p <- result$plot+
+    ylab("Inf. signatures")+
+    ggtitle(paste0("Inf. signatures for ", title_name," in LUSC"))+
+  theme(axis.title.y = element_blank())+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+
+p
+```
+
+
+
+
+
+
+
+
+
+
+
+
+## KEAP1 mutation
+
+```{r}
+cur_var <- "KEAP1"
+var_A <- "mut"
+var_B <-  "wt"
+col_A <- "blue"
+col_B <- "red"
+title_name <- "KEAP1"
+```
+
+```{r}
+table(traits$KEAP1, traits$LUAD_vs_LUSC)
+```
+
+## imaging modules
+
+```{r}
+dat_z <- left_join(modules, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         KEAP1 = ifelse(KEAP1 == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUAD")
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+pivot_longer(cols = 1:8)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+result$data
+p <- result$plot +
+  ggtitle(paste0("Imaging modules for ", title_name," in LUAD"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p
+```
+
+## RNA modules
+
+```{r}
+dat_z <- left_join(rna, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         KEAP1 = ifelse(KEAP1 == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUAD")
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+pivot_longer(cols = 1:29)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+p <- result$plot +
+  ggtitle(paste0("Imaging modules for ", title_name," in LUAD"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p
+```
+
+## inflammation 
+
+### LUSC
+```{r }
+dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         KEAP1 = ifelse(KEAP1 == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUAD")
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+pivot_longer(cols = 1:13)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+
+p <- result$plot+
+    ylab("Inf. signatures")+
+    ggtitle(paste0("Inf. signatures for ", title_name," in LUAD"))+
+  theme(axis.title.y = element_blank())+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+
+p
+```
+
+
+
+
+
+
+
+
+
+
+
+## TP53 LUSC mutation
+
+```{r}
+cur_var <- "TP53"
+var_A <- "mut"
+var_B <-  "wt"
+col_A <- "blue"
+col_B <- "red"
+title_name <- "TP53"
+```
+
+```{r}
+table(traits$CDKN2A, traits$LUAD_vs_LUSC)
+```
+
+## imaging modules
+
+```{r}
+dat_z <- left_join(modules, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         TP53 = ifelse(TP53 == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUSC")
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+pivot_longer(cols = 1:8)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+result$data
+p <- result$plot +
+  ggtitle(paste0("Imaging modules for ", title_name," in LUSC"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p
+```
+
+## RNA modules
+
+```{r}
+dat_z <- left_join(rna, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         TP53 = ifelse(TP53 == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUSC")
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+pivot_longer(cols = 1:29)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+p <- result$plot +
+  ggtitle(paste0("Imaging modules for ", title_name," in LUSC"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p
+```
+
+## inflammation 
+
+### LUSC
+```{r }
+dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         TP53 = ifelse(TP53 == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUSC")
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+pivot_longer(cols = 1:13)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+
+p <- result$plot+
+    ylab("Inf. signatures")+
+    ggtitle(paste0("Inf. signatures for ", title_name," in LUSC"))+
+  theme(axis.title.y = element_blank())+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+
+p
+```
+
+
+
+
+
+
+
+
+
+
+
+
+## TP53 LUAD mutation
+
+```{r}
+cur_var <- "TP53"
+var_A <- "mut"
+var_B <-  "wt"
+col_A <- "blue"
+col_B <- "red"
+title_name <- "TP53"
+```
+
+```{r}
+table(traits$TP53, traits$LUAD_vs_LUSC)
+```
+
+## imaging modules
+
+only in current smokers
+```{r}
+dat_z <- left_join(modules, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         TP53 = ifelse(TP53 == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUAD",
+         smoking_status == "Current smoker")
+
+print(table(dat_z[[cur_var]]))
+dat_z <- dat_z %>%
+pivot_longer(cols = 1:8)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+result$data
+p <- result$plot +
+  ggtitle(paste0("Imaging modules for ", title_name," in LUAD"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p
+```
+
+## RNA modules
+
+```{r}
+dat_z <- left_join(rna, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         TP53 = ifelse(TP53 == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUAD",
+         smoking_status == "Current smoker")
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+pivot_longer(cols = 1:29)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+p <- result$plot +
+  ggtitle(paste0("RNA modules for ", title_name," in LUAD"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p
+```
+
+## inflammation 
+
+### LUAD
+```{r }
+dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         TP53 = ifelse(TP53 == TRUE, "mut", "wt")) %>%
+  filter(LUAD_vs_LUSC == "LUAD",
+         smoking_status == "Current smoker")
+
+print(table(dat_z[[cur_var]])  )
+dat_z <- dat_z %>%
+pivot_longer(cols = 1:13)
+
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+
+p <- result$plot+
+    ylab("Inf. signatures")+
+    ggtitle(paste0("Inf. signatures for ", title_name," in LUAD"))+
+  theme(axis.title.y = element_blank())+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+
+p
+```
+
+
+
+
+
+
+
+
+
+
+
+
+## 4B Driver mutations
+
+### LUAD
 
 ```{r, fig.height=15, fig.width=20}
 condition <- c(FALSE,FALSE,FALSE, FALSE)
@@ -186,7 +2289,7 @@ p <- cur_dat %>%
 p
 ```
 
-## LUAD TP53 only in smokers
+### LUAD TP53 only in smokers
 
 ```{r, fig.height=15, fig.width=20}
 cur_traits <- traits %>%
@@ -313,7 +2416,7 @@ cur_dat %>%
   filter(celltypes == "Tumor_Ki67__IF2")
 ```
 
-## Wilcoxon test for EGFR - not in paper
+### Wilcoxon test for EGFR - not in paper
 here we see that actually the differential abundance test does not capture the difference in HLADR+ tumor cells while there is a strong difference based on a Wilcoxon or t-test.
 ```{r}
 dat %>%
@@ -385,7 +2488,7 @@ coord_flip()
 ```
 
 
-## LUSC
+### LUSC
 
 ```{r, fig.height=10, fig.width=20}
 condition <- c(FALSE,FALSE, FALSE)
@@ -515,7 +2618,7 @@ p
 
 ```
 
-## all
+### all
 not in paper
 ```{r, fig.height=10, fig.width=20}
 condition <- c(FALSE,FALSE)
@@ -645,7 +2748,7 @@ p
 
 ```
 
-## plot  LUSC and LUAD together
+### plot  LUSC and LUAD together
 ```{r, fig.height=15, fig.width=10}
 cur_dat <- rbind(cur_dat_LUAD,cur_dat_LUSC)
 cur_dat <- rbind(cur_dat, cur_dat_LUAD_TP53_smoker)

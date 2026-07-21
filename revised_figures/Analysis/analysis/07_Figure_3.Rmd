@@ -350,6 +350,7 @@ ggsave(plot = p, path = out_folder,filename = "3D_Imaging_modules_for_TPS.pdf",w
 
 ## inflammation 
 
+### get gene signatures
 ```{r}
 library(org.Hs.eg.db)
 library(AnnotationDbi)
@@ -1209,8 +1210,9 @@ ggsave(filename = paste0(out_folder,"3H_inflammation_score_across_TPS.pdf"),
 ```
 
 # 3I enrichment in clinical traits for TMB
+
 ```{r, fig.height=5, fig.width=5}
-cur_traits <- traits %>% select("TMB_score","age_dicho", "gender","stage_1_2","stage_1_3","stage_2_3","LUAD_vs_LUSC","never_vs_current_smoker",
+cur_traits <- traits %>% dplyr::select("TMB_score","age_dicho", "gender","stage_1_2","stage_1_3","stage_2_3","LUAD_vs_LUSC","never_vs_current_smoker",
             "never_vs_Ex_smoker","current_vs_Ex_smoker", "N0_vs_Nx","M0_vs_Mx", "long_survivors","T1_vs_Tother", "TPS_score")
 condition <- c("high","low", "Female","I","I","II","Adenocarcinoma","Non-smoker","Non-smoker","Ex-smoker", "node_neg", "met_neg", "alive","T1", "negative")
 
@@ -1262,7 +1264,8 @@ out <- out %>%
          sig = ifelse(FDR < 0.1 & odds_ratio > 1, "UP",sig),
          sig = ifelse(p.value < 0.05 & odds_ratio < 1, "DOWN_trend",sig),
          sig = ifelse(FDR < 0.1 & odds_ratio < 1, "DOWN",sig),
-         sig = ifelse(is.na(sig),"NOTSIG", sig))
+         sig = ifelse(is.na(sig),"NOTSIG", sig),
+         odds_ratio = ifelse(is.infinite(odds_ratio),10, odds_ratio))
 
 p <- out %>%
   ggplot(aes(x=feature, y = TMB_score,col = odds_ratio, size= -log10(p.value)))+
@@ -1298,6 +1301,190 @@ ggsave(filename = paste0(out_folder,"3I_TMB_enrichment_in_clinical.pdf"),
 
 
 
+# 3I new enrichment in clinical traits for TMB - move to supplements
+
+## LUAD
+```{r, fig.height=10, fig.width=6}
+cur_traits <- traits %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  dplyr::select("TMB_score","age_dicho", "gender","stage_1_2","stage_1_3","stage_2_3","never_vs_current_smoker",
+                "never_vs_Ex_smoker","current_vs_Ex_smoker", "N0_vs_Nx","M0_vs_Mx", "long_survivors","T1_vs_Tother", "TPS_score")
+condition <- c("high","low", "Female","I","I","II","Non-smoker","Non-smoker","Ex-smoker", "node_neg", "met_neg", "alive","T1", "negative")
+
+names(condition) <- colnames(cur_traits)
+
+
+p.list <- list()
+l.list <- list()
+for (i in names(condition)) {
+  x <- factor(cur_traits$TMB_score)
+  x <- relevel(x, ref = "low")
+  
+  y <- factor(unlist(cur_traits[,i]))
+  y <- relevel(y, ref = condition[i])
+
+  p.list[[i]] <- fisher.test(table(x, y))
+  l.list[[i]] <- c(levels(y)[1])
+}
+
+out <- data.frame(feature = names(p.list),
+                  p.value = unlist(lapply(p.list, function(x){
+                    x$p.value})),
+                  odds_ratio = unlist(lapply(p.list, function(x){
+                    x$estimate})),
+                  reference = unlist(l.list))
+
+out <- out[-1,]
+
+out <- out %>%
+  mutate(feature = ifelse(feature == "age_dicho","Old_over_Young", feature),
+         feature = ifelse(feature == "gender","Male_over_Female", feature),
+         feature = ifelse(feature == "stage_1_2","Stage_II_over_I", feature),
+         feature = ifelse(feature == "stage_1_3","Stage_III_over_I", feature),
+         feature = ifelse(feature == "stage_2_3","Stage_III_over_II", feature),
+         feature = ifelse(feature == "LUAD_vs_LUSC","LUSC_over_LUAD", feature),
+         feature = ifelse(feature == "never_vs_current_smoker","Smoker_over_Never-smoker", feature),
+         feature = ifelse(feature == "never_vs_Ex_smoker","Ex-smoker_over_Never-smoker", feature),
+         feature = ifelse(feature == "current_vs_Ex_smoker","Smoker_over_Ex-smoker", feature),
+         feature = ifelse(feature == "N0_vs_Nx","Node-pos_over_Node-neg", feature),
+         feature = ifelse(feature == "M0_vs_Mx","Met-pos_over_Met-neg", feature),
+         feature = ifelse(feature == "long_survivors","Dead_over_Alive", feature),
+         feature = ifelse(feature == "T1_vs_Tother","T1_over_T-other", feature))
+
+
+out <- out %>%
+  mutate(TMB_score = "high",
+         FDR = p.adjust(p.value,method = "BH"),
+         sig = ifelse(p.value < 0.05 & odds_ratio > 1, "UP_trend",NA),
+         sig = ifelse(FDR < 0.1 & odds_ratio > 1, "UP",sig),
+         sig = ifelse(p.value < 0.05 & odds_ratio < 1, "DOWN_trend",sig),
+         sig = ifelse(FDR < 0.1 & odds_ratio < 1, "DOWN",sig),
+         sig = ifelse(is.na(sig),"NOTSIG", sig),
+         odds_ratio = ifelse(is.infinite(odds_ratio), 10, odds_ratio))
+
+p_LUAD <- out %>%
+  ggplot(aes(x=feature, y = TMB_score,col = odds_ratio, size= -log10(p.value)))+
+  #geom_tile(aes(fill = sig))+
+  #theme_bw()+
+  geom_point()+
+  theme_bw()+
+  #scale_colour_viridis_c()+
+  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+  #theme_bw()+
+  scale_color_gradient2(low = "blue",mid = "white",   high = "red",midpoint = 1)+
+  scale_size(range = c(1,4))+
+  new_scale_colour() +
+  geom_point(data = out,shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.5)+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12),
+        axis.title.y = element_blank())+
+  coord_flip()
+p_LUAD
+
+#ggsave(filename = paste0(out_folder,"3B_TPS_enrichment_in_clinical.pdf"),
+#       plot = p,
+#       device = "pdf",
+#       width = 4.5,
+#       height = 6)
+```
+
+
+## LUSC
+```{r, fig.height=10, fig.width=6}
+cur_traits <- traits %>%
+  filter(LUAD_vs_LUSC == "Squamous cell carcinoma") %>%
+  dplyr::select("TMB_score","age_dicho", "gender","stage_1_2","stage_1_3","stage_2_3","current_vs_Ex_smoker", "N0_vs_Nx","M0_vs_Mx", "long_survivors","T1_vs_Tother", "TPS_score")
+condition <- c("high","low", "Female","I","I","II","Ex-smoker", "node_neg", "met_neg", "alive","T1", "negative")
+
+names(condition) <- colnames(cur_traits)
+
+
+p.list <- list()
+l.list <- list()
+for (i in names(condition)) {
+  x <- factor(cur_traits$TMB_score)
+  x <- relevel(x, ref = "high")
+  
+  y <- factor(unlist(cur_traits[,i]))
+  y <- relevel(y, ref = condition[i])
+
+  p.list[[i]] <- fisher.test(table(x, y))
+  l.list[[i]] <- c(levels(y)[1])
+}
+
+out <- data.frame(feature = names(p.list),
+                  p.value = unlist(lapply(p.list, function(x){
+                    x$p.value})),
+                  odds_ratio = unlist(lapply(p.list, function(x){
+                    x$estimate})),
+                  reference = unlist(l.list))
+
+out <- out[-1,]
+
+out <- out %>%
+  mutate(feature = ifelse(feature == "age_dicho","Old_over_Young", feature),
+         feature = ifelse(feature == "gender","Male_over_Female", feature),
+         feature = ifelse(feature == "stage_1_2","Stage_II_over_I", feature),
+         feature = ifelse(feature == "stage_1_3","Stage_III_over_I", feature),
+         feature = ifelse(feature == "stage_2_3","Stage_III_over_II", feature),
+         feature = ifelse(feature == "LUAD_vs_LUSC","LUSC_over_LUAD", feature),
+         feature = ifelse(feature == "never_vs_current_smoker","Smoker_over_Never-smoker", feature),
+         feature = ifelse(feature == "never_vs_Ex_smoker","Ex-smoker_over_Never-smoker", feature),
+         feature = ifelse(feature == "current_vs_Ex_smoker","Smoker_over_Ex-smoker", feature),
+         feature = ifelse(feature == "N0_vs_Nx","Node-pos_over_Node-neg", feature),
+         feature = ifelse(feature == "M0_vs_Mx","Met-pos_over_Met-neg", feature),
+         feature = ifelse(feature == "long_survivors","Dead_over_Alive", feature),
+         feature = ifelse(feature == "T1_vs_Tother","T1_over_T-other", feature))
+
+
+out <- out %>%
+  mutate(TMB_score = "high",
+         FDR = p.adjust(p.value,method = "BH"),
+         sig = ifelse(p.value < 0.05 & odds_ratio > 1, "UP_trend",NA),
+         sig = ifelse(FDR < 0.1 & odds_ratio > 1, "UP",sig),
+         sig = ifelse(p.value < 0.05 & odds_ratio < 1, "DOWN_trend",sig),
+         sig = ifelse(FDR < 0.1 & odds_ratio < 1, "DOWN",sig),
+         sig = ifelse(is.na(sig),"NOTSIG", sig),
+         odds_ratio = ifelse(is.infinite(odds_ratio), 10, odds_ratio))
+
+p_LUSC <- out %>%
+  ggplot(aes(x=feature, y = TMB_score,col = odds_ratio, size= -log10(p.value)))+
+  #geom_tile(aes(fill = sig))+
+  #theme_bw()+
+  geom_point()+
+  theme_bw()+
+  #scale_colour_viridis_c()+
+  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+  #theme_bw()+
+  scale_color_gradient2(low = "blue",mid = "white",   high = "red",midpoint = 1)+
+  scale_size(range = c(1,4))+
+  new_scale_colour() +
+  geom_point(data = out,shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.5)+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12),
+        axis.title.y = element_blank())+
+  coord_flip()
+p_LUSC
+
+#ggsave(filename = paste0(out_folder,"3B_TPS_enrichment_in_clinical.pdf"),
+#       plot = p,
+#       device = "pdf",
+#       width = 4.5,
+#       height = 6)
+```
+
+```{r, fig.width=10, fig.height=6}
+p <- plot_grid(p_LUAD, p_LUSC)
+p
+```
 # 3J bubble plot for TMB with histology
 
 ```{r, fig.height=15, fig.width=10}

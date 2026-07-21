@@ -1,11 +1,11 @@
 # lollipop function
 
-lollipop_plot <- function(data, condition, var_A, var_B, order = TRUE, order_vec, col_A, col_B) {
+lollipop_plot <- function(data, condition, var_A, var_B, order = TRUE, order_vec, col_A, col_B, zscore_data = FALSE) {
   condition_sym <- rlang::sym(condition)
   volcano_df <- data %>%
     filter(!is.na(!!condition_sym)) %>%
     group_by(name) %>%
-    mutate(value_z = as.numeric(scale(value))) %>%  # z-score within each signature
+    mutate(value_z = if (isTRUE(zscore_data)) as.numeric(scale(value)) else as.numeric(value)) %>%  # RNA data is not z score, imaging modules are z scored
     summarise(
       delta_z = mean(value_z[!!condition_sym == var_A], na.rm = TRUE) -
         mean(value_z[!!condition_sym == var_B], na.rm = TRUE),

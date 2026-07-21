@@ -27,6 +27,8 @@ library(ggrepel)
 library(scales)
 library(ggnewscale)
 library(imcRtools)
+library(purrr)
+library(broom)
 ```
 
 ```{r}
@@ -70,76 +72,23 @@ code is here: [imaging module plot](../../../imaging_modules/imaging_module_gene
 ## 2B RNA scores
 
 ```{r, fig.height=15, fig.width=15}
-left_join(rna, traits, "immucan_id") %>%
-  filter(!is.na(LUAD_vs_LUSC)) %>%
-  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
-  pivot_longer(cols = 1:29) %>%
-  ggplot(aes(x = LUAD_vs_LUSC,y = value))+
-  geom_boxplot()+
-  facet_wrap(.~name, scales = "free")+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
-  ggpubr::stat_compare_means()
-
 dat_z <- left_join(rna, traits, "immucan_id") %>%
   filter(!is.na(LUAD_vs_LUSC)) %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   pivot_longer(cols = 1:29)
 
-library(dplyr)
-library(tidyr)
-library(purrr)
-library(broom)
-
-volcano_df <- dat_z %>%
-  group_by(name) %>%
-  mutate(value_z = as.numeric(scale(value))) %>%  # z-score within each signature
-  summarise(
-    delta_z = mean(value_z[LUAD_vs_LUSC == "LUAD"], na.rm = TRUE) -
-              mean(value_z[LUAD_vs_LUSC == "LUSC"], na.rm = TRUE),
-    pvalue  = t.test(value_z[LUAD_vs_LUSC == "LUAD"],
-                      value_z[LUAD_vs_LUSC == "LUSC"])$p.value,
-    .groups = "drop"
-  ) %>%
-  mutate(
-    padj        = p.adjust(pvalue, method = "BH"),
-    neg_log10_p = -log10(pvalue),
-    direction   = ifelse(delta_z > 0, "Up in LUAD", "Up in LUSC"),
-    sig = ifelse(padj < 0.1, TRUE, FALSE)
-  ) %>%
-  arrange(delta_z)
-
-
-volcano_df <- volcano_df %>%
-  mutate(name = factor(name, levels = name[order(delta_z)]))  # order for plotting
-
-p <- ggplot(volcano_df, aes(x = delta_z, y = name)) +
-  geom_segment(aes(x = 0, xend = delta_z, y = name, yend = name), color = "grey70") +
-  geom_point(aes(color = direction, size = -log10(padj))) +
-  geom_point(
-    data = subset(volcano_df, sig == TRUE),
-    aes(x = delta_z, y = name, size = -log10(padj)),
-    shape = 21, color = "black", fill = NA, stroke = 1
-  )+
-  scale_color_manual(values = c("Up in LUAD" = "blue", "Up in LUSC" = "orange")) +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
-  labs(x = "Δ z-score (LUAD - LUSC)", y = NULL,
-       color = "Direction", size = "-log10(FDR)") +
-  guides(
-    color = guide_legend(nrow = 1, title.position = "top"),
-    size  = guide_legend(nrow = 1, title.position = "top")
-  ) +
-  theme_minimal() +
-  theme(
-    axis.title.x = element_text(size = 10),
-    axis.text.y     = element_text(size = 9),
-    legend.position = "bottom",
-    legend.box      = "vertical",     # stacks the color legend and size legend on top of each other
-    legend.margin   = margin(t = 0),
-    legend.spacing  = unit(0.2, "cm")
-  )+
-  ggtitle("RNA signatures")
+result <- lollipop_plot(dat_z, condition = "LUAD_vs_LUSC", var_A = "LUAD", var_B = "LUSC", col_A = "blue", col_B = "orange")
+p <- result$plot +
+  ggtitle(paste0("RNA modules for Histology"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))+
+  theme(axis.text.y = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        axis.title.x = element_text(size = 10),
+        legend.position = "bottom", legend.box = "vertical")+
+  guides(color = guide_legend(nrow = 1, byrow = TRUE))
 p
-ggsave(plot = p, path = out_folder,filename = "RNA_difference_for_histology.pdf",width = 4.5, height = 7,device = cairo_pdf)
+
+ggsave(plot = p, path = out_folder,filename = "RNA_difference_for_histology.pdf",width = 5.5, height = 7.5,device = cairo_pdf)
 ```
 
 
@@ -160,11 +109,121 @@ dat_z <- left_join(modules, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   pivot_longer(cols = 1:8)
 
-result <- lollipop_plot(dat_z, "LUAD_vs_LUSC", "LUAD", "LUSC")
+result <- lollipop_plot(dat_z, "LUAD_vs_LUSC", "LUAD", "LUSC", col_A = "blue", col_B = "orange")
 p <- result$plot
 p
 
 ggsave(plot = p, path = out_folder,filename = "Imaging_modules_for_histology.pdf",width = 6, height = 3.5,device = cairo_pdf)
+```
+
+# inflammation in histology
+
+```{r}
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(msigdbr)
+library(singscore)
+
+rna_mat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_mat.rds")
+
+
+# ── gene signatures ────────────────────────────────────────────────────
+hallmark_sets <- msigdbr(species = "Homo sapiens", collection = "H") %>%
+  dplyr::select(gs_name, gene_symbol) %>%
+  split(.$gs_name) %>%
+  lapply(function(x) x$gene_symbol)
+
+# Targeted Hallmark gene sets of interest
+target_sets <- c(
+  "HALLMARK_INFLAMMATORY_RESPONSE",
+  "HALLMARK_INTERFERON_GAMMA_RESPONSE",
+  "HALLMARK_INTERFERON_ALPHA_RESPONSE",
+  "HALLMARK_TNFA_SIGNALING_VIA_NFKB",
+  "HALLMARK_IL6_JAK_STAT3_SIGNALING",
+  "HALLMARK_IL2_STAT5_SIGNALING"
+)
+gs_list_hallmark <- hallmark_sets[intersect(target_sets, names(hallmark_sets))]
+
+# ── 2. Custom gene sets ────────────────────────────────────────────────────────
+# CXCL9/10/11 chemokine axis (T cell recruitment)
+gs_list_custom <- list(
+  CXCL9_10_11_axis = c("CXCL9", "CXCL10", "CXCL11", "CXCR3",
+                       "CXCL13", "CXCR5"),
+  T_cell_activation = c("CD8A", "CD8B", "GZMB", "PRF1", "IFNG",
+                        "TNF", "IL2", "PDCD1", "HAVCR2", "LAG3"),
+  type_I_IFN = c("IFNB1", "IRF7", "MX1", "OAS1", "OAS2", "OAS3",
+                 "ISG15", "IFIT1", "IFIT2", "IFIT3", "RSAD2", "HERC5"),
+  NF_kB_target  = c("NFKB1", "RELA", "RELB", "NFKB2", "REL",
+                    "BCL2L1", "IL1B", "IL6", "CXCL8", "TNF", "ICAM1"),
+  TCR_signaling = c("CD3D", "CD3E", "CD3G", "ZAP70", "LCK", "LAT",
+                    "ITK", "PLCG1", "NFATC1", "NFATC2"),
+  cytotoxic = c("GZMB", "GZMA", "GZMK", "PRF1", "NKG7", "IFNG", "KLRG1"),
+  exhaustion = c("PDCD1","LAG3","HAVCR2","TX","CTLA4", "IDO1")
+  )
+
+all_gs <- c(gs_list_hallmark, gs_list_custom)
+
+# compute score
+rna_for_score <- t(rna_mat)
+
+# Filter gene sets to genes present in the RNA-seq matrix
+all_gs <- lapply(all_gs, function(g) intersect(g, rownames(rna_for_score)))
+all_gs <- all_gs[sapply(all_gs, length) >= 5]
+
+
+
+overlap <- sapply(all_gs, function(g) sum(g %in% rownames(rna_for_score)))
+total   <- sapply(all_gs, length)
+print(data.frame(found = overlap, total = total, pct = round(100 * overlap / total)))
+
+# ── Score with singscore ──────────────────────────────────────────────────────
+ranked <- rankGenes(rna_for_score)
+
+scores_list <- lapply(names(all_gs), function(nm) {
+  sc <- simpleScore(ranked, upSet = all_gs[[nm]], centerScore = TRUE)
+  setNames(sc$TotalScore, rownames(sc))
+})
+
+
+rna_scores <- as.data.frame(do.call(cbind, scores_list))
+colnames(rna_scores) <- names(all_gs)
+rownames(rna_scores) <- colnames(rna_for_score)
+rna_scores$immucan_id <- rownames(rna_scores)
+rownames(rna_scores) <- NULL
+
+dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
+  filter(!is.na(LUAD_vs_LUSC)) %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  pivot_longer(cols = 1:13)
+
+result <- lollipop_plot(dat_z, condition =  "LUAD_vs_LUSC",var_A = "LUAD", var_B = "LUSC", col_A = "blue", col_B = "orange")
+p <- result$plot+
+    ylab("RNA modules")+
+  ggtitle("Current vs Non-smoker")+
+  theme(axis.title.y = element_blank(),
+        axis.title.x = element_text(size= 18),
+        legend.position = "bottom", 
+        legend.text = element_text(size = 18),
+        legend.title = element_text(size = 18))+
+  guides(color = guide_legend(nrow = 2, byrow = TRUE),
+         size = guide_legend(nrow = 2, byrow = TRUE))
+
+p
+```
+
+```{r, fig.height=10, fig.width=10}
+p <- result$plot+
+    ylab("RNA modules")+
+  ggtitle("Current vs Non-smoker")+
+  theme(axis.title.y = element_blank(),
+        axis.title.x = element_text(size= 18),
+        #legend.position = "bottom", 
+        legend.text = element_text(size = 18),
+        legend.title = element_text(size = 18),
+        title = element_text(size = 18))
+p
+ggsave(plot = p, path = out_folder,filename = "alternative_inflammation.pdf",width = 10, height = 6 ,device = cairo_pdf)
+
 ```
 
 ## to  be removed
@@ -760,7 +819,7 @@ h <- ComplexHeatmap::Heatmap(t( as.matrix(luad_dat[,-1])),
                              top_annotation = ha)
 
 
-pdf(file = paste0(out_folder,"imaging_modules_for_tumor_subtypes_LUAD.pdf"), width = 4, height = 4)
+pdf(file = paste0(out_folder,"imaging_modules_for_tumor_subtypes_LUAD.pdf"), width = 4.5, height = 4)
 draw(h, merge_legend = TRUE)
 dev.off()
 
@@ -817,9 +876,12 @@ p <- scores %>%
   theme_bw()+
   coord_cartesian(ylim = c(-0.7, 1.5))+
   xlab("Stage")+
-  ylab("Tumor type score")
+  ylab("Tumor type score")+
+  guides(fill=guide_legend(title="Stage"),
+         color=guide_legend(title="Stage"))
 
-ggsave(plot = p, path = out_folder,filename = "tumor_types_for_stages_LUAD.pdf",width = 4, height = 3.5,device = cairo_pdf)
+p
+ggsave(plot = p, path = out_folder,filename = "tumor_types_for_stages_LUAD.pdf",width = 3.5, height = 3.5,device = cairo_pdf)
 
 ```
 
@@ -1056,17 +1118,20 @@ sigs %>%
 dat_z <- left_join(modules, traits, "immucan_id") %>%
   pivot_longer(cols = 1:8)
 
-result <- lollipop_plot(dat_z, "never_vs_current_smoker", "Current smoker", "Non-smoker")
+result <- lollipop_plot(dat_z, "never_vs_current_smoker", "Current smoker", "Non-smoker", col_A = "blue", col_B = "cyan3")
 p1 <- result$plot+
   ggtitle("Current smokers vs Non-smokers")+
   ylab("Imaging modules")+
   theme(axis.title.y = element_text(size= 14))+
   coord_cartesian(xlim = c(-0.8,0.9))
+p1
+
+cur_order <- result$data$name
 ```
 
 ### imaging modules never vs ex
 ```{r}
-result <- lollipop_plot(dat_z, "never_vs_Ex_smoker", "Ex-smoker", "Non-smoker", order = FALSE, order_vec = c("Thelper_enriched","cold","medium_inflamed","proliferating","highly_inflamed","Neutrophil_enriched","mixed","inflamed_proliferating"))
+result <- lollipop_plot(dat_z, "never_vs_Ex_smoker", "Ex-smoker", "Non-smoker", order = FALSE, order_vec = cur_order, col_A = "lightblue", col_B = "cyan3")
 p2 <- result$plot+
   theme(axis.text.y = element_blank())+
   ggtitle("Ex-smokers vs Non-smokers")
@@ -1074,7 +1139,7 @@ p2 <- result$plot+
 
 ### imaging modules current vs ex
 ```{r}
-result <- lollipop_plot(dat_z, "current_vs_Ex_smoker", "Current smoker", "Ex-smoker", order = FALSE, order_vec = c("Thelper_enriched","cold","medium_inflamed","proliferating","highly_inflamed","Neutrophil_enriched","mixed","inflamed_proliferating"))
+result <- lollipop_plot(dat_z, "current_vs_Ex_smoker", "Current smoker", "Ex-smoker", order = FALSE, order_vec =cur_order, col_A = "blue", col_B = "lightblue")
 p3 <- result$plot +
   theme(axis.text.y = element_blank())+
   ggtitle("Current smokers vs Ex-smokers")
@@ -1085,12 +1150,13 @@ p3 <- result$plot +
 p <- cowplot::plot_grid(p1, p2, p3, ncol = 3, rel_widths = c(1.05,0.7,0.7))
 p
 
-ggsave(plot = p, path = out_folder,filename = "Imaging_modules_for_smoking_LUAD.pdf",width = 15, height = 3.75,device = cairo_pdf)
+ggsave(plot = p, path = out_folder,filename = "Imaging_modules_for_smoking_LUAD.pdf",width = 20, height = 3.75,device = cairo_pdf)
 ```
 
 
 
-## 2J Inflammation signature in smoking 
+
+## 2J Inflammation signature in smoking - potentially to be removed
 
 ```{r}
 cur_dat <- read.table(paste0(mount_path,"data/RNASeq/CURIE/inflammation_quantification_NSCLC2/outputs/pathwayActivity/PathwayActivity_NSCLC2_mlm"))

@@ -273,7 +273,7 @@ dev.off
 
 
 # S1D cellohood clusters heatmap panel 2
-excluding TLS images
+
 ```{r, fig.height=10, fig.width=14}
 library(ComplexHeatmap)
 library(viridis)
@@ -379,8 +379,11 @@ ht1 <- Heatmap(
 
 
 per_dat <- per_dat[,colnames(exp_dat_scaled) ]
+pat_dat <- apply(per_dat, 2,function(x) round(sum(x > 0.01)/190,digits = 2))
+
 col_ann <- HeatmapAnnotation(
-  Observation_frequency = anno_boxplot(per_dat, outline = FALSE)
+  Observation_frequency = anno_boxplot(per_dat, outline = FALSE),
+  `Patients > 1%` = anno_barplot(pat_dat)
 )
 
 ht2 <-Heatmap(
