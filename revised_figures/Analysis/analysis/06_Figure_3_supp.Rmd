@@ -42,7 +42,7 @@ we will load the data we generated at the beginning of figure 2
 dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/abundances_dat.rds"))
 dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
 cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
-clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/clinical.csv")
 traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
 
 rna <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_scores.rds")
@@ -1494,7 +1494,8 @@ names(data_to_plot) <- c("smoking_status", "feature")
   
 data_to_plot <- data_to_plot %>%
   filter(!is.na(smoking_status),
-         !feature == 0)
+         !feature == 0
+         )
 
 sample_sizes <- data_to_plot %>%
     group_by(smoking_status) %>%
@@ -1538,5 +1539,46 @@ ggsave(filename = paste0(out_folder,"S3E_mutation_signatures_for_smoking.pdf"),
 
 ```
 
+# 3I imaging modules for mutation signatures
+
+```{r}
+cur_plot <- anno_WES %>%
+  select(immucan_id, SBS4_SBS92) %>%
+  filter(!SBS4_SBS92 == 0) %>%
+  left_join(modules, "immucan_id")
+
+
+mat <- rstatix::cor_mat(cur_plot[,-1],)[-1,1:2]
+mat_p <- rstatix::cor_pmat(cur_plot[,-1],)[-1,1:2]
+
+
+mat <- left_join(mat, mat_p, "rowname")
+mat <- mat %>%
+  mutate(SBS4_SBS92 = "SBS4_SBS92",
+         label = case_when(
+      SBS4_SBS92.y < 0.001 ~ "***",
+      SBS4_SBS92.y < 0.01  ~ "**",
+      SBS4_SBS92.y < 0.05  ~ "*")
+    )
+p <- mat %>%
+ ggplot(aes(x = SBS4_SBS92, y = rowname, fill = SBS4_SBS92.x)) +
+    geom_tile() +
+    geom_text(aes(label = label), color = "black") +
+    scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B", midpoint = 0) +
+    #facet_wrap(~method) +
+    theme_minimal() +
+    labs(
+      x = "Mutation", y = "Imaging module", fill = paste0("Pearson r")
+    )+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 16),
+        axis.text.y = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        legend.title = element_text(size = 16))
+pdf(file = paste0(out_folder,"3I_imaging_modules_correlation_SBS4_SBS92.pdf"), width = 4, height = 5)
+p
+dev.off()
+plot(cur_plot$SBS4_SBS92, cur_plot$Medium_inflamed)
+```
 
 

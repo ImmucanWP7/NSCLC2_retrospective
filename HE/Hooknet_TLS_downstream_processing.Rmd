@@ -1,0 +1,322 @@
+---
+title: "Hooknet downstream processing"
+author: "Daniel Schulz"
+date: "2026-08-17"
+output: html_document
+---
+
+
+In this script we will investigate the results from HooknetTLS applied to H&E images.
+
+The tool has been run using this repo: [HooknetTLS](https://github.com/gorkemsolun/pathology-hooknet-tls)
+
+It exports a raw folder that contains all identified TLS like and GC (Germinal Center) like structures.
+We also exported a folder applying filtering as used in the original publication.
+
+In order to inspect the annotations with QuPath the json files need to be transformed to geojsons.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Convert a HookNet-TLS *_with_confidence.json export into a GeoJSON 
+FeatureCollection, preserving the full per-polygon confidence histogram
+as a feature property. Geojson can then be viewed in Qupath
+
+```{r}
+library(jsonlite)
+```
+
+# geojson function
+
+```{r}
+
+
+## Same convention as xml_to_geojson_adapted.py, so output stays QuPath-compatible.
+GROUP_COLORS  <- list(tls = c(0, 255, 0), gc = c(255, 0, 0))
+DEFAULT_COLOR <- c(128, 128, 128)
+
+
+feature_for_item <- function(item) {
+  coords <- item$coordinates
+  ring   <- coords
+  if (!identical(coords[[1]], coords[[length(coords)]])) {
+    ring <- c(ring, coords[1])  # close the ring if the source didn't already
+  }
+  
+  name  <- item$label$name
+  color <- GROUP_COLORS[[tolower(name)]]
+  if (is.null(color)) color <- DEFAULT_COLOR
+  
+  list(
+    type = "Feature",
+    id = "PathDetectionObject",
+    geometry = list(
+      type = "Polygon",
+      coordinates = list(ring)
+    ),
+    properties = list(
+      objectType = "annotation",
+      index = item$index,
+      classification = list(name = name, color = color),
+      color = color,
+      confidence_map = item$label$confidence_map
+    )
+  )
+}
+
+
+
+## Each item's coordinates form a single ring (no holes in this dataset).
+
+
+conv_to_geojson <- function(json_file, outpath){
+  
+  raw <- fromJSON(json_file, simplifyVector = FALSE) 
+  
+  features <- lapply(raw, feature_for_item)
+  
+  geojson  <- list(type = "FeatureCollection", features = features)
+  cur_name <- sub("\\.json$", ".geojson", basename(json_file))
+  
+  writeLines(toJSON(geojson, auto_unbox = TRUE, digits = NA, pretty = TRUE), file.path(outpath,cur_name))
+
+}
+
+```
+
+
+# geojson for all raw json
+
+run for all raw json files. this transforms the raw json files (detected TLS and GCs) to geojsons
+```{r}
+json_files <- list.files("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/HE/hooknetTLS/raw-20260724T081937Z-1-001/raw", full.names = TRUE)
+unlink(json_files[grepl("IMMU-NSCLC", json_files)])
+json_files <- list.files("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/HE/hooknetTLS/raw-20260724T081937Z-1-001/raw", full.names = TRUE, pattern = "*.json")
+
+# transform to geojson
+lapply(json_files, function(x) conv_to_geojson(x,outpath = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/HE/hooknetTLS/raw-20260724T081937Z-1-001/raw_geojson"))
+```
+
+# geojson for all filtered json
+
+run for all filtered json files. this transforms the filtered json files (filtered as in the hooknetTLS paper) to geojsons
+```{r}
+# we will remove the second HE files
+json_files <- list.files("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/HE/hooknetTLS/filtered-20260817T121553Z-1-001/filtered", full.names = TRUE)
+unlink(json_files[grepl("IMMU-NSCLC", json_files)])
+json_files <- list.files("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/HE/hooknetTLS/filtered-20260817T121553Z-1-001/filtered", full.names = TRUE, pattern = "*.json")
+
+# generate geojson
+lapply(json_files, function(x) conv_to_geojson(x,outpath = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/HE/hooknetTLS/filtered-20260817T121553Z-1-001/filtered_geojson"))
+```
+
+
+# Custom filtering
+Filter a GeoJSON FeatureCollection produced by json_to_geojson.R.
+
+Filters, operating directly on the GeoJSON so the result can be opened
+straight in QuPath:
+  1. Confidence filter: keep a feature only if at least `min_pct_above`
+     of its pixels have a confidence bin >= `conf_threshold` (read back
+     out of the confidence_map stored in properties by json_to_geojson.R).
+  2. Size filter: drop "tls" features below `min_area_tls` and "gc"
+     features below `min_area_gc` (area in the same squared units as the
+     input coordinates, e.g. tiny high-confidence specks that are too
+     small to plausibly be a real TLS/GC).
+  3. Orphan-GC filter: a "gc" feature is kept only if its centroid falls
+     inside at least one "tls" polygon (a real GC must sit inside a TLS).
+     "tls" features themselves are never dropped by this filter.
+
+Reading/writing GeoJSON is done with jsonlite (not sf::st_read/st_write)
+so nested properties like confidence_map round-trip exactly as written --
+sf is used only in-memory for the two spatial computations (centroid,
+point-in-polygon).
+
+```{r}
+library(sf)
+
+## % of a polygon's pixels with confidence >= conf_threshold, from a
+## confidence_map list as parsed by fromJSON(simplifyVector = FALSE).
+pct_pixels_above <- function(confidence_map, conf_threshold) {
+  bins   <- as.numeric(names(confidence_map))
+  counts <- as.numeric(unlist(confidence_map, use.names = FALSE))
+  sum(counts[bins >= conf_threshold]) / sum(counts)
+}
+
+## Outer ring only (this dataset has no holes).
+feature_to_sfg <- function(feature) {
+  ring <- feature$geometry$coordinates[[1]]
+  mat  <- t(vapply(ring, function(pt) c(pt[[1]], pt[[2]]), numeric(2)))
+  st_polygon(list(mat))
+}
+
+filter_geojson_annotations <- function(geojson_path,
+                                        out_path,
+                                        conf_threshold,
+                                        min_pct_above,
+                                        min_area_tls = 0,
+                                        min_area_gc = 0,
+                                        discard_orphan_gc = TRUE,
+                                        gc_check_against = c("filtered", "all")) {
+  gc_check_against <- match.arg(gc_check_against)
+
+  gj       <- fromJSON(geojson_path, simplifyVector = FALSE)
+  features <- gj$features
+
+  label_name <- vapply(features, function(f) f$properties$classification$name, character(1))
+  pct_above  <- vapply(features, function(f) pct_pixels_above(f$properties$confidence_map, conf_threshold), numeric(1))
+
+  sfgs <- lapply(features, feature_to_sfg)
+  area <- vapply(sfgs, function(g) as.numeric(st_area(g)), numeric(1))
+
+  min_area_by_class <- c(tls = min_area_tls, gc = min_area_gc)
+  area_threshold     <- min_area_by_class[label_name]
+  area_threshold[is.na(area_threshold)] <- 0  # classes other than tls/gc: no size filter
+
+  keep <- (pct_above >= min_pct_above) & (area >= area_threshold)
+
+  if (discard_orphan_gc) {
+    gc_idx <- which(label_name == "gc" & keep)
+
+    if (length(gc_idx) > 0) {
+      tls_pool_idx <- which(label_name == "tls" &
+                               (if (gc_check_against == "filtered") keep else TRUE))
+
+      if (length(tls_pool_idx) == 0) {
+        keep[gc_idx] <- FALSE
+      } else {
+        tls_geoms  <- st_sfc(sfgs[tls_pool_idx])
+        centroids  <- st_sfc(lapply(sfgs[gc_idx], st_centroid))
+        contained  <- lengths(suppressMessages(st_within(centroids, tls_geoms))) > 0
+        keep[gc_idx] <- contained
+      }
+    }
+  }
+
+  out_gj <- list(type = "FeatureCollection", features = features[keep])
+  
+  cur_name <- sub("\\.json$", ".geojson", basename(geojson_path))
+  
+  writeLines(toJSON(out_gj, auto_unbox = TRUE, digits = NA, pretty = TRUE), file.path(out_path, cur_name))
+
+  cat(sprintf("Kept %d / %d features -> %s\n", sum(keep), length(features), out_path))
+  invisible(sum(keep))
+}
+
+
+# apply filtering
+geojson_files <- list.files("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/HE/hooknetTLS/raw-20260724T081937Z-1-001/raw_geojson/", full.names = TRUE)
+
+lapply(geojson_files, function(x) filter_geojson_annotations(geojson_path = x,
+                                                      out_path = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/HE/hooknetTLS/custom_filtered",
+                                                      conf_threshold = 100,
+                                                      min_pct_above = 0.5,
+                                                      min_area_tls = 35000,
+                                                      min_area_gc = 5000,
+                                                      discard_orphan_gc = TRUE)
+                                                      )
+
+
+```
+
+# summarize data custom fileterd
+
+```{r}
+feature_to_sfg <- function(feature) {
+  ring <- feature$geometry$coordinates[[1]]
+  mat  <- t(vapply(ring, function(pt) c(pt[[1]], pt[[2]]), numeric(2)))
+  st_polygon(list(mat))
+}
+
+files <- sort(list.files("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/HE/hooknetTLS/custom_filtered", pattern = "\\.geojson$", full.names = TRUE))
+cat(sprintf("Found %d geojson files\n", length(files)))
+
+rows <- list()
+
+for (filepath in files) {
+  sample   <- tools::file_path_sans_ext(basename(filepath))
+  gj       <- fromJSON(filepath, simplifyVector = FALSE)
+  features <- gj$features
+  if (is.null(features)) features <- list()
+
+  for (idx in seq_along(features)) {
+    feature <- features[[idx]]
+
+    name <- feature$properties$classification$name
+    if (is.null(name)) name <- "unknown"
+
+    coords <- feature$geometry$coordinates[[1]]
+    poly   <- feature_to_sfg(feature)
+
+    area      <- suppressWarnings(as.numeric(st_area(poly)))
+    perimeter <- suppressWarnings(as.numeric(st_length(st_sfc(st_boundary(poly)))))
+    n_vertices <- length(coords) - 1  # last point repeats the first
+
+    rows[[length(rows) + 1]] <- data.frame(
+      sample        = sample,
+      annotation_id = idx,
+      class         = name,
+      area          = area,
+      perimeter     = perimeter,
+      n_vertices    = n_vertices,
+      stringsAsFactors = FALSE
+    )
+  }
+}
+
+summary_df <- do.call(rbind, rows)
+
+saveRDS(summary_df,"/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/HE/hooknetTLS/custom_filtered/annotation_summary.rds")
+```
+
+# summarize data standard filtered
+
+```{r}
+feature_to_sfg <- function(feature) {
+  ring <- feature$geometry$coordinates[[1]]
+  mat  <- t(vapply(ring, function(pt) c(pt[[1]], pt[[2]]), numeric(2)))
+  st_polygon(list(mat))
+}
+
+files <- sort(list.files("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/HE/hooknetTLS/filtered-20260817T121553Z-1-001/filtered_geojson", pattern = "\\.geojson$", full.names = TRUE))
+cat(sprintf("Found %d geojson files\n", length(files)))
+
+rows <- list()
+
+for (filepath in files) {
+  sample   <- tools::file_path_sans_ext(basename(filepath))
+  gj       <- fromJSON(filepath, simplifyVector = FALSE)
+  features <- gj$features
+  if (is.null(features)) features <- list()
+
+  for (idx in seq_along(features)) {
+    feature <- features[[idx]]
+
+    name <- feature$properties$classification$name
+    if (is.null(name)) name <- "unknown"
+
+    coords <- feature$geometry$coordinates[[1]]
+    poly   <- feature_to_sfg(feature)
+
+    area      <- suppressWarnings(as.numeric(st_area(poly)))
+    perimeter <- suppressWarnings(as.numeric(st_length(st_sfc(st_boundary(poly)))))
+    n_vertices <- length(coords) - 1  # last point repeats the first
+
+    rows[[length(rows) + 1]] <- data.frame(
+      sample        = sample,
+      annotation_id = idx , 
+      class         = name,
+      area          = area,
+      perimeter     = perimeter,
+      n_vertices    = n_vertices,
+      stringsAsFactors = FALSE
+    )
+  }
+}
+
+summary_df <- do.call(rbind, rows)
+
+saveRDS(summary_df,"/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/HE/hooknetTLS/filtered-20260817T121553Z-1-001/filtered_geojson/annotation_summary.rds")
+```
+

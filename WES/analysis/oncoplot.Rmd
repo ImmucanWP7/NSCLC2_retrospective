@@ -10,6 +10,15 @@ in this script we will read in the vcf files, clean them and merge them. The ori
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+```{r}
+library(data.table)
+library(dplyr)
+library(ComplexHeatmap)
+library(tidyverse)
+library(ggtext)
+```
+
+
 # read file
 ```{r}
 data_mut <- read_csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/Rout/20260210_mutations_all.csv")
@@ -18,12 +27,14 @@ data_mut <- read_csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/
 # filtering
 
 min VAF: 5%
-ref VAF: < 1%
+ref VAF: < 1% (does not exist in this cohort)
 min coverage: 100 reads
+min variant reads: 8
 
 ```{r}
 VAF <- 0.05
-ref_VAF <- 0.01
+#ref_VAF <- 0.01
+min_VAR_counts <- 8
 min_cov <- 100
 disruptive_variants <- TRUE
 ```
@@ -44,13 +55,16 @@ genes_sel <- c(genes_sel, genes_sup)
 cur_dat <- data_mut %>%
   filter(gt_AF > VAF,
          gt_DP > min_cov,
+         var_counts > min_VAR_counts,
          if(disruptive_variants == TRUE) FILTER_type == "keep" else FILTER_type %in% c("keep", "remove"))
+cur_dat %>%
+  filter(gene == "EGFR")
 ```
 
 # Metadata
 ```{r}
 # Prepare meta data
-clin_dat <- read_csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+clin_dat <- read_csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/clinical.csv")
 
 data_meta <- as.data.frame(clin_dat)
 rownames(data_meta) <- data_meta[["immucan_id"]]
@@ -222,6 +236,20 @@ df_top <- df_top[colnames(data_plot), ]
 data_plot[is.na(data_plot)] <- ""
 ```
 
+# compare with traits file
+```{r}
+traits <- read_csv(paste0("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/all_traits.csv"))
+tt <- traits %>% select(immucan_id, KRAS)
+mt <- as.data.frame(t(data_plot))
+
+mt <- mt %>% 
+  mutate(immucan_id = rownames(mt))
+tt %>% left_join(mt, "immucan_id") %>%
+  select(immucan_id,KRAS.x, KRAS.y)
+
+data_plot$`LUNG-NSCLC2-0653`
+```
+
 
 ```{r fig.width=20, fig.height=10}
 library(ComplexHeatmap)
@@ -248,7 +276,7 @@ ht <- ComplexHeatmap::oncoPrint(data_plot,
                     #, heatmap_legend_param = list(legend_gp = gpar(fontsize = 12))
   )
 ht
-pdf(file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_4/oncoprint_selected_genes_20260210.pdf",width = 10,height = 9)
+pdf(file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_4/4A_oncoprint.pdf",width = 10,height = 9)
 draw(ht,
     heatmap_legend_side = "bottom"
     ,annotation_legend_side = "bottom"

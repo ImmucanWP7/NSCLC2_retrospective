@@ -241,7 +241,7 @@ LUSC
 ```{r, fig.height=10}
 plot_dat <- left_join(cur_df, traits,"immucan_id")
 plot_dat <- plot_dat %>%
-  filter(simple_histology == "Squamous cell carcinoma") %>%
+  #filter(simple_histology == "Squamous cell carcinoma") %>%
   select(contains(c("immucan_id","CN")))
 p.list <- list()
 for (i in c(seq(0.01,0.1,0.01))) {

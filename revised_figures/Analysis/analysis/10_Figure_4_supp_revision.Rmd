@@ -953,91 +953,9 @@ ggsave(filename = paste0(out_folder,"S5J_TLS_enrichment_clinical_variables.pdf")
 ```
 
 
-# S5L B cell and Patch density survival
+# S5K B cell and Patch density survival
 
 ```{r}
-cur_dat <- left_join(TLS_dat,IF1,c("immucan_id"))%>%
-  filter(location == "in_tumor") %>%
-  left_join(traits,by= "immucan_id") %>%
-  ungroup() %>%
-  mutate(Patch_density= TLS_count / tumor_size,
-         Patch_density_dicho = as.factor(ntile(Patch_density, 2)),
-         Patch_density_group_median = ifelse(Patch_density > median(Patch_density),TRUE, FALSE),
-         LUAD_vs_LUSC = ifelse(is.na(LUAD_vs_LUSC),"Other",LUAD_vs_LUSC),
-         LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma","LUAD",LUAD_vs_LUSC),
-         LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Squamous cell carcinoma","LUSC",LUAD_vs_LUSC))
-
-dat
-
-
-p.list <- list()
-for(j in c("LUAD", "LUSC", "Other", "All")) {
-  if (j == "All") {
-    df <- cur_dat %>%
-      filter(!is.na(cur_dat[,"Patch_density_dicho"]))
-  } else{
-        df <- cur_dat %>%
-      filter(!is.na(cur_dat[,"Patch_density_dicho"]),
-             LUAD_vs_LUSC == j)
-  }
- 
-  surv_ob <- Surv(df$time_to_event,df$censoring)
-  p.list[[paste0(j, "_Patch_density_dicho")]] <- coxph( as.formula(paste0("surv_ob ~ + Patch_density_dicho")),
-                                                        data = df)
-}
-
-df <- data.frame(HR =      unlist(lapply(p.list, function(x){summary(x)$coefficients[,"exp(coef)"]})),
-                 p.value = unlist(lapply(p.list, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
-                 lower_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "lower .95"]})),
-                 upper_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "upper .95"]}))) 
-
-df1 <- df %>% 
-  mutate(hist = str_split_i(rownames(df),"_",1))
-  
-df1
-
-p <- df1 %>%
-  ggplot(aes(x = HR,y = hist, col = hist))+
-  geom_point(size = 2)+
-  geom_errorbar(aes(xmin=lower_conf, xmax = upper_conf),lwd =1,width = 0.3)+
-  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust= 1))+
-  #scale_y_discrete(labels = function(x) str_split_i(x,"_",2))+
-  scale_x_log10()+
-  theme_bw()+
-  geom_vline(xintercept = 1,linetype = "dashed")+
-  geom_text(aes(label = paste0("p : ",round(p.value,digits = 3))),
-            col = "black",
-            vjust = -1,
-            inherit.aes = TRUE)+
-  scale_color_manual(values = c("LUAD" = "blue", "LUSC" = "orange", "Other" = "gray40", "All" = "black"),name = "Histology")+
-  theme(axis.text.x = element_text(size = 10),
-        axis.text.y = element_text(size = 10),
-        axis.title.x = element_text(size = 10),
-        axis.title.y = element_text(size = 10))+
-  labs(x = "HR",y = "Histology")
-
-p
-
-ggsave(filename = paste0(out_folder,"S5L_survival.pdf"),
-       plot = p,
-       device = "pdf",
-       width = 3.5,
-       height = 3)
-```
-
-## S5L B cell and Patch density survival - sanity check within LUAD
-
-```{r}
-cur_dat <- left_join(dat,IF1,c("immucan_id"))%>%
-  left_join(traits,by= "immucan_id") %>%
-  ungroup() %>%
-  mutate(Patch_density= TLS_count / tumor_size,
-         Patch_density_dicho = as.factor(ntile(Patch_density, 2)),
-         Patch_density_group_median = ifelse(Patch_density > median(Patch_density),TRUE, FALSE),
-         LUAD_vs_LUSC = ifelse(is.na(LUAD_vs_LUSC),"Other",LUAD_vs_LUSC),
-         LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma","LUAD",LUAD_vs_LUSC),
-         LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Squamous cell carcinoma","LUSC",LUAD_vs_LUSC))
-
 plot_dat <- dat %>%
   ungroup() %>%
   mutate(TLS_density = tls/tissue_size,
@@ -1100,22 +1018,25 @@ p <- df1 %>%
             vjust = -1,
             inherit.aes = TRUE)+
   scale_color_manual(values = c("LUAD" = "blue", "LUSC" = "orange", "Other" = "gray40", "All" = "black"),name = "Histology")+
-  theme(axis.text.x = element_text(size = 10),
-        axis.text.y = element_text(size = 10),
-        axis.title.x = element_text(size = 10),
-        axis.title.y = element_text(size = 10))+
-  labs(x = "HR",y = "Histology")
+    labs(x = "HR",y = "Histology")+
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 14),
+        legend.title = element_text(size = 12),
+         legend.text = element_text(size = 12))
 
 p
 
 ggsave(filename = paste0(out_folder,"S5L_survival.pdf"),
        plot = p,
        device = "pdf",
-       width = 6.8,
+       width = 7,
        height = 4.75)
 ```
 
-delete
+##  sanity check within LUAD
+
 ```{r}
 cur_dat <- dat %>%
   left_join(traits,by= "immucan_id") %>%

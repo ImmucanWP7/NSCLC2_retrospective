@@ -48,7 +48,7 @@ we will load the data we generated at the beginning of figure 2
 dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/abundances_dat.rds"))
 dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
 cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
-clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/clinical.csv")
 traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
 
 modules <- as.data.frame(readRDS( "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/patient_imaging_meta_cluster_scores.rds"))
@@ -72,7 +72,7 @@ hist_col_3 = setNames(c("blue","orange", "gray40"),c("LUAD","LUSC","Other"))
 
 ```
 
-# 3B enrichment in clinical traits - move to supplements
+# enrichment in clinical traits - move to supplements
 
 ## LUAD
 ```{r, fig.height=10, fig.width=6}
@@ -256,7 +256,7 @@ p <- plot_grid(p_LUAD, p_LUSC)
 p
 ```
 
-# TPS
+# 3B TPS
 
 ```{r}
 cur_var <- "TPS_score"
@@ -280,7 +280,7 @@ dat_z <- left_join(rna, traits, "immucan_id") %>%
   filter(LUAD_vs_LUSC == "LUAD") %>%
   pivot_longer(cols = 1:29)
 
-result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B, zscore_data = TRUE)
 p_LUAD <- result$plot +
   ggtitle(paste0("RNA modules for ", title_name," in LUAD"))+
   coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
@@ -296,7 +296,7 @@ dat_z <- left_join(rna, traits, "immucan_id") %>%
   filter(LUAD_vs_LUSC == "LUSC") %>%
   pivot_longer(cols = 1:29)
 
-result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B,order = FALSE, order_vec = cur_order)
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B,order = FALSE, order_vec = cur_order, zscore_data = TRUE)
 p_LUSC <- result$plot+ 
   ggtitle(paste0("RNA modules for ", title_name," in LUSC"))+
   theme(axis.text.y = element_blank())+
@@ -316,7 +316,7 @@ ggsave(plot = p, path = out_folder,filename = "3C_RNA_modules_for_TPS.pdf",width
 dat_z <- left_join(modules, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUAD") %>%
-  pivot_longer(cols = 1:8)
+  pivot_longer(cols = 1:5)
 
 result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
 p_LUAD <- result$plot +
@@ -332,7 +332,7 @@ cur_order <- result$data$name
 dat_z <- left_join(modules, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUSC") %>%
-  pivot_longer(cols = 1:8)
+  pivot_longer(cols = 1:5)
 
 result <- lollipop_plot(dat_z,condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B,order = FALSE, order_vec = cur_order)
 p_LUSC <- result$plot+ 
@@ -433,7 +433,7 @@ dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
   filter(LUAD_vs_LUSC == "LUAD") %>%
   pivot_longer(cols = 1:13)
 
-result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B, zscore_data = TRUE)
 
 p_LUAD <- result$plot+
     ylab("Inf. signatures")+
@@ -453,7 +453,7 @@ dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
   filter(LUAD_vs_LUSC == "LUSC") %>%
   pivot_longer(cols = 1:13)
 
-result <- lollipop_plot(dat_z,condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B, order = FALSE, order_vec = cur_order)
+result <- lollipop_plot(dat_z,condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B, order = FALSE, order_vec = cur_order, zscore_data = TRUE)
 
 p_LUSC <- result$plot+
     ylab("Inf. signatures")+
@@ -701,7 +701,7 @@ dat_z <- left_join(rna, traits, "immucan_id") %>%
   filter(LUAD_vs_LUSC == "LUAD") %>%
   pivot_longer(cols = 1:29)
 
-result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B, zscore_data = TRUE)
 p_LUAD <- result$plot +
   ggtitle(paste0("RNA modules for ", title_name," in LUAD"))+
   coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
@@ -717,7 +717,7 @@ dat_z <- left_join(rna, traits, "immucan_id") %>%
   filter(LUAD_vs_LUSC == "LUSC") %>%
   pivot_longer(cols = 1:29)
 
-result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B,order = FALSE, order_vec = cur_order)
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B,order = FALSE, order_vec = cur_order,zscore_data = TRUE)
 p_LUSC <- result$plot+ 
   ggtitle(paste0("RNA modules for ", title_name," in LUSC"))+
   theme(axis.text.y = element_blank())+
@@ -736,7 +736,7 @@ ggsave(plot = p, path = out_folder,filename = "3J_RNA modues_for_TPS.pdf",width 
 dat_z <- left_join(modules, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUAD") %>%
-  pivot_longer(cols = 1:8)
+  pivot_longer(cols = 1:5)
 
 result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
 p_LUAD <- result$plot +
@@ -744,7 +744,7 @@ p_LUAD <- result$plot +
   coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
 p_LUAD
 cur_order <- result$data$name
-
+result$data
 ```
 
 ### LUSC
@@ -752,7 +752,7 @@ cur_order <- result$data$name
 dat_z <- left_join(modules, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUSC") %>%
-  pivot_longer(cols = 1:8)
+  pivot_longer(cols = 1:5)
 
 result <- lollipop_plot(dat_z,condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B,order = FALSE, order_vec = cur_order)
 p_LUSC <- result$plot+ 
@@ -852,7 +852,7 @@ dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
   filter(LUAD_vs_LUSC == "LUAD") %>%
   pivot_longer(cols = 1:13)
 
-result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B, zscore_data = TRUE)
 
 p_LUAD <- result$plot+
     ylab("Inflammation signatures")+
@@ -871,7 +871,7 @@ dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
   filter(LUAD_vs_LUSC == "LUSC") %>%
   pivot_longer(cols = 1:13)
 
-result <- lollipop_plot(dat_z,condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B, order = FALSE, order_vec = cur_order)
+result <- lollipop_plot(dat_z,condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B, order = FALSE, order_vec = cur_order, zscore_data = TRUE)
 
 p_LUSC <- result$plot+
     ylab("Inflammation signatures")+
@@ -887,7 +887,24 @@ ggsave(plot = p, path = out_folder,filename = "3L_inflammation_signatures_for_TM
 
 ```
 
+# TMB difference within smokers
 
+```{r}
+dat_z <- left_join(modules, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUAD",
+         smoking_status == "Current smoker") %>%
+  pivot_longer(cols = 1:5)
+
+table(dat_z$TMB_score)
+result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
+p_LUAD <- result$plot +
+  ggtitle(paste0("Imaging modules for ", title_name," in LUAD"))+
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+p_LUAD
+cur_order <- result$data$name
+result$data
+```
 
 
 ---------------------------------------------

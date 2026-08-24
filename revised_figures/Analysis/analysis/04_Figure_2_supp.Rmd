@@ -18,7 +18,7 @@ library(SingleCellExperiment)
 
 ```{r}
 mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
-out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_2_supp/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_2_supp/"
 
 if (!dir.exists(out_folder)) {
   dir.create(out_folder)

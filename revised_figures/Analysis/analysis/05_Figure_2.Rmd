@@ -48,7 +48,7 @@ we will load the data we generated at the beginning of figure 2
 dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/abundances_dat.rds"))
 dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
 cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
-clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/clinical.csv")
 traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
 modules <- as.data.frame(readRDS( "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/patient_imaging_meta_cluster_scores.rds"))
 
@@ -91,13 +91,47 @@ p
 ggsave(plot = p, path = out_folder,filename = "RNA_difference_for_histology.pdf",width = 5.5, height = 7.5,device = cairo_pdf)
 ```
 
+# 2B (alternativ) images
+
+```{r, fig.height=20, fig.width=20}
+
+sce1 <- readRDS(paste0(mount_path,"data/IMC/Panel_1/Rout/sce.rds"))
+sce1 <- sce1[,sce1$ROI != 4]
+
+pats <- modules %>%
+  pivot_longer(cols = -immucan_id) %>%
+  filter(!immucan_id %in% c("LUNG-NSCLC2-0688","LUNG-NSCLC2-0679","LUNG-NSCLC2-0557","LUNG-NSCLC2-0638","LUNG-NSCLC2-0677","LUNG-NSCLC2-0721")) %>%
+  group_by(name) %>%
+  slice_max(value,n = 6)
+
+pats %>% arrange(immucan_id)
+unique(pats$immucan_id)
+
+
+cur_sce <- sce1[,sce1$immucan_id %in% pats$immucan_id]
+cur_sce <- cur_sce[,cur_sce$ROI == 2]
+cur_sce$im_type <- pats$name[match(cur_sce$immucan_id,pats$immucan_id)]
+cur_sce$title <- paste0(cur_sce$im_type, "_", cur_sce$immucan_id,"_", cur_sce$ROI)
+
+p <- plotSpatial(cur_sce,img_id = "title",node_color_by = "celltypes", ncols = 6, node_size_fix = 0.1)+ 
+  scale_color_manual(values = metadata(sce1)$colour_vectors$celltypes)+
+  theme(strip.text.x = element_blank())
+  
+
+p
+ggsave(plot = p, filename = file.path(out_folder,"module_exmaple_images.pdf"),device = cairo_pdf,width = 10, height = 6)
+
+plotSpatial(cur_sce[,cur_sce$celltypes_minor %in% c("Tumor_Ki67","Tumor_CAIX_Ki67","Tumor_CD15_Ki67")],img_id = "title",node_color_by = "celltypes_minor", ncols = 6)
+
+```
+
 
 ## 2C imaging modules for histology
 ```{r, fig.height=10, fig.width=8}
 dat_z <- left_join(modules, traits, "immucan_id") %>%
   filter(!is.na(LUAD_vs_LUSC)) %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
-  pivot_longer(cols = 1:8)
+  pivot_longer(cols = 1:5)
 
 result <- lollipop_plot(dat_z, "LUAD_vs_LUSC", "LUAD", "LUSC", col_A = "blue", col_B = "orange")
 p <- result$plot
@@ -186,7 +220,7 @@ dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   pivot_longer(cols = 1:13)
 
-result <- lollipop_plot(dat_z, condition =  "LUAD_vs_LUSC",var_A = "LUAD", var_B = "LUSC", col_A = "blue", col_B = "orange")
+result <- lollipop_plot(dat_z, condition =  "LUAD_vs_LUSC",var_A = "LUAD", var_B = "LUSC", col_A = "blue", col_B = "orange", zscore_data = TRUE)
 p <- result$plot+
     ylab("RNA modules")+
   ggtitle("Current vs Non-smoker")+
@@ -410,7 +444,7 @@ ggsave(filename = paste0(out_folder,"2B_diff_abundance_celloClusters_histology.p
        height = 6)
 ```
 
-# 2D images P1 CN_2
+# 2D images P1 CN_2 - move to supplements 
 ```{r, fig.height=12, fig.width=16}
 sce1 <- readRDS(paste0(mount_path,"data/IMC/Panel_1/Rout/sce.rds"))
 sce1 <- sce1[,sce1$ROI != 4]
@@ -517,7 +551,7 @@ plotPixels(image = cur_images,
 ```
 
 
-# 2E images P1 CN_2
+# 2E images P1 CN_2 - move to supplements 
 ```{r, fig.height=12, fig.width=16}
 sce2 <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/sce.rds"))
 
@@ -823,10 +857,10 @@ ggsave(plot = p, path = out_folder,filename = "tumor_types_for_stages_LUAD.pdf",
 dat_z <- left_join(modules, traits, "immucan_id") %>%
   filter(!is.na(simple_stage),
          simple_histology == "Adenocarcinoma") %>%
-  pivot_longer(cols = 1:8)
+  pivot_longer(cols = 1:5)
 
 sigs <- dat_z %>%
-  select(immucan_id,name, value,simple_stage) %>%
+  dplyr::select(immucan_id,name, value,simple_stage) %>%
   mutate(stage = ifelse(simple_stage == "I",1,NA),
          stage = ifelse(simple_stage == "II",2,stage),
          stage = ifelse(simple_stage == "III",3,stage),
@@ -837,7 +871,7 @@ sigs <- dat_z %>%
   nest() %>%
   mutate(model = map(data, ~ lm(value ~ stage, data = .x)),
          summary = map(model, broom::tidy)) %>%
-  select(name, summary) %>%
+  dplyr::select(name, summary) %>%
   unnest(c(summary)) %>%
   filter(term == "stage") %>%
   mutate(tech = str_split_i(name,"__",2)) %>%
@@ -856,7 +890,7 @@ summary_dat <- sigs %>%
   as.data.frame()
 
 p <- dat_z %>%
-  select(immucan_id,name, value,simple_stage) %>%
+  dplyr::select(immucan_id,name, value,simple_stage) %>%
   mutate(stage = ifelse(simple_stage == "I",1,NA),
          stage = ifelse(simple_stage == "II",2,stage),
          stage = ifelse(simple_stage == "III",3,stage),
@@ -1047,14 +1081,15 @@ sigs %>%
 ### imaging modules never vs current
 ```{r}
 dat_z <- left_join(modules, traits, "immucan_id") %>%
-  pivot_longer(cols = 1:8)
+  pivot_longer(cols = 1:5) %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma")
 
 result <- lollipop_plot(dat_z, "never_vs_current_smoker", "Current smoker", "Non-smoker", col_A = "blue", col_B = "cyan3")
 p1 <- result$plot+
   ggtitle("Current smokers vs Non-smokers")+
   ylab("Imaging modules")+
   theme(axis.title.y = element_text(size= 14))+
-  coord_cartesian(xlim = c(-0.6,0.6))
+  coord_cartesian(xlim = c(-0.5,0.4))
 p1
 
 cur_order <- result$data$name
@@ -1083,6 +1118,7 @@ p
 
 ggsave(plot = p, path = out_folder,filename = "Imaging_modules_for_smoking_LUAD.pdf",width = 20, height = 3.75,device = cairo_pdf)
 ```
+
 
 
 

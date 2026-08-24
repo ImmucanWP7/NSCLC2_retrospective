@@ -1,0 +1,518 @@
+---
+title: "clinical_data_preparation"
+author: "Daniel Schulz"
+date: "2026-07-03"
+output: html_document
+---
+
+here we investigate the clinical data from the prospective advanced stage NSCLC cohort
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(survival)
+#library(survivalAnalysis)
+library(survminer)
+library(ggplot2)
+library(tidyverse)
+```
+
+# read data
+
+## 1
+the data consists of 5 sheets. we will read and clean each one
+```{r}
+traits <- read_csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/all_traits.csv")
+dat1 <- readr::read_tsv("/mnt/immucan_volume/clinical_data/FINAL/LUNG-NSCLC2_curated_export_20260423_#_e1b3bae311355815dd66fbd785d61084/LUNG-NSCLC2_curated_export_20260423_clinical.tsv")
+dat1$immucan_id <- dat1$patient_id
+dplyr::rename(.data = dat1,Patient_id = patient_id)
+all_pats <- unique(dat1$immucan_id)
+```
+## 2
+```{r}
+dat2 <- read_tsv("/mnt/immucan_volume/clinical_data/FINAL/LUNG-NSCLC2_curated_export_20260423_#_e1b3bae311355815dd66fbd785d61084/LUNG-NSCLC2_curated_export_20260423_samples.tsv")
+colnames(dat2) <- c("Patient_id","Sample_id","Sampling_day","sample_type","Sample_origin","Sampling_site","Treatment_naive")
+# rename column
+dat2 <- dplyr::rename(dat2,immucan_id = Patient_id)
+
+dat2 <- dat2 %>%
+  filter(sample_type == "Fixed tissue")
+
+# some patient ids are duplicated. check why
+DT::datatable(dat2 %>%
+  filter(immucan_id %in% dat2$immucan_id[duplicated(dat2$immucan_id)]))
+```
+
+## 3
+treatment
+note: we will get all the drugs from dat4 from the next chunk and then extract all the drugs from dat3 based on the names
+```{r}
+dat3 <- read_tsv("/mnt/immucan_volume/clinical_data/FINAL/LUNG-NSCLC2_curated_export_20260423_#_e1b3bae311355815dd66fbd785d61084/LUNG-NSCLC2_curated_export_20260423_lots.tsv")
+
+# fix type in Patient_id
+dat3 <- rename(dat3,immucan_id = patient_id)
+dat3 <- rename(dat3,Regimen_details = medication_details)
+
+# check if all patients are there. here we miss 5 patients.
+missing_treatment <-all_pats[!all_pats %in% unique(dat3$immucan_id)]
+
+dat3 <- dat3 %>%
+  filter(LoT_number == 1)
+
+dat3
+table(dat3$clinical_setting)
+length(unique(dat3$immucan_id))
+```
+
+## 4
+
+```{r}
+dat4 <- read_tsv("/mnt/immucan_volume/clinical_data/FINAL/LUNG-NSCLC2_curated_export_20260423_#_e1b3bae311355815dd66fbd785d61084/LUNG-NSCLC2_curated_export_20260423_medications.tsv")
+
+DT::datatable(dat4)
+
+dat4 <- rename(dat4,Drug = drug)
+dat4 <- rename(dat4,Drug_Class = drug_class)
+# fix type in Patient_id
+dat4 <- rename(dat4,immucan_id = patient_id)
+
+# check if all patients are there. here we miss 5 patients.
+missing_treatment <- all_pats[!all_pats %in% unique(dat4$immucan_id)]
+
+dat4 %>%
+  filter(LoT_number == 1) %>%
+  distinct(Drug)
+
+dat4 %>%
+  filter(grepl("Immuno", Drug))
+# we will fix some drug names
+dat4 <- dat4 %>%
+  mutate(Drug = ifelse(Drug == "Ado-trastuzumab emtansine","Trastuzumab Emtansine", Drug))
+
+chemodrugs <- dat4 %>%
+  filter(Drug_Class == "Chemotherapy") %>%
+  pull(Drug) %>%
+  unique()
+immunodrugs <- dat4 %>%
+  filter(Drug_Class == "Immunotherapy") %>%
+  pull(Drug) %>%
+  unique()
+TKIdrugs <- dat4 %>%
+  filter(Drug_Class == "Tyrosine kinase inhibitor") %>%
+  pull(Drug) %>%
+  unique()
+Otherdrugs <- dat4 %>%
+  filter(Drug_Class == "Other") %>%
+  pull(Drug) %>%
+  unique()
+
+# update dat3
+dat3 <- dat3 %>%
+  mutate(Chemotherapy_drugs = stringr::str_extract_all(dat3$Regimen_details, regex(paste(chemodrugs,collapse = "|"), ignore_case = TRUE)),
+         Chemotherapy_drugs = sapply(Chemotherapy_drugs, function(x) paste(unique(x), collapse = ", ")),
+         Immunotherapy_drugs = stringr::str_extract_all(dat3$Regimen_details, regex(paste(immunodrugs,collapse = "|"), ignore_case = TRUE)),
+         Immunotherapy_drugs = sapply(Immunotherapy_drugs, function(x) paste(unique(x), collapse = ", ")),
+         TKI_drugs = stringr::str_extract_all(dat3$Regimen_details, regex(paste(TKIdrugs,collapse = "|"), ignore_case = TRUE)),
+         TKI_drugs = sapply(TKI_drugs, function(x) paste(unique(x), collapse = ", ")),
+         Other_drugs = stringr::str_extract_all(dat3$Regimen_details, regex(paste(Otherdrugs,collapse = "|"), ignore_case = TRUE)),
+         Other_drugs = sapply(Other_drugs, function(x) paste(unique(x), collapse = ", ")))
+
+colnames(dat3) <- gsub(pattern = "medication",replacement = "Regimen", colnames(dat3))
+length(unique(dat4$immucan_id))
+```
+
+## 5
+```{r}
+dat5 <- read_tsv("/mnt/immucan_volume/clinical_data/FINAL/LUNG-NSCLC2_curated_export_20260423_#_e1b3bae311355815dd66fbd785d61084/LUNG-NSCLC2_curated_export_20260423_progressions.tsv")
+DT::datatable(dat5)
+
+# fix type in Patient_id
+dat5 <- rename(dat5,immucan_id = patient_id)
+dat5 <- rename(dat5,Progression_number = progression_number)
+unique(dat5$immucan_id)
+# check if all patients are there. here we miss 5 patients.
+missing_treatment <- all_pats[!all_pats %in% unique(dat5$immucan_id)]
+
+dat5 <- dat5 %>%
+  filter(Progression_number == 1)
+
+table(dat5$regional)
+```
+
+```{r}
+clin_dat <- plyr::join_all(dfs = list(dat1,dat2,dat3,dat5),by = "immucan_id")
+cat("unique patients: ",length(unique(clin_dat$immucan_id)),"\n")
+cat("rows in data: ",length(clin_dat$immucan_id),"\n")
+
+clin_dat %>%
+  filter(immucan_id == "LUNG-NSCLC2-0598") %>%
+  select(Sample_id)
+# list IMC patients
+imc <- list.files("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/IMC/Panel_1/data/")
+imc[grepl("LUNG-NSCLC2-0598", imc)]
+
+clin_dat <- clin_dat %>%
+  filter(Sample_id != "LUNG-NSCLC2-0598-FIXT-02")
+```
+
+# compare with old data
+```{r}
+traits
+clin_dat
+colnames(traits) <- paste0(colnames(traits), "_old")
+traits$immucan_id <- traits$immucan_id_old
+traits$immucan_id_old <- NULL
+cur_dat <- left_join(clin_dat,traits ,by = "immucan_id")
+
+cur_dat <- apply(cur_dat, 2,function(x) gsub(",",";",x))
+cur_dat <- apply(cur_dat, 2,function(x) gsub("\\t",";",x))
+cur_dat <- as.data.frame(cur_dat)
+colorder <- c("immucan_id",sort(colnames(cur_dat[,-1])))
+cur_dat <- cur_dat[,colorder]
+write.csv(cur_dat, "/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20260703_old_new_comparison.csv", row.names = FALSE, quote = FALSE)
+```
+
+```{r}
+sel_dat <- cur_dat %>%
+  select(immucan_id,smoking_status, smoking_status_old,stage_at_diagnosis, stage_old, type_of_adj_trt_old,first_line_old, Chemotherapy_drugs,  gender_old, sex,  neo_adjuvant_treatment_old,adjuvant_treatment_old,clinical_setting,Treatment_naive,time_to_event_old,last_FU_OS_days, censoring, censoring_old, Histology, simple_histology_old)
+sel_dat <- sel_dat %>%
+  mutate(stage_old = gsub("Stage ", "", stage_old))
+
+sel_dat %>%
+  mutate()
+
+write.csv(sel_dat, "/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20260703_old_new_comparison_selected.csv", row.names = FALSE, quote = FALSE)
+
+library(ggalluvial)
+sel_dat %>%
+  ggalluvial::geom_alluvium()
+
+```
+```{r}
+
+table(traits$never_vs_current_smoker_old)
+table(traits$current_vs_Ex_smoker_old)
+```
+
+# generate more columns
+
+```{r}
+#censoring
+clin_dat <- clin_dat %>%
+  rename(OS_days = oS_days,
+         Last_FU_OS_event = last_FU_OS_event) 
+clin_dat <- clin_dat %>%
+  mutate(censoring = ifelse(Last_FU_OS_event == "Dead",1,0),
+         OS_days = as.numeric(OS_days))
+
+
+# histology
+clin_dat <- clin_dat %>%
+  mutate(Histology = ifelse(grepl("adenocarcinoma|Adenocarcinoma", histopathologic_type),"LUAD", "Other"),
+         Histology = ifelse(grepl("squamous cell carcinoma|Squamous cell carcinoma", histopathologic_type),"LUSC", Histology),
+         Histology = ifelse(grepl("squamous cell carcinoma|Squamous cell carcinoma", histopathologic_type),"LUSC", Histology))
+
+clin_dat <- clin_dat %>%
+  rename(Number_of_regimens =number_of_Regimens)
+# treatment
+clin_dat <- clin_dat %>%
+  mutate(treatment = ifelse(Regimen_Chemotherapy == "No" & Regimen_Immunotherapy == "No" & Regimen_TKI == "No"& Regimen_other_drug_treatments != "No", "Other","None"),
+         treatment = ifelse(Regimen_Chemotherapy != "No" & Regimen_Immunotherapy == "No" & Regimen_TKI == "No"& Regimen_other_drug_treatments == "No", "Chemo",treatment),
+         treatment = ifelse(Regimen_Chemotherapy == "No" & Regimen_Immunotherapy != "No" & Regimen_TKI == "No"& Regimen_other_drug_treatments == "No", "ICI",treatment),
+         treatment = ifelse(Regimen_Chemotherapy == "No" & Regimen_Immunotherapy == "No" & Regimen_TKI != "No"& Regimen_other_drug_treatments == "No", "TKI",treatment),
+         treatment = ifelse(Regimen_Chemotherapy != "No" & Regimen_Immunotherapy != "No" & Regimen_TKI == "No"& Regimen_other_drug_treatments == "No", "Chemo+ICI",treatment),
+         treatment = ifelse(Regimen_Chemotherapy != "No" & Regimen_Immunotherapy != "No" & Regimen_TKI != "No"& Regimen_other_drug_treatments == "No", "Chemo+ICI+TKI",treatment),
+         treatment = ifelse(Regimen_Chemotherapy != "No" & Regimen_Immunotherapy == "No" & Regimen_TKI != "No"& Regimen_other_drug_treatments == "No", "Chemo+TKI",treatment),
+         treatment = ifelse(Regimen_Chemotherapy == "No" & Regimen_Immunotherapy != "No" & Regimen_TKI != "No"& Regimen_other_drug_treatments == "No", "ICI+TKI",treatment),
+         treatment = ifelse(Regimen_Chemotherapy != "No" & Regimen_Immunotherapy == "No" & Regimen_TKI == "No"& Regimen_other_drug_treatments != "No", "Chemo+Other",treatment),
+         treatment = ifelse(Regimen_Chemotherapy == "No" & Regimen_Immunotherapy != "No" & Regimen_TKI == "No"& Regimen_other_drug_treatments != "No", "ICI+Other",treatment),
+         treatment = ifelse(Regimen_Chemotherapy == "No" & Regimen_Immunotherapy == "No" & Regimen_TKI != "No"& Regimen_other_drug_treatments != "No", "TKI+Other",treatment),
+         treatment = ifelse(Regimen_Chemotherapy != "No" & Regimen_Immunotherapy != "No" & Regimen_TKI != "No"& Regimen_other_drug_treatments != "No", "Chemo+ICI+TKI+Other",treatment),
+         treatment = ifelse(Regimen_Chemotherapy != "No" & Regimen_Immunotherapy != "No" & Regimen_TKI == "No"& Regimen_other_drug_treatments != "No", "Chemo+ICI+Other",treatment),
+         treatment = ifelse(is.na(Number_of_regimens),"None", treatment))
+
+
+# here we will ignore the "Other" drug treatments to obtain the broad treatment
+clin_dat <- clin_dat %>%
+  mutate(broad_treatment = ifelse(Regimen_Chemotherapy == "No" & Regimen_Immunotherapy == "No" & Regimen_TKI == "No"& Regimen_other_drug_treatments != "No", "Other","None"),
+         broad_treatment = ifelse(Regimen_Chemotherapy == "No" & Regimen_Immunotherapy == "No" & Regimen_TKI != "No", "TKI",broad_treatment),
+         broad_treatment = ifelse(Regimen_Chemotherapy == "No" & Regimen_Immunotherapy != "No" & Regimen_TKI == "No", "ICI",broad_treatment),
+         broad_treatment = ifelse(Regimen_Chemotherapy != "No" & Regimen_Immunotherapy == "No" & Regimen_TKI == "No", "Chemo",broad_treatment),
+         broad_treatment = ifelse(Regimen_Chemotherapy != "No" & Regimen_Immunotherapy != "No" & Regimen_TKI == "No", "Chemo+ICI",broad_treatment),
+         broad_treatment = ifelse(Regimen_Chemotherapy != "No" & Regimen_Immunotherapy != "No" & Regimen_TKI != "No", "Chemo+ICI+TKI",broad_treatment),
+         broad_treatment = ifelse(Regimen_Chemotherapy != "No" & Regimen_Immunotherapy == "No" & Regimen_TKI != "No", "Chemo+TKI",broad_treatment),
+         broad_treatment = ifelse(Regimen_Chemotherapy == "No" & Regimen_Immunotherapy != "No" & Regimen_TKI != "No", "ICI+TKI",broad_treatment),
+         broad_treatment = ifelse(is.na(Number_of_regimens),"None", broad_treatment))
+
+# manual addition
+clin_dat <- clin_dat %>%
+  mutate(treatment = ifelse(immucan_id =="IMMU-NSCLC-0368", "Chemo+ICI", treatment),
+         broad_treatment = ifelse(immucan_id =="IMMU-NSCLC-0368", "Chemo+ICI", broad_treatment))
+
+# all TKI treatment will be called TKI irrespective of additional other treatments
+clin_dat <- clin_dat %>%
+  mutate(broad_treatment = ifelse(grepl("TKI", broad_treatment),"TKI",broad_treatment))
+
+# recurrence: for some patients we have the recurrent samples. we will record this here
+clin_dat <- clin_dat %>%
+  mutate(Sample_type = ifelse(!is.na(TNM_at_recurrence_day),"recurrence_sample","primary_sample"))
+
+
+
+# PFS censoring
+clin_dat <- clin_dat %>%
+  rename(PFS_event = pFS_event)
+clin_dat <- clin_dat %>%
+  rename(PFS_days = pFS_days)
+
+clin_dat <- clin_dat %>%
+  mutate(PFS_censoring = ifelse(PFS_event %in% c("alive_censored","lost to follow-up", "censored"), 0, 1),
+         PFS_days =as.numeric(PFS_days))
+
+# progression before 6 month -> primary resistance
+# progression after 6 month -> secondary resistance
+clin_dat <- clin_dat %>%
+  mutate(resistance = ifelse(PFS_days < 365/2, "primary", "secondary"))
+
+# long term survivors
+clin_dat <- clin_dat %>%
+  rename(OS_event = oS_event)
+clin_dat <- clin_dat %>%
+  mutate(long_survivor = ifelse(OS_days > 3*365 & OS_event == "Alive","yes", "no"))
+```
+
+# occult metastasis
+
+select all stages below IIIB
+
+date of diagnosis - date of progression < 150 days -> sample eligible
+if > 150 days then if sample from original tumor -> exclude
+if new sample -> keep
+```{r}
+# clin_dat %>%
+#   filter(stage_at_diagnosis %in% c("IA1","IA3","IIB","IA2","IIIA","IB"))
+#          
+# test <-  clin_dat %>%
+#   filter(stage_at_diagnosis %in% c("IA1","IA3","IIB","IA2","IIIA","IB"),
+#          as.integer(PFS_days) > 150,
+#          Sample_origin == "Primary tumor")
+# table(test$broad_treatment)      
+#          
+#          
+# exclude_ids <- clin_dat %>%
+#   filter(stage_at_diagnosis %in% c("IA1","IA3","IIB","IA2","IIIA","IB"),
+#          as.integer(PFS_days) > 150,
+#          Sample_origin == "Primary tumor") %>%
+#   pull(immucan_id)
+# 
+# clin_dat <- clin_dat %>%
+#   filter(!immucan_id %in% exclude_ids)
+```
+
+# simple_stage
+```{r}
+clin_dat <- clin_dat %>%
+  mutate(Stage = ifelse(stage_at_diagnosis %in% c("IB","IA2", "IA3"), "I", NA),
+         Stage = ifelse(stage_at_diagnosis %in% c("IIB"), "II", Stage),
+         Stage = ifelse(stage_at_diagnosis %in% c("IIIA","IIIB","IIIC"), "III", Stage),
+         Stage = ifelse(stage_at_diagnosis %in% c("IVA","IVB"), "IV", Stage))
+```
+
+# age dichotomization
+```{r}
+clin_dat <- clin_dat %>%
+  mutate(diagnosis_age = as.integer(diagnosis_age)) %>%
+  mutate(Age_dicho = ifelse(diagnosis_age < mean(diagnosis_age,),"younger", "older"),
+         young_patients = ifelse(diagnosis_age < 50,"<50",">50"))
+```
+
+
+# group sample origin
+```{r}
+clin_dat <- clin_dat %>%
+  mutate(Tissue_origin = ifelse(!Sample_origin %in%  c("Distant metastases", "Primary tumor", "Regional lymph node metastases"),"Other", Sample_origin))
+```
+
+
+# duplicates
+for some patients we actually have 2 samples. we still need to sort out which ones we will use.
+```{r}
+ids <- clin_dat[duplicated(clin_dat$immucan_id),] %>%
+  pull(immucan_id)
+
+# we will use the information from the sample selection to define which data to keep
+clin_dat <- clin_dat %>%
+  filter(Sample_id %in% keep_samp)
+```
+
+# driver mutations
+many patients did not receive testing. we will add this information once we have it from the WES data
+```{r}
+clin_dat %>%
+  mutate(driver_mutation = paste(EGFR_testing,PTEN_testing,ALK_testing, ROS1_testing, MET_testing,sep = "_")) %>%
+  select(driver_mutation)
+```
+
+# clean up progression column names
+```{r}
+clin_dat <- clin_dat |>
+  rename(local_progression = local,
+         regional_progression = regional,
+         distant_progression = distant,
+         site_progression = site)
+```
+
+
+# clean up distant met location
+```{r}
+# fix one row
+clin_dat <- clin_dat %>%
+  mutate(Sample_origin = ifelse(Sample_origin == "ENDOBRONCHIAL BIOPSY FROM INTERMEDIATE BRONCHUS.", "Primary tumor",Sample_origin),
+         Sample_origin = ifelse(Sample_origin == "FNA MEDIASTINAL LYMPH NODE", "Primary tumor",Sample_origin),
+         Sample_origin = ifelse(Sample_origin == "Satellite/in-transit metastases", "Distant metastasis",Sample_origin),
+         Sample_origin = ifelse(Sample_origin == "Local recurrence", "Regional lymph node metastases",Sample_origin),
+         Sample_origin = ifelse(Sample_origin == "Distant metastasis", "Distant metastases",Sample_origin),
+         Sample_origin = ifelse(Sample_origin == "PLEURAL METASTASE", "Distant metastases",Sample_origin),
+         Sample_origin = ifelse(is.na(Sample_origin) & Sampling_site == "BRAIN, RIGHT CEREBELLUM", "Distant metastases",Sample_origin))
+
+clin_dat <- clin_dat %>%
+  mutate(Sample_location = ifelse(grepl("BRAIN|CEREBELLUM|CEREBELUM|CEREBELLAR|BULBAR|FRONTAL MASS|RIGHT PRECENTRAL LESION",Sampling_site),"Brain","Other"),
+         Sample_location = ifelse(grepl("CERVICAL",Sampling_site),"Cervical_node",Sample_location),
+         Sample_location = ifelse(grepl("LIVER|HEPATIC",Sampling_site),"Liver",Sample_location),
+         Sample_location = ifelse(grepl("PLEURA",Sampling_site),"Pleura",Sample_location),
+         Sample_location = ifelse(grepl("BONE|ULNA|OSTEOLITIC",Sampling_site),"Bone",Sample_location),
+         Sample_location = ifelse(grepl("CUTANEOUS|SKIN|SUBCOUTANEOUS",Sampling_site),"Skin",Sample_location),
+         Sample_location = ifelse(grepl("RIGHT ADRENAL|GLAND",Sampling_site),"Gland",Sample_location),
+         Sample_location = ifelse(grepl("NODE",Sampling_site),"Lymph node",Sample_location),
+         Sample_location = ifelse(Sample_origin == "Primary tumor","Lung",Sample_location),
+         Sample_location = ifelse(Sample_origin == "Regional lymph node metastases","Lymph node",Sample_location))
+clin_dat |>
+  select(immucan_id,Sampling_site,Sample_origin, Sample_location) %>%
+  filter(Sample_location == "Other")
+
+table(clin_dat$Sample_location)
+table(clin_dat$Sample_origin)
+table(clin_dat$Sampling_site)
+table(clin_dat$Sample_origin,clin_dat$Sample_location)
+```
+
+
+# clean up colnames
+```{r}
+colnames(clin_dat)
+clin_dat <- clin_dat %>%
+  rename(Sex = sex,
+         Stage_at_diagnosis = stage_at_diagnosis,
+         Young_patients = young_patients,
+         Broad_treatment= broad_treatment)
+```
+
+# remove data
+```{r}
+clin_dat$sample_type <- NULL
+clin_dat$T_category_yTNM <- NULL
+clin_dat$N_category_yTNM <- NULL
+clin_dat$M_category_yTNM <- NULL
+clin_dat$yTNM_day <- NULL
+clin_dat$HPV_test <- NULL
+clin_dat$HER2_testing <- NULL
+clin_dat$PTEN_testing <- NULL
+clin_dat$Residual_cancer_burden <- NULL
+clin_dat$commercial_use <- NULL
+clin_dat$comment <- NULL
+```
+
+
+# uniqueness of data
+```{r}
+cat("unique patients: ",length(unique(clin_dat$immucan_id)), "\n")
+cat("unique samples: ",length(unique(clin_dat$Sample_id)), "\n")
+```
+
+# export
+```{r}
+# export
+write.table(clin_dat, "/mnt/immucan_volume/processed_data/NSCLC_cohort/data/clinical/20251205_clinical.txt",
+            sep = "\t", row.names = FALSE)
+```
+
+
+# Driver addition from WES
+
+```{r}
+mut <- readRDS("/mnt/immucan_volume/processed_data/NSCLC_cohort/output/WES/Rout/selected_mutations.rds")
+
+clin_dat <- left_join(clin_dat,mut,"immucan_id")
+```
+
+# MSI
+```{r}
+msi <- read.csv("/mnt/immucan_volume/processed_data/NSCLC_cohort/output/WES/Rout/NSCLC_msi.csv")
+msi %>%
+  filter(immucan_id %in% msi$immucan_id[duplicated(msi$immucan_id)])
+
+clin_dat <- left_join(clin_dat,msi %>% select(immucan_id,MSI, msi_score), "immucan_id")
+```
+
+# TMB
+```{r}
+tmb <- read.csv("/mnt/immucan_volume/processed_data/NSCLC_cohort/output/WES/Rout/NSCLC_tmb.csv")
+
+clin_dat <- left_join(clin_dat,tmb %>% select(immucan_id,TMB, TMB_score), "immucan_id")
+```
+
+
+# unique clinical data
+note: there are patients from which we have more than one sample. We keep this information because we want to know the sample origin. However, for survival modeling, we need unique entries per patient. we will do this now.
+
+```{r}
+surv_table <- clin_dat %>%
+  select(-Sample_id,Sampling_day,Sample_type, Sample_origin,Sampling_site, Tissue_origin)
+```
+
+# Save file
+```{r}
+write.table(surv_table, "/mnt/immucan_volume/processed_data/NSCLC_cohort/data/clinical/20251205_survival.txt",
+            sep = "\t", row.names = FALSE)
+```
+
+
+# Curation
+after generation of this file it was curated by Marie. We will merge with the curation
+
+```{r}
+curated <- as.data.frame(read_tsv("/mnt/immucan_volume/processed_data/NSCLC_cohort/data/clinical/20251205_survival_MM_curated.txt"))
+surv_table <- as.data.frame(read_tsv("/mnt/immucan_volume/processed_data/NSCLC_cohort/data/clinical/20251205_survival.txt"))
+
+for (i in colnames(surv_table)) {
+  cat(tryCatch(identical(surv_table[i], curated[i])), i,"\n")
+}
+
+# only diagnosis stage changed
+
+data.frame(old = surv_table$stage_at_registration,
+           new = curated$stage_at_registration) %>%
+  filter(old != new)
+
+data.frame(old = surv_table$Stage_at_diagnosis,
+           new = curated$Stage_at_diagnosis) %>%
+  filter(!old == new)
+
+curated %>% 
+  filter(is.na(Stage)) %>%
+  select(Stage, Stage_at_diagnosis, stage_at_registration)
+## simple_stage
+table(curated$Stage_at_diagnosis)
+curated <- curated %>%
+  mutate(Stage = ifelse(Stage_at_diagnosis %in% c("IB","IA2","IA1","IA", "IA3"), "I", NA),
+         Stage = ifelse(Stage_at_diagnosis %in% c("IIA","IIB"), "II", Stage),
+         Stage = ifelse(Stage_at_diagnosis %in% c("IIIA","IIIB","IIIC"), "III", Stage),
+         Stage = ifelse(Stage_at_diagnosis %in% c("IVA","IVB", "IV"), "IV", Stage))
+table(curated$Stage)
+
+# save
+write.table(curated, "/mnt/immucan_volume/processed_data/NSCLC_cohort/data/clinical/20251205_survival.txt",
+            sep = "\t", row.names = FALSE)
+```

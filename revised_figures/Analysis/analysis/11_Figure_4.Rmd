@@ -123,7 +123,7 @@ dat_z <- left_join(modules, traits, "immucan_id") %>%
          CDKN2A = ifelse(CDKN2A == TRUE, 1, 0))
 
 # ---- 1. Config: EDIT these to match your actual column names ----
-tme_cols  <- colnames(dat_z)[1:8]
+tme_cols  <- colnames(dat_z)[1:5]
 histology_col  <- "LUAD_vs_LUSC"                              # expects values "LUAD" / "LUSC"
 mut_cols_luad  <- c("EGFR", "KRAS", "STK11", "KEAP1", "CDKN2A", "TP53")   # PIK3CA excluded: ~1 case in LUAD
 mut_cols_lusc  <- c("CDKN2A", "PIK3CA", "TP53")                            # EGFR/KRAS/STK11/KEAP1 excluded in LUSC
@@ -282,7 +282,7 @@ pluad <- tier4_luad %>%
  ggplot(aes(x = mut_var, y = tme_var, fill = estimate)) +
     geom_tile() +
     geom_text(aes(label = ifelse(p_fdr < 0.05, "*", "")), color = "black") +
-    scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+    scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B", midpoint = 0) +
     #facet_wrap(~method) +
     theme_minimal() +
     labs(
@@ -303,7 +303,7 @@ plusc <- tier4_lusc %>%
  ggplot(aes(x = mut_var, y = tme_var, fill = estimate)) +
     geom_tile() +
     geom_text(aes(label = ifelse(p_fdr < 0.05, "*", "")), color = "black") +
-    scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+    scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B", midpoint = 0) +
     #facet_wrap(~method) +
     theme_minimal() +
     labs(
@@ -2849,7 +2849,8 @@ p_Tumor_HLADR_EGFR <- mean_exp %>%
   filter(celltypes == "Tumor",
          name %in% c("HLADR_p1")) %>%
   left_join(traits, by = "immucan_id") %>%
-  filter(simple_histology == "Adenocarcinoma") %>%
+  filter(simple_histology == "Adenocarcinoma",
+         !is.na(EGFR)) %>%
   ggplot(aes(x = EGFR, y = value,fill= EGFR))+
   geom_boxplot(outlier.shape = NA)+
   geom_jitter(aes(color = EGFR),position = position_jitterdodge(jitter.width = 0.2), size= 0.3)+
@@ -2876,6 +2877,38 @@ ggsave(filename = paste0(out_folder,"4C_HLADR_on_tumor_cells_EGFR.pdf"),
        width = 1,
        height = 2)
 ```
+
+## Tumor cells HLADR in KRAS
+```{r, fig.height=5, fig.width=5}
+p_Tumor_HLADR_KRAS <- mean_exp %>%
+  filter(celltypes == "Tumor",
+         name %in% c("HLADR_p1")) %>%
+  left_join(traits, by = "immucan_id") %>%
+  filter(simple_histology == "Adenocarcinoma",
+         !is.na(KRAS),
+         KEAP1 == FALSE,
+         STK11 == FALSE) %>%
+  ggplot(aes(x = KRAS, y = value,fill= KRAS))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_jitter(aes(color = KRAS),position = position_jitterdodge(jitter.width = 0.2), size= 0.3)+
+  scale_fill_manual(values = alpha(c("red", "blue"),alpha = 0.6))+
+  scale_color_manual(values = c("red", "blue"))+
+  facet_wrap(.~name, scales= "free")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  stat_compare_means(size = 2,label.y = 4,label = "p.format")+
+    theme_bw()+
+  theme(axis.text.y = element_text(size = 6),
+        axis.text.x = element_text(size = 6,angle = 90, vjust = 1, hjust = 0.5),
+        legend.text = element_text(size = 6),
+        legend.title = element_text(size = 6),
+        strip.text = element_text(size = 6),
+        axis.title.x = element_text(size = 7),
+        axis.title.y = element_text(size = 7))+
+  theme(legend.position = "none")+
+  coord_cartesian(ylim = c(0.2,4.2))
+p_Tumor_HLADR_KRAS
+```
+
 
 ## generate IMC images HLADR
 
@@ -2970,7 +3003,8 @@ p_CD8_CXCL13_EGFR <- mean_exp %>%
   filter(celltypes == "CD8",
          name %in% c("CXCL13_p2", "PD1_p2","LAG3_p1", "Tim3_p2")) %>%
   left_join(traits, by = "immucan_id") %>%
-  filter(simple_histology == "Adenocarcinoma") %>%
+  filter(simple_histology == "Adenocarcinoma",
+         !is.na(EGFR)) %>%
   ggplot(aes(x = EGFR, y = value,fill= EGFR))+
   geom_boxplot(outliers = FALSE)+
   geom_jitter(aes(color = EGFR),position = position_jitterdodge(jitter.width = 0.2), size= 0.5)+
@@ -3351,3 +3385,7 @@ p <- cur_dat %>%
   #theme(plot.margin = unit(c(5, 2.5, 2.5, 2.5), "cm"))
 p
 ```
+
+# HLADR validation
+
+# HLADR tumor interaction with T cells

@@ -5,7 +5,7 @@ lollipop_plot <- function(data, condition, var_A, var_B, order = TRUE, order_vec
   volcano_df <- data %>%
     filter(!is.na(!!condition_sym)) %>%
     group_by(name) %>%
-    mutate(value_z = if (isTRUE(zscore_data)) as.numeric(scale(value)) else as.numeric(value)) %>%  # RNA data is not z score, imaging modules are z scored
+    mutate(value_z = if (isTRUE(zscore_data)) as.numeric(scale(value)) else as.numeric(value)) %>%
     summarise(
       delta_z = mean(value_z[!!condition_sym == var_A], na.rm = TRUE) -
         mean(value_z[!!condition_sym == var_B], na.rm = TRUE),
@@ -33,21 +33,29 @@ lollipop_plot <- function(data, condition, var_A, var_B, order = TRUE, order_vec
   dir_A <- paste("Up in", var_A)
   dir_B <- paste("Up in", var_B)
 
+  # ensure the legend shows a break at the true min (and max) of the data,
+  # in addition to the automatically chosen "pretty" breaks
+  size_range  <- range(volcano_df$neg_log10_p, na.rm = TRUE)
+  size_breaks <- sort(unique(c(round(size_range[1], 1),
+                               scales::breaks_pretty()(size_range),
+                               round(size_range[2], 1))))
+  size_breaks <- size_breaks[size_breaks >= size_range[1] & size_breaks <= size_range[2]]
+
   p2 <- ggplot(volcano_df, aes(x = delta_z, y = name)) +
     geom_segment(aes(x = 0, xend = delta_z, y = name, yend = name), color = "grey70") +
-    geom_point(aes(color = direction, size = -log10(pvalue))) +
+    geom_point(aes(color = direction, size = neg_log10_p)) +
     scale_color_manual(values = setNames(c(col_A, col_B), c(dir_A, dir_B))) +
     ggnewscale::new_scale_color() +
     geom_point(
       data = subset(volcano_df, sig != "Non"),
-      aes(x = delta_z, y = name, size = -log10(pvalue), color = sig),
+      aes(x = delta_z, y = name, size = neg_log10_p, color = sig),
       shape = 21, fill = NA, stroke = 1
     ) +
     scale_color_manual(name = "Significance",
                        values = c("FDR < 0.1" = "black", "P < 0.05" = "grey60")) +
+    scale_size_continuous(name = "-log10(p-value)", breaks = size_breaks) +
     geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
-    labs(x = paste0("Δ z-score (", var_A, " - ", var_B, ")"), y = NULL,
-         size = "-log10(p-value)") +
+    labs(x = paste0("Δ z-score (", var_A, " - ", var_B, ")"), y = NULL) +
     theme_minimal() +
     theme(
       axis.title.x = element_text(size = 14),

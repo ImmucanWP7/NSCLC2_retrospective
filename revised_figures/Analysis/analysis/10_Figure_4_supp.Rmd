@@ -43,7 +43,7 @@ we will load the data we generated at the beginning of figure 2
 dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/abundances_dat.rds"))
 dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
 cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
-clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/clinical.csv")
 traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
 
 # variables
@@ -212,7 +212,7 @@ TLS_summary <- do.call(rbind,cur_list)
 
 TLS_summary %>%
   mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
-  select(immucan_id,size, TLS.ID) %>%
+  dplyr::select(immucan_id,size, TLS.ID) %>%
   distinct() %>%
   group_by(immucan_id) %>%
   filter(!is.na(TLS.ID)) %>%
@@ -339,7 +339,7 @@ dist_dat %>%
 TLS_dat <- TLS_summary %>%
   as.data.frame() %>%
   mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
-  select(immucan_id,size, TLS.ID,TLS_dist_to_tumor) %>%
+  dplyr::select(immucan_id,size, TLS.ID,TLS_dist_to_tumor) %>%
   distinct() %>%
  mutate(location = ifelse(TLS_dist_to_tumor > 500, "outside","in_tumor")) %>%
   group_by(immucan_id) %>%
@@ -709,7 +709,6 @@ ggsave(filename = paste0(out_folder,"S4I_Patches_stage.pdf"),
 
 # S4J B cell and Patch density survival
 
-
 ```{r}
 cur_dat <- left_join(TLS_dat,IF1,c("immucan_id"))%>%
   filter(location == "in_tumor") %>%
@@ -778,4 +777,1769 @@ ggsave(filename = paste0(out_folder,"S4j_survival.pdf"),
        width = 3.5,
        height = 3)
 ```
+
+# S4J B cell and Patch density survival
+
+```{r}
+cur_dat <- left_join(TLS_dat,IF1,c("immucan_id"))%>%
+  filter(location == "in_tumor") %>%
+  left_join(traits,by= "immucan_id") %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  ungroup() %>%
+  mutate(Patch_density= TLS_count / tumor_size,
+         Patch_density_dicho = as.factor(ntile(Patch_density, 2)),
+         Patch_density_group_median = ifelse(Patch_density > median(Patch_density),TRUE, FALSE),
+         LUAD_vs_LUSC = ifelse(is.na(LUAD_vs_LUSC),"Other",LUAD_vs_LUSC),
+         LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma","LUAD",LUAD_vs_LUSC))
+
+
+
+p.list <- list()
+for(j in c("LUAD")) {
+  if (j == "All") {
+    df <- cur_dat %>%
+      filter(!is.na(cur_dat[,"Patch_density_dicho"]))
+  } else{
+        df <- cur_dat %>%
+      filter(!is.na(cur_dat[,"Patch_density_dicho"]),
+             LUAD_vs_LUSC == j)
+  }
+ 
+  surv_ob <- Surv(df$time_to_event,df$censoring)
+  p.list[[paste0(j, "_Patch_density_dicho")]] <- coxph( as.formula(paste0("surv_ob ~ + Patch_density_dicho")),
+                                                        data = df)
+}
+
+df <- data.frame(HR =      unlist(lapply(p.list, function(x){summary(x)$coefficients[,"exp(coef)"]})),
+                 p.value = unlist(lapply(p.list, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 lower_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "lower .95"]})),
+                 upper_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "upper .95"]}))) 
+
+df1 <- df %>% 
+  mutate(hist = str_split_i(rownames(df),"_",1))
+  
+df1
+
+p <- df1 %>%
+  ggplot(aes(x = HR,y = hist, col = hist))+
+  geom_point(size = 2)+
+  geom_errorbar(aes(xmin=lower_conf, xmax = upper_conf),lwd =1,width = 0.3)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust= 1))+
+  #scale_y_discrete(labels = function(x) str_split_i(x,"_",2))+
+  scale_x_log10()+
+  theme_bw()+
+  geom_vline(xintercept = 1,linetype = "dashed")+
+  geom_text(aes(label = paste0("p : ",round(p.value,digits = 3))),
+            col = "black",
+            vjust = -1,
+            inherit.aes = TRUE)+
+  scale_color_manual(values = c("LUAD" = "blue", "LUSC" = "orange", "Other" = "gray40", "All" = "black"),name = "Histology")+
+  theme(axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title.x = element_text(size = 10),
+        axis.title.y = element_text(size = 10))+
+  labs(x = "HR",y = "Histology")
+
+p
+```
+
+dichotomizing within LUAD also splits for favorable survival
+
+# S4K overall B cell patch count for survival
+
+```{r}
+cur_dat <- left_join(TLS_dat,IF1,c("immucan_id"))%>%
+  group_by(immucan_id) %>%
+  left_join(traits,by= "immucan_id") %>%
+  mutate(TLS  = sum(TLS_count)) %>%
+  ungroup() %>%
+  mutate(Patch_density= TLS / tumor_size,
+         Patch_density_dicho = as.factor(ntile(Patch_density, 2)),
+         Patch_density_group_median = ifelse(Patch_density > median(Patch_density),TRUE, FALSE),
+         LUAD_vs_LUSC = ifelse(is.na(LUAD_vs_LUSC),"Other",LUAD_vs_LUSC),
+         LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma","LUAD",LUAD_vs_LUSC),
+         LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Squamous cell carcinoma","LUSC",LUAD_vs_LUSC))
+
+
+
+p.list <- list()
+for(j in c("LUAD", "LUSC", "Other", "All")) {
+  if (j == "All") {
+    df <- cur_dat %>%
+      filter(!is.na(cur_dat[,"Patch_density_dicho"]))
+  } else{
+        df <- cur_dat %>%
+      filter(!is.na(cur_dat[,"Patch_density_dicho"]),
+             LUAD_vs_LUSC == j)
+  }
+ 
+  surv_ob <- Surv(df$time_to_event,df$censoring)
+  p.list[[paste0(j, "_Patch_density_dicho")]] <- coxph( as.formula(paste0("surv_ob ~ + Patch_density_dicho")),
+                                                        data = df)
+}
+
+df <- data.frame(HR =      unlist(lapply(p.list, function(x){summary(x)$coefficients[,"exp(coef)"]})),
+                 p.value = unlist(lapply(p.list, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 lower_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "lower .95"]})),
+                 upper_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "upper .95"]}))) 
+
+df1 <- df %>% 
+  mutate(hist = str_split_i(rownames(df),"_",1))
+  
+df1
+
+p <- df1 %>%
+  ggplot(aes(x = HR,y = hist, col = hist))+
+  geom_point(size = 2)+
+  geom_errorbar(aes(xmin=lower_conf, xmax = upper_conf),lwd =1,width = 0.3)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust= 1))+
+  #scale_y_discrete(labels = function(x) str_split_i(x,"_",2))+
+  scale_x_log10()+
+  theme_bw()+
+  geom_vline(xintercept = 1,linetype = "dashed")+
+  geom_text(aes(label = paste0("p : ",round(p.value,digits = 3))),
+            col = "black",
+            vjust = -1,
+            inherit.aes = TRUE)+
+  scale_color_manual(values = c("LUAD" = "blue", "LUSC" = "orange", "Other" = "gray40", "All" = "black"),name = "Histology")+
+  theme(axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title.x = element_text(size = 10),
+        axis.title.y = element_text(size = 10))+
+  labs(x = "HR",y = "Histology")
+
+p
+```
+
+# HE derived TLS custom filtered
+
+```{r}
+dat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/HE/hooknetTLS/custom_filtered/annotation_summary.rds")
+
+dat <- dat %>%
+  mutate(sample  = str_split_i(sample,"_#_",1)) %>%
+  group_by(sample) %>%
+  dplyr::count(class) %>%
+  arrange(desc(n))
+
+cur_files <- list.files("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IF/Rout/IF1_features/TLS_summary",full.names = TRUE)
+cur_list <- list()
+for (i in cur_files) {
+  cur_file <- read.csv(i, check.names = FALSE)
+  cur_list[[i]] <- cur_file %>%
+    pivot_longer(cols = -c(colnames(cur_file)[1:4],colnames(cur_file)[ncol(cur_file)]))
+
+}
+
+TLS_summary <- do.call(rbind,cur_list)
+
+mif <- TLS_summary %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  dplyr::select(immucan_id,size, TLS.ID) %>%
+  distinct() %>%
+  group_by(immucan_id) %>%
+  filter(!is.na(TLS.ID)) %>%
+  dplyr::count(immucan_id) %>%
+  arrange(desc(n))
+
+
+mif
+dat <- dat %>%
+  ungroup() %>%
+  pivot_wider(id_cols = sample,names_from = class, values_from = n) %>%
+  mutate(immucan_id = str_split_i(sample,"-FIXT",1),
+         HE_section = str_split_i(sample,"-FIXT-01-",2))
+
+dup_entries <- dat %>%
+  group_by(immucan_id) %>%
+  summarise(n = n()) %>%
+  filter(n > 1) %>%
+  pull(immucan_id)
+
+
+
+
+#THere are duplicated HE files: manual selection
+keep_ids <- 
+  c("LUNG-NSCLC2-0613-FIXT-01-HES-02","LUNG-NSCLC2-0614-FIXT-01-HES-02","LUNG-NSCLC2-0616-FIXT-01-HES-02","LUNG-NSCLC2-0617-FIXT-01-HES-02","LUNG-NSCLC2-0621-FIXT-01-HES-02",
+  "LUNG-NSCLC2-0622-FIXT-01-HES-02","LUNG-NSCLC2-0623-FIXT-01-HES-02","LUNG-NSCLC2-0628-FIXT-01-HES-02","LUNG-NSCLC2-0629-FIXT-01-HES-02",
+  "LUNG-NSCLC2-0630-FIXT-01-HES-02","LUNG-NSCLC2-0631-FIXT-01-HES-02","LUNG-NSCLC2-0632-FIXT-01-HES-02","LUNG-NSCLC2-0633-FIXT-01-HES-02",
+  "LUNG-NSCLC2-0634-FIXT-01-HES-02","LUNG-NSCLC2-0635-FIXT-01-HES-01","LUNG-NSCLC2-0636-FIXT-01-HES-02","LUNG-NSCLC2-0636-FIXT-01-HES-02",
+  "LUNG-NSCLC2-0639-FIXT-01-HES-02","LUNG-NSCLC2-0642-FIXT-01-HES-02","LUNG-NSCLC2-0643-FIXT-01-HES-02","LUNG-NSCLC2-0644-FIXT-01-HES-02",
+  "LUNG-NSCLC2-0646-FIXT-01-HES-02","LUNG-NSCLC2-0647-FIXT-01-HES-02","LUNG-NSCLC2-0648-FIXT-01-HES-02","LUNG-NSCLC2-0650-FIXT-01-HES-02",
+  "LUNG-NSCLC2-0651-FIXT-01-HES-02","LUNG-NSCLC2-0652-FIXT-01-HES-02","LUNG-NSCLC2-0657-FIXT-01-HES-02","LUNG-NSCLC2-0658-FIXT-01-HES-02",
+  "LUNG-NSCLC2-0660-FIXT-01-HES-02","LUNG-NSCLC2-0662-FIXT-01-HES-01","LUNG-NSCLC2-0663-FIXT-01-HES-01","LUNG-NSCLC2-0665-FIXT-01-HES-02",
+  "LUNG-NSCLC2-0667-FIXT-01-HES-02","LUNG-NSCLC2-0670-FIXT-01-HES-02","LUNG-NSCLC2-0672-FIXT-01-HES-02","LUNG-NSCLC2-0673-FIXT-01-HES-02",
+  "LUNG-NSCLC2-0676-FIXT-01-HES-02")
+
+dat <- dat %>%
+  mutate( keep = ifelse(immucan_id %in% dup_entries & !sample %in% keep_ids, FALSE, TRUE ))%>%
+  filter(keep == TRUE)
+
+```
+
+```{r, fig.height=4, fig.width=4}
+dat %>%
+  ggplot(aes(x = tls, y = gc))+
+  geom_point()+
+  theme_bw()+
+  ylab("gc count (HE)")+
+  xlab("tls count (HE)")+
+  geom_smooth(method='lm', formula = y~x) +
+  stat_cor(aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),
+           label.x = 5, label.y = 22, size = 4, method = "pearson")
+```
+
+```{r, fig.width=4, fig.height=4}
+
+library(ggplot2)
+library(ggpubr)
+plot_dat <- mif %>%
+  left_join(dat,"immucan_id")
+  
+plot_dat %>%
+#mutate(tls = ifelse(is.na(tls), 0, tls),
+  #       gc = ifelse(is.na(gc), 0, gc)) %>%
+  ggplot(aes(x = tls, y = n)) +
+  geom_point()+
+  theme_bw()+
+  ylab("B cell patch count")+
+  xlab("tls count (HE)")+
+  geom_smooth(method='lm', formula = y~x) +
+  stat_cor(aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),
+           label.x = 5, label.y = 750, size = 4, method = "pearson")
+
+plot_dat %>%
+  mutate(tls = ifelse(is.na(tls), 0, tls),
+         gc = ifelse(is.na(gc), 0, gc)) %>%
+  ggplot(aes(x = gc, y = n)) +
+  geom_point() +
+  theme_bw() +
+  ylab("B cell patch count") +
+  xlab("germinal center count (HE)") +
+  geom_smooth(method='lm', formula = y~x) +
+  stat_cor(aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),
+           label.x = 5, label.y = 750, size = 4, method = "pearson")
+test <- plot_dat %>%
+  mutate(tls = ifelse(is.na(tls), 0, tls),
+         gc = ifelse(is.na(gc), 0, gc))
+cor(test$n, test$tls, use = "complete", method = "spearman")
+cor(test$n, test$gc, use = "complete", method = "spearman")
+```
+
+## TLS correlation with IMC cell types
+
+```{r}
+imc <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/celltypes_density_dat_p1.csv")
+imc2 <- read.csv("/mnt/immucan_volume//processed_data/NSCLC2_cohort/Figures/scores_for_sharing/celltypes_density_dat_p2.csv")
+
+
+imc <- left_join(imc, imc2, "immucan_id",suffix = c("_p1","_p2"))
+gc_dat <- plot_dat %>%
+  select(immucan_id,gc, tls) %>%
+  mutate(gc = ifelse(is.na(gc), 0, gc),
+         tls = ifelse(is.na(tls), 0, tls)) %>%
+  filter(immucan_id %in% imc$immucan_id)
+gc_dat$immucan_id %in% imc$immucan_id
+
+imc <- imc %>%
+  filter(immucan_id %in% gc_dat$immucan_id)
+gc_dat <- gc_dat[match(imc$immucan_id,gc_dat$immucan_id),]
+identical(gc_dat$immucan_id,imc$immucan_id)
+```
+
+
+
+
+```{r}
+library(tidyverse)
+
+# -----------------------------------------------------------------------------
+# 1. Extract numeric matrices
+# -----------------------------------------------------------------------------
+imc_mat   <- imc %>% select(-immucan_id) %>% as.matrix()
+gc_mat <- gc_dat %>% ungroup() %>% select(-immucan_id)  %>% as.matrix()
+
+imc_cols   <- colnames(imc_mat)
+gc_cols <- colnames(gc_mat)
+
+cat("IMC features: ",   length(imc_cols),   "\n")
+cat("TLS and GC: ", length(gc_cols), "\n")
+cat("Total tests: ",    length(imc_cols) * length(gc_cols), "\n")
+
+
+# -----------------------------------------------------------------------------
+# 2. Compute all pairwise Spearman correlations
+# -----------------------------------------------------------------------------
+cor_list <- vector("list", length(imc_cols) * length(gc_cols))
+idx <- 1L
+
+for (imc_feat in imc_cols) {
+  for (gc_prot in gc_cols) {
+    
+    x <- imc_mat[, imc_feat]
+    y <- gc_mat[, gc_prot]
+    
+    # Only test if both vectors have sufficient non-NA observations
+    n_complete <- sum(complete.cases(x, y))
+    
+    if (n_complete >= 5) {
+      ct <- cor.test(x, y, method = "spearman", exact = FALSE)
+      cor_list[[idx]] <- tibble(
+        imc_feature  = imc_feat,
+        gc_feature = gc_prot,
+        rho           = ct$estimate,
+        pval          = ct$p.value,
+        n             = n_complete
+      )
+    } else {
+      cor_list[[idx]] <- tibble(
+        imc_feature   = imc_feat,
+        gc_feature = gc_prot,
+        rho           = NA_real_,
+        pval          = NA_real_,
+        n             = n_complete
+      )
+    }
+    idx <- idx + 1L
+  }
+}
+
+cor_df <- bind_rows(cor_list)
+
+
+# -----------------------------------------------------------------------------
+# 3. Multiple testing correction
+#    BH (FDR) correction across all tests; also Bonferroni for reference
+# -----------------------------------------------------------------------------
+cor_df <- cor_df %>%
+  mutate(
+    padj_BH          = p.adjust(pval, method = "BH"),
+    padj_bonferroni  = p.adjust(pval, method = "bonferroni")
+  ) %>%
+  arrange(pval)
+
+cat("\nSignificant associations (FDR < 0.05):", sum(cor_df$padj_BH < 0.05, na.rm = TRUE), "\n")
+cat("Significant associations (FDR < 0.10):", sum(cor_df$padj_BH < 0.10, na.rm = TRUE), "\n")
+
+
+# -----------------------------------------------------------------------------
+# 4. Preview top hits
+# -----------------------------------------------------------------------------
+cat("\nTop 20 associations by p-value:\n")
+print(cor_df %>%
+        filter(!is.na(rho)) %>%
+        slice_head(n = 20) %>%
+        mutate(across(c(rho, pval, padj_BH), \(x) signif(x, 3))))
+
+```
+
+```{r, fig.height=5, fig.width=3}
+cor_df <- cor_df %>%
+  mutate(sig = ifelse(padj_BH < 0.1, "*", ""))
+
+# plot
+ggplot(cor_df, aes(x = gc_feature, y = imc_feature, fill = rho)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = sig), size = 6, vjust = 0.75) +
+  scale_fill_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0,
+    limits = c(-0.4, 0.4),
+    name = "Spearman rho"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 8),
+    legend.position = "right"
+  ) +
+  xlab("GC feature") +
+  ylab("IMC feature")
+
+```
+
+## TLS correlation with IMC mean marker expression
+
+```{r}
+imc <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/mean_marker_expr_per_celltype_p1.csv")
+imc2 <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/mean_marker_expr_per_celltype_p2.csv")
+
+imc <- left_join(imc, imc2, "immucan_id",suffix = c("_p1","_p2"))
+
+gc_dat <- plot_dat %>%
+  select(immucan_id,gc, tls) %>%
+  mutate(gc = ifelse(is.na(gc), 0, gc),
+         tls = ifelse(is.na(tls), 0, tls)) %>%
+  filter(immucan_id %in% imc$immucan_id)
+gc_dat$immucan_id %in% imc$immucan_id
+
+imc <- imc %>%
+  filter(immucan_id %in% gc_dat$immucan_id)
+gc_dat <- gc_dat[match(imc$immucan_id,gc_dat$immucan_id),]
+identical(gc_dat$immucan_id,imc$immucan_id)
+```
+
+```{r}
+library(tidyverse)
+
+# -----------------------------------------------------------------------------
+# 1. Extract numeric matrices
+# -----------------------------------------------------------------------------
+imc_mat   <- imc %>% select(-immucan_id) %>% as.matrix()
+gc_mat <- gc_dat %>% ungroup() %>% select(-immucan_id)  %>% as.matrix()
+
+imc_cols   <- colnames(imc_mat)
+gc_cols <- colnames(gc_mat)
+
+cat("IMC features: ",   length(imc_cols),   "\n")
+cat("TLS and GC: ", length(gc_cols), "\n")
+cat("Total tests: ",    length(imc_cols) * length(gc_cols), "\n")
+
+
+# -----------------------------------------------------------------------------
+# 2. Compute all pairwise Spearman correlations
+# -----------------------------------------------------------------------------
+cor_list <- vector("list", length(imc_cols) * length(gc_cols))
+idx <- 1L
+
+for (imc_feat in imc_cols) {
+  for (gc_prot in gc_cols) {
+    
+    x <- imc_mat[, imc_feat]
+    y <- gc_mat[, gc_prot]
+    
+    # Only test if both vectors have sufficient non-NA observations
+    n_complete <- sum(complete.cases(x, y))
+    
+    if (n_complete >= 5) {
+      ct <- cor.test(x, y, method = "spearman", exact = FALSE)
+      cor_list[[idx]] <- tibble(
+        imc_feature  = imc_feat,
+        gc_feature = gc_prot,
+        rho           = ct$estimate,
+        pval          = ct$p.value,
+        n             = n_complete
+      )
+    } else {
+      cor_list[[idx]] <- tibble(
+        imc_feature   = imc_feat,
+        gc_feature = gc_prot,
+        rho           = NA_real_,
+        pval          = NA_real_,
+        n             = n_complete
+      )
+    }
+    idx <- idx + 1L
+  }
+}
+
+cor_df <- bind_rows(cor_list)
+
+
+# -----------------------------------------------------------------------------
+# 3. Multiple testing correction
+#    BH (FDR) correction across all tests; also Bonferroni for reference
+# -----------------------------------------------------------------------------
+cor_df <- cor_df %>%
+  mutate(
+    padj_BH          = p.adjust(pval, method = "BH"),
+    padj_bonferroni  = p.adjust(pval, method = "bonferroni")
+  ) %>%
+  arrange(pval)
+
+cat("\nSignificant associations (FDR < 0.05):", sum(cor_df$padj_BH < 0.05, na.rm = TRUE), "\n")
+cat("Significant associations (FDR < 0.10):", sum(cor_df$padj_BH < 0.10, na.rm = TRUE), "\n")
+
+
+# -----------------------------------------------------------------------------
+# 4. Preview top hits
+# -----------------------------------------------------------------------------
+cat("\nTop 20 associations by p-value:\n")
+print(cor_df %>%
+        filter(!is.na(rho)) %>%
+        slice_head(n = 20) %>%
+        mutate(across(c(rho, pval, padj_BH), \(x) signif(x, 3))))
+
+```
+
+```{r, fig.height=5, fig.width=4}
+cor_df <- cor_df %>%
+  mutate(sig = ifelse(padj_BH < 0.1, "*", "")) %>%
+  filter(sig == "*")
+
+# plot
+ggplot(cor_df, aes(x = gc_feature, y = imc_feature, fill = rho)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = sig), size = 6, vjust = 0.75) +
+  scale_fill_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0,
+    limits = c(-0.4, 0.4),
+    name = "Spearman rho"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 8),
+    legend.position = "right"
+  ) +
+  xlab("GC feature") +
+  ylab("IMC feature")
+
+```
+
+
+## TLS images
+
+```{r}
+library(SingleCellExperiment)
+imc <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IMC/Rout/data/TLS_sce.rds")
+
+df <- as.data.frame(colData(imc))
+# check minor cell types 
+TLS_minor <- df %>%
+  select(immucan_id,celltypes,TLS_celltypes,celltypes_minor) %>%
+  group_by(immucan_id, .drop = FALSE) %>%
+  dplyr::count(celltypes_minor)
+
+imc <- TLS_minor %>%
+  pivot_wider(id_cols = immucan_id,values_from = n, names_from = celltypes_minor, values_fill = 0)
+
+# check TLS clustered cells
+TLS_celltypes <- df %>%
+  select(immucan_id,celltypes,TLS_celltypes,celltypes_minor) %>%
+  group_by(immucan_id, .drop = FALSE) %>%
+  dplyr::count(TLS_celltypes)
+
+imc2 <- TLS_celltypes %>%
+  pivot_wider(id_cols = immucan_id,values_from = n, names_from = TLS_celltypes, values_fill = 0)
+
+imc <- left_join(imc, imc2, "immucan_id",suffix = c("_minor","_cluster"))
+
+gc_dat <- plot_dat %>%
+  select(immucan_id,gc, tls) %>%
+  mutate(gc = ifelse(is.na(gc), 0, gc),
+         tls = ifelse(is.na(tls), 0, tls)) %>%
+  filter(immucan_id %in% imc$immucan_id)
+gc_dat$immucan_id %in% imc$immucan_id
+
+imc <- imc %>%
+  filter(immucan_id %in% gc_dat$immucan_id)
+gc_dat <- gc_dat[match(imc$immucan_id,gc_dat$immucan_id),]
+identical(gc_dat$immucan_id,imc$immucan_id)
+```
+
+
+```{r}
+library(tidyverse)
+
+# -----------------------------------------------------------------------------
+# 1. Extract numeric matrices
+# -----------------------------------------------------------------------------
+imc_mat   <- imc %>% ungroup() %>% select(-immucan_id) %>% as.matrix()
+gc_mat <- gc_dat %>% ungroup() %>% select(-immucan_id)  %>% as.matrix()
+
+imc_cols   <- colnames(imc_mat)
+gc_cols <- colnames(gc_mat)
+
+cat("IMC features: ",   length(imc_cols),   "\n")
+cat("TLS and GC: ", length(gc_cols), "\n")
+cat("Total tests: ",    length(imc_cols) * length(gc_cols), "\n")
+
+
+# -----------------------------------------------------------------------------
+# 2. Compute all pairwise Spearman correlations
+# -----------------------------------------------------------------------------
+cor_list <- vector("list", length(imc_cols) * length(gc_cols))
+idx <- 1L
+
+for (imc_feat in imc_cols) {
+  for (gc_prot in gc_cols) {
+    
+    x <- imc_mat[, imc_feat]
+    y <- gc_mat[, gc_prot]
+    
+    # Only test if both vectors have sufficient non-NA observations
+    n_complete <- sum(complete.cases(x, y))
+    
+    if (n_complete >= 5) {
+      ct <- cor.test(x, y, method = "spearman", exact = FALSE)
+      cor_list[[idx]] <- tibble(
+        imc_feature  = imc_feat,
+        gc_feature = gc_prot,
+        rho           = ct$estimate,
+        pval          = ct$p.value,
+        n             = n_complete
+      )
+    } else {
+      cor_list[[idx]] <- tibble(
+        imc_feature   = imc_feat,
+        gc_feature = gc_prot,
+        rho           = NA_real_,
+        pval          = NA_real_,
+        n             = n_complete
+      )
+    }
+    idx <- idx + 1L
+  }
+}
+
+cor_df <- bind_rows(cor_list)
+
+
+# -----------------------------------------------------------------------------
+# 3. Multiple testing correction
+#    BH (FDR) correction across all tests; also Bonferroni for reference
+# -----------------------------------------------------------------------------
+cor_df <- cor_df %>%
+  mutate(
+    padj_BH          = p.adjust(pval, method = "BH"),
+    padj_bonferroni  = p.adjust(pval, method = "bonferroni")
+  ) %>%
+  arrange(pval)
+
+cat("\nSignificant associations (FDR < 0.05):", sum(cor_df$padj_BH < 0.05, na.rm = TRUE), "\n")
+cat("Significant associations (FDR < 0.10):", sum(cor_df$padj_BH < 0.10, na.rm = TRUE), "\n")
+
+
+# -----------------------------------------------------------------------------
+# 4. Preview top hits
+# -----------------------------------------------------------------------------
+cat("\nTop 20 associations by p-value:\n")
+print(cor_df %>%
+        filter(!is.na(rho)) %>%
+        slice_head(n = 20) %>%
+        mutate(across(c(rho, pval, padj_BH), \(x) signif(x, 3))))
+
+```
+
+```{r, fig.height=5, fig.width=5}
+cor_df <- cor_df %>%
+  mutate(sig = ifelse(padj_BH < 0.1, "*", "")) %>%
+  filter(sig == "*")
+
+# plot
+ggplot(cor_df, aes(x = gc_feature, y = imc_feature, fill = rho)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = sig), size = 6, vjust = 0.75) +
+  scale_fill_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0,
+    limits = c(-0.4, 0.4),
+    name = "Spearman rho"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 8),
+    legend.position = "right"
+  ) +
+  xlab("GC feature") +
+  ylab("IMC feature")
+
+```
+
+
+## RNA signature
+
+from https://doi.org/10.1016/j.immuni.2022.02.001
+
+```{r}
+library(org.Hs.eg.db)
+RNA_raw <- read.delim( "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/RNAseq/vstcounts_adj.txt", sep = "\t")
+
+RNA_raw <- RNA_raw %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("sample_id") %>%
+  mutate(
+    sample_id = str_split_i(sample_id, ".FIXT", 1),
+    Immucan_id = gsub("\\.", "_", sample_id)
+  ) %>%
+  dplyr::select(-sample_id)
+
+cnames <- RNA_raw$Immucan_id
+RNA_raw$Immucan_id <- NULL
+
+top_genes <- colnames(RNA_raw)
+# --- Map Ensembl IDs to gene symbols ---
+ensembl_ids <- str_split_i(top_genes, pattern = "\\.", 1)
+
+gene_symbols <- mapIds(
+  org.Hs.eg.db,
+  keys = ensembl_ids,
+  column = "SYMBOL",
+  keytype = "ENSEMBL",
+  multiVals = "first"
+)
+
+# Fallback: if mapping fails, keep original Ensembl
+final_names <- gene_symbols
+missing <- is.na(final_names)
+final_names[missing] <- top_genes[missing]
+
+# Apply name mapping (excluding Immucan_id column)
+colnames(RNA_raw) <- final_names
+vst <- RNA_raw
+```
+
+```{r}
+# --- inputs ---
+# vst: data.frame or matrix, rows = samples, cols = genes
+# (if it's the other way around, transpose with t(vst))
+
+signature <- c(
+  "IGHA1","IGHG1","IGHG2","IGHG3","IGHG4","IGHGP","IGHM",
+  "IGKC","IGLC1","IGLC2","IGLC3","JCHAIN","CD52","CD79A",
+  "FCRL5","MZB1","SSR4","XBP1","TRBC2","IL7R","CXCL12",
+  "LUM","C1QA","C7","APOE","PTLP","PTGDS","PIM2","DERL3"
+)
+
+# Heads-up on a couple of likely annotation mismatches:
+#   JCHAIN  -> often annotated as "JCHAIN" or "IGJ" (HGNC symbol)
+#   PTLP    -> very likely a typo for "PLTP" (phospholipid transfer protein)
+# Adjust if needed before matching.
+
+present <- intersect(signature, colnames(vst))
+missing <- setdiff(signature, colnames(vst))
+if (length(missing)) message("Not found in matrix: ", paste(missing, collapse = ", "))
+
+# z-score each gene across samples, then average per sample
+sig_mat   <- as.matrix(vst[, present, drop = FALSE])
+z         <- scale(sig_mat)                 # centers & scales each column
+sig_score <- rowMeans(z, na.rm = TRUE)
+
+# attach to a results table
+result <- data.frame(sample = rownames(vst), signature_score = sig_score)
+head(result)
+
+
+# singscore
+rna_mat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_mat.rds")
+
+
+gs_list_custom <- list(
+  TLS = c(
+    "IGHA1","IGHG1","IGHG2","IGHG3","IGHG4","IGHGP","IGHM",
+    "IGKC","IGLC1","IGLC2","IGLC3","JCHAIN","CD52","CD79A",
+    "FCRL5","MZB1","SSR4","XBP1","TRBC2","IL7R","CXCL12",
+    "LUM","C1QA","C7","APOE","PTLP","PTGDS","PIM2","DERL3"
+  )
+)
+
+# compute score
+rna_for_score <- t(rna_mat)
+
+# Filter gene sets to genes present in the RNA-seq matrix
+all_gs <- lapply(gs_list_custom, function(g) intersect(g, rownames(rna_for_score)))
+
+
+overlap <- sapply(all_gs, function(g) sum(g %in% rownames(rna_for_score)))
+total   <- sapply(all_gs, length)
+print(data.frame(found = overlap, total = total, pct = round(100 * overlap / total)))
+
+# ── Score with singscore ──────────────────────────────────────────────────────
+library(singscore)
+ranked <- rankGenes(rna_for_score)
+
+scores_list <- lapply(names(all_gs), function(nm) {
+  sc <- simpleScore(ranked, upSet = all_gs[[nm]], centerScore = TRUE)
+  setNames(sc$TotalScore, rownames(sc))
+})
+
+
+rna_scores <- as.data.frame(do.call(cbind, scores_list))
+colnames(rna_scores) <- names(all_gs)
+rownames(rna_scores) <- colnames(rna_for_score)
+rna_scores$immucan_id <- rownames(rna_scores)
+rownames(rna_scores) <- NULL
+
+# merge
+cor(result$signature_score, rna_scores$TLS)
+sig_dat <- data.frame(immucan_id = rna_scores$immucan_id,
+                      score = rna_scores$TLS,
+                      simple_score = result$signature_score)
+
+sig_dat %>%
+  ggplot(aes(x = score, y = simple_score))+
+  geom_point()
+```
+
+### tls
+
+```{r, fig.width=8, fig.height=4}
+sig_dat <- sig_dat %>%
+  mutate(immucan_id = gsub("_","-",immucan_id))
+
+p1 <- plot_dat %>%
+  dplyr::select(immucan_id,gc, tls) %>%
+  mutate(gc = ifelse(is.na(gc), 0, gc),
+         tls = ifelse(is.na(tls), 0, tls)) %>%
+  left_join(sig_dat, "immucan_id") %>%
+  ggplot(aes(x = tls,y = score))+
+  geom_point()+
+  theme_bw()+
+  ylab("RNAseq TLS score gsva")+
+  xlab("tls count (HE)")+
+  geom_smooth(method='lm', formula = y~x) +
+  stat_cor(aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),
+           label.x = 5, label.y = 1.5, size = 4, method = "pearson")
+ 
+p2 <- plot_dat %>%
+  dplyr::select(immucan_id,gc, tls) %>%
+  mutate(gc = ifelse(is.na(gc), 0, gc),
+         tls = ifelse(is.na(tls), 0, tls)) %>%
+  left_join(sig_dat, "immucan_id") %>%
+  ggplot(aes(x = tls,y = simple_score))+
+  geom_point()+
+  theme_bw()+
+  ylab("RNAseq TLS simple score")+
+  xlab("tls count (HE)")+
+  geom_smooth(method='lm', formula = y~x) +
+  stat_cor(aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),
+           label.x = 5, label.y = 1.5, size = 4, method = "pearson")
+
+cowplot::plot_grid(p1, p2)   
+```
+
+### gc
+
+```{r, fig.width=8, fig.height=4}
+
+p1 <- plot_dat %>%
+  dplyr::select(immucan_id,gc, tls) %>%
+  mutate(gc = ifelse(is.na(gc), 0, gc),
+         tls = ifelse(is.na(tls), 0, tls)) %>%
+  left_join(sig_dat, "immucan_id") %>%
+  ggplot(aes(x = gc,y = score))+
+  geom_point()+
+  theme_bw()+
+  ylab("RNAseq TLS score gsva")+
+  xlab("gc count (HE)")+
+  geom_smooth(method='lm', formula = y~x) +
+  stat_cor(aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),
+           label.x = 0.5, label.y = 1.5, size = 4, method = "pearson")+
+  coord_cartesian(xlim = c(0,5))
+ 
+p2 <- plot_dat %>%
+  dplyr::select(immucan_id,gc, tls) %>%
+  mutate(gc = ifelse(is.na(gc), 0, gc),
+         tls = ifelse(is.na(tls), 0, tls)) %>%
+  left_join(sig_dat, "immucan_id") %>%
+  ggplot(aes(x = gc,y = simple_score))+
+  geom_point()+
+  theme_bw()+
+  ylab("RNAseq TLS simple score")+
+  xlab("gc count (HE)")+
+  geom_smooth(method='lm', formula = y~x) +
+  stat_cor(aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),
+           label.x = 0.5, label.y = 1.5, size = 4, method = "pearson")+
+  coord_cartesian(xlim = c(0,5))
+
+cowplot::plot_grid(p1, p2)   
+```
+
+## mIF b cell patch correlation
+
+
+```{r, fig.width=8, fig.height=4}
+p1 <- sig_dat %>%
+  left_join(mif, "immucan_id") %>%
+  ggplot(aes(y = n,x = score))+
+  geom_point()+
+  theme_bw()+
+  xlab("B cell patch count (mIF)")+
+  ylab("RNAseq TLS score gsva")+
+  geom_smooth(method='lm', formula = y~x) +
+  stat_cor(aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),
+           label.x = 0.5, label.y = 600, size = 4, method = "pearson")
+  
+p2 <- sig_dat %>%
+  left_join(mif, "immucan_id") %>%
+  ggplot(aes(y = n,x = simple_score))+
+  geom_point()+
+  theme_bw()+
+  xlab("B cell patch count (mIF)")+
+  ylab("RNAseq TLS simple score")+
+  geom_smooth(method='lm', formula = y~x) +
+  stat_cor(aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),
+           label.x = -1.4, label.y = 600, size = 4, method = "pearson")
+
+cowplot::plot_grid(p1,p2)
+```
+
+## survival
+
+
+```{r}
+library(survival)
+library(tidyverse)
+
+traits <- read_csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/all_traits.csv")
+
+IF1 <- read_csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/IF/Rout/IF1_features/IF1_cell_type_densities.csv")
+IF1 <- IF1 %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  dplyr::select(immucan_id,tumor_size)
+
+
+# HE TLS density
+plot_dat <- left_join(dat, traits, "immucan_id")
+plot_dat <- left_join(plot_dat, IF1, "immucan_id")
+plot_dat <- plot_dat %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  mutate(TLS_density = tls/tumor_size,
+         TLS_density_dicho = as.factor(ntile(TLS_density,2)))
+survminer::ggforest(coxph(Surv(time_to_event, censoring) ~ TLS_density_dicho,data = plot_dat),main = "TLS density")
+
+# mIF B cell patch density
+plot_dat <- left_join(mif, traits, "immucan_id")
+plot_dat <- left_join(plot_dat, IF1, "immucan_id")
+plot_dat <- plot_dat %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  ungroup() %>%
+  mutate(TLS_density = n/tumor_size,
+         TLS_density_dicho = as.factor(ntile(TLS_density,2)))
+
+survminer::ggforest(coxph(Surv(time_to_event, censoring) ~TLS_density_dicho,data = plot_dat),main = "overall B cell patch density")
+
+# GC patch density
+plot_dat <- left_join(dat, traits, "immucan_id")
+plot_dat <- left_join(plot_dat, IF1, "immucan_id")
+plot_dat <- plot_dat %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  ungroup() %>%
+  mutate(TLS_density = gc/tumor_size,
+         TLS_density_dicho = as.factor(ntile(TLS_density,2)))
+
+survminer::ggforest(coxph(Surv(time_to_event, censoring) ~TLS_density_dicho,data = plot_dat ),main = "GC density")
+
+```
+
+
+
+
+
+
+# HE derived TLS standard hooknet filtered
+
+```{r}
+dat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/HE/hooknetTLS/filtered-20260817T121553Z-1-001/filtered_geojson/annotation_summary.rds")
+
+dat <- dat %>%
+  mutate(sample  = str_split_i(sample,"_#_",1)) %>%
+  group_by(sample) %>%
+  dplyr::count(class) %>%
+  arrange(desc(n))
+
+cur_files <- list.files("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IF/Rout/IF1_features/TLS_summary",full.names = TRUE)
+cur_list <- list()
+for (i in cur_files) {
+  cur_file <- read.csv(i, check.names = FALSE)
+  cur_list[[i]] <- cur_file %>%
+    pivot_longer(cols = -c(colnames(cur_file)[1:4],colnames(cur_file)[ncol(cur_file)]))
+
+}
+
+TLS_summary <- do.call(rbind,cur_list)
+
+mif <- TLS_summary %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  dplyr::select(immucan_id,size, TLS.ID) %>%
+  distinct() %>%
+  group_by(immucan_id) %>%
+  filter(!is.na(TLS.ID)) %>%
+  dplyr::count(immucan_id) %>%
+  arrange(desc(n))
+
+
+mif
+dat <- dat %>%
+  ungroup() %>%
+  pivot_wider(id_cols = sample,names_from = class, values_from = n) %>%
+  mutate(immucan_id = str_split_i(sample,"-FIXT",1),
+         HE_section = str_split_i(sample,"-FIXT-01-",2))
+
+dup_entries <- dat %>%
+  group_by(immucan_id) %>%
+  summarise(n = n()) %>%
+  filter(n > 1) %>%
+  pull(immucan_id)
+
+
+
+
+#THere are duplicated HE files: manual selection
+keep_ids <- 
+  c("LUNG-NSCLC2-0613-FIXT-01-HES-02","LUNG-NSCLC2-0614-FIXT-01-HES-02","LUNG-NSCLC2-0616-FIXT-01-HES-02","LUNG-NSCLC2-0617-FIXT-01-HES-02","LUNG-NSCLC2-0621-FIXT-01-HES-02",
+  "LUNG-NSCLC2-0622-FIXT-01-HES-02","LUNG-NSCLC2-0623-FIXT-01-HES-02","LUNG-NSCLC2-0628-FIXT-01-HES-02","LUNG-NSCLC2-0629-FIXT-01-HES-02",
+  "LUNG-NSCLC2-0630-FIXT-01-HES-02","LUNG-NSCLC2-0631-FIXT-01-HES-02","LUNG-NSCLC2-0632-FIXT-01-HES-02","LUNG-NSCLC2-0633-FIXT-01-HES-02",
+  "LUNG-NSCLC2-0634-FIXT-01-HES-02","LUNG-NSCLC2-0635-FIXT-01-HES-01","LUNG-NSCLC2-0636-FIXT-01-HES-02","LUNG-NSCLC2-0636-FIXT-01-HES-02",
+  "LUNG-NSCLC2-0639-FIXT-01-HES-02","LUNG-NSCLC2-0642-FIXT-01-HES-02","LUNG-NSCLC2-0643-FIXT-01-HES-02","LUNG-NSCLC2-0644-FIXT-01-HES-02",
+  "LUNG-NSCLC2-0646-FIXT-01-HES-02","LUNG-NSCLC2-0647-FIXT-01-HES-02","LUNG-NSCLC2-0648-FIXT-01-HES-02","LUNG-NSCLC2-0650-FIXT-01-HES-02",
+  "LUNG-NSCLC2-0651-FIXT-01-HES-02","LUNG-NSCLC2-0652-FIXT-01-HES-02","LUNG-NSCLC2-0657-FIXT-01-HES-02","LUNG-NSCLC2-0658-FIXT-01-HES-02",
+  "LUNG-NSCLC2-0660-FIXT-01-HES-02","LUNG-NSCLC2-0662-FIXT-01-HES-01","LUNG-NSCLC2-0663-FIXT-01-HES-01","LUNG-NSCLC2-0665-FIXT-01-HES-02",
+  "LUNG-NSCLC2-0667-FIXT-01-HES-02","LUNG-NSCLC2-0670-FIXT-01-HES-02","LUNG-NSCLC2-0672-FIXT-01-HES-02","LUNG-NSCLC2-0673-FIXT-01-HES-02",
+  "LUNG-NSCLC2-0676-FIXT-01-HES-02")
+
+dat <- dat %>%
+  mutate( keep = ifelse(immucan_id %in% dup_entries & !sample %in% keep_ids, FALSE, TRUE ))%>%
+  filter(keep == TRUE)
+
+```
+
+```{r, fig.height=4, fig.width=4}
+dat %>%
+  ggplot(aes(x = tls, y = gc))+
+  geom_point()+
+  theme_bw()+
+  ylab("gc count (HE)")+
+  xlab("tls count (HE)")+
+  geom_smooth(method='lm', formula = y~x) +
+  stat_cor(aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),
+           label.x = 5, label.y = 22, size = 4, method = "pearson")
+```
+
+```{r, fig.width=4, fig.height=4}
+
+library(ggplot2)
+library(ggpubr)
+plot_dat <- mif %>%
+  left_join(dat,"immucan_id")
+  
+plot_dat %>%
+#mutate(tls = ifelse(is.na(tls), 0, tls),
+  #       gc = ifelse(is.na(gc), 0, gc)) %>%
+  ggplot(aes(x = tls, y = n)) +
+  geom_point()+
+  theme_bw()+
+  ylab("B cell patch count")+
+  xlab("tls count (HE)")+
+  geom_smooth(method='lm', formula = y~x) +
+  stat_cor(aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),
+           label.x = 5, label.y = 750, size = 4, method = "pearson")
+
+plot_dat %>%
+  mutate(tls = ifelse(is.na(tls), 0, tls),
+         gc = ifelse(is.na(gc), 0, gc)) %>%
+  ggplot(aes(x = gc, y = n)) +
+  geom_point() +
+  theme_bw() +
+  ylab("B cell patch count") +
+  xlab("germinal center count (HE)") +
+  geom_smooth(method='lm', formula = y~x) +
+  stat_cor(aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),
+           label.x = 5, label.y = 750, size = 4, method = "pearson")
+test <- plot_dat %>%
+  mutate(tls = ifelse(is.na(tls), 0, tls),
+         gc = ifelse(is.na(gc), 0, gc))
+cor(test$n, test$tls, use = "complete", method = "spearman")
+cor(test$n, test$gc, use = "complete", method = "spearman")
+```
+
+## TLS correlation with IMC cell types
+
+```{r}
+imc <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/celltypes_density_dat_p1.csv")
+imc2 <- read.csv("/mnt/immucan_volume//processed_data/NSCLC2_cohort/Figures/scores_for_sharing/celltypes_density_dat_p2.csv")
+
+
+imc <- left_join(imc, imc2, "immucan_id",suffix = c("_p1","_p2"))
+gc_dat <- plot_dat %>%
+  dplyr::select(immucan_id,gc, tls) %>%
+  mutate(gc = ifelse(is.na(gc), 0, gc),
+         tls = ifelse(is.na(tls), 0, tls)) %>%
+  filter(immucan_id %in% imc$immucan_id)
+gc_dat$immucan_id %in% imc$immucan_id
+
+imc <- imc %>%
+  filter(immucan_id %in% gc_dat$immucan_id)
+gc_dat <- gc_dat[match(imc$immucan_id,gc_dat$immucan_id),]
+identical(gc_dat$immucan_id,imc$immucan_id)
+```
+
+
+
+
+```{r}
+library(tidyverse)
+
+# -----------------------------------------------------------------------------
+# 1. Extract numeric matrices
+# -----------------------------------------------------------------------------
+imc_mat   <- imc %>% dplyr::select(-immucan_id) %>% as.matrix()
+gc_mat <- gc_dat %>% ungroup() %>% dplyr::select(-immucan_id)  %>% as.matrix()
+
+imc_cols   <- colnames(imc_mat)
+gc_cols <- colnames(gc_mat)
+
+cat("IMC features: ",   length(imc_cols),   "\n")
+cat("TLS and GC: ", length(gc_cols), "\n")
+cat("Total tests: ",    length(imc_cols) * length(gc_cols), "\n")
+
+
+# -----------------------------------------------------------------------------
+# 2. Compute all pairwise Spearman correlations
+# -----------------------------------------------------------------------------
+cor_list <- vector("list", length(imc_cols) * length(gc_cols))
+idx <- 1L
+
+for (imc_feat in imc_cols) {
+  for (gc_prot in gc_cols) {
+    
+    x <- imc_mat[, imc_feat]
+    y <- gc_mat[, gc_prot]
+    
+    # Only test if both vectors have sufficient non-NA observations
+    n_complete <- sum(complete.cases(x, y))
+    
+    if (n_complete >= 5) {
+      ct <- cor.test(x, y, method = "spearman", exact = FALSE)
+      cor_list[[idx]] <- tibble(
+        imc_feature  = imc_feat,
+        gc_feature = gc_prot,
+        rho           = ct$estimate,
+        pval          = ct$p.value,
+        n             = n_complete
+      )
+    } else {
+      cor_list[[idx]] <- tibble(
+        imc_feature   = imc_feat,
+        gc_feature = gc_prot,
+        rho           = NA_real_,
+        pval          = NA_real_,
+        n             = n_complete
+      )
+    }
+    idx <- idx + 1L
+  }
+}
+
+cor_df <- bind_rows(cor_list)
+
+
+# -----------------------------------------------------------------------------
+# 3. Multiple testing correction
+#    BH (FDR) correction across all tests; also Bonferroni for reference
+# -----------------------------------------------------------------------------
+cor_df <- cor_df %>%
+  mutate(
+    padj_BH          = p.adjust(pval, method = "BH"),
+    padj_bonferroni  = p.adjust(pval, method = "bonferroni")
+  ) %>%
+  arrange(pval)
+
+cat("\nSignificant associations (FDR < 0.05):", sum(cor_df$padj_BH < 0.05, na.rm = TRUE), "\n")
+cat("Significant associations (FDR < 0.10):", sum(cor_df$padj_BH < 0.10, na.rm = TRUE), "\n")
+
+
+# -----------------------------------------------------------------------------
+# 4. Preview top hits
+# -----------------------------------------------------------------------------
+cat("\nTop 20 associations by p-value:\n")
+print(cor_df %>%
+        filter(!is.na(rho)) %>%
+        slice_head(n = 20) %>%
+        mutate(across(c(rho, pval, padj_BH), \(x) signif(x, 3))))
+
+```
+
+```{r, fig.height=5, fig.width=3}
+cor_df <- cor_df %>%
+  mutate(sig = ifelse(padj_BH < 0.1, "*", ""))
+
+# plot
+ggplot(cor_df, aes(x = gc_feature, y = imc_feature, fill = rho)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = sig), size = 6, vjust = 0.75) +
+  scale_fill_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0,
+    limits = c(-0.4, 0.4),
+    name = "Spearman rho"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 8),
+    legend.position = "right"
+  ) +
+  xlab("GC feature") +
+  ylab("IMC feature")
+
+```
+
+## TLS correlation with IMC mean marker expression
+
+```{r}
+imc <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/mean_marker_expr_per_celltype_p1.csv")
+imc2 <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/mean_marker_expr_per_celltype_p2.csv")
+
+imc <- left_join(imc, imc2, "immucan_id",suffix = c("_p1","_p2"))
+
+gc_dat <- plot_dat %>%
+  dplyr::select(immucan_id,gc, tls) %>%
+  mutate(gc = ifelse(is.na(gc), 0, gc),
+         tls = ifelse(is.na(tls), 0, tls)) %>%
+  filter(immucan_id %in% imc$immucan_id)
+gc_dat$immucan_id %in% imc$immucan_id
+
+imc <- imc %>%
+  filter(immucan_id %in% gc_dat$immucan_id)
+gc_dat <- gc_dat[match(imc$immucan_id,gc_dat$immucan_id),]
+identical(gc_dat$immucan_id,imc$immucan_id)
+```
+
+```{r}
+library(tidyverse)
+
+# -----------------------------------------------------------------------------
+# 1. Extract numeric matrices
+# -----------------------------------------------------------------------------
+imc_mat   <- imc %>% dplyr::select(-immucan_id) %>% as.matrix()
+gc_mat <- gc_dat %>% ungroup() %>% dplyr::select(-immucan_id)  %>% as.matrix()
+
+imc_cols   <- colnames(imc_mat)
+gc_cols <- colnames(gc_mat)
+
+cat("IMC features: ",   length(imc_cols),   "\n")
+cat("TLS and GC: ", length(gc_cols), "\n")
+cat("Total tests: ",    length(imc_cols) * length(gc_cols), "\n")
+
+
+# -----------------------------------------------------------------------------
+# 2. Compute all pairwise Spearman correlations
+# -----------------------------------------------------------------------------
+cor_list <- vector("list", length(imc_cols) * length(gc_cols))
+idx <- 1L
+
+for (imc_feat in imc_cols) {
+  for (gc_prot in gc_cols) {
+    
+    x <- imc_mat[, imc_feat]
+    y <- gc_mat[, gc_prot]
+    
+    # Only test if both vectors have sufficient non-NA observations
+    n_complete <- sum(complete.cases(x, y))
+    
+    if (n_complete >= 5) {
+      ct <- cor.test(x, y, method = "spearman", exact = FALSE)
+      cor_list[[idx]] <- tibble(
+        imc_feature  = imc_feat,
+        gc_feature = gc_prot,
+        rho           = ct$estimate,
+        pval          = ct$p.value,
+        n             = n_complete
+      )
+    } else {
+      cor_list[[idx]] <- tibble(
+        imc_feature   = imc_feat,
+        gc_feature = gc_prot,
+        rho           = NA_real_,
+        pval          = NA_real_,
+        n             = n_complete
+      )
+    }
+    idx <- idx + 1L
+  }
+}
+
+cor_df <- bind_rows(cor_list)
+
+
+# -----------------------------------------------------------------------------
+# 3. Multiple testing correction
+#    BH (FDR) correction across all tests; also Bonferroni for reference
+# -----------------------------------------------------------------------------
+cor_df <- cor_df %>%
+  mutate(
+    padj_BH          = p.adjust(pval, method = "BH"),
+    padj_bonferroni  = p.adjust(pval, method = "bonferroni")
+  ) %>%
+  arrange(pval)
+
+cat("\nSignificant associations (FDR < 0.05):", sum(cor_df$padj_BH < 0.05, na.rm = TRUE), "\n")
+cat("Significant associations (FDR < 0.10):", sum(cor_df$padj_BH < 0.10, na.rm = TRUE), "\n")
+
+
+# -----------------------------------------------------------------------------
+# 4. Preview top hits
+# -----------------------------------------------------------------------------
+cat("\nTop 20 associations by p-value:\n")
+print(cor_df %>%
+        filter(!is.na(rho)) %>%
+        slice_head(n = 20) %>%
+        mutate(across(c(rho, pval, padj_BH), \(x) signif(x, 3))))
+
+```
+
+```{r, fig.height=5, fig.width=4}
+cor_df <- cor_df %>%
+  mutate(sig = ifelse(padj_BH < 0.1, "*", "")) %>%
+  filter(sig == "*")
+
+# plot
+ggplot(cor_df, aes(x = gc_feature, y = imc_feature, fill = rho)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = sig), size = 6, vjust = 0.75) +
+  scale_fill_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0,
+    limits = c(-0.4, 0.4),
+    name = "Spearman rho"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 8),
+    legend.position = "right"
+  ) +
+  xlab("GC feature") +
+  ylab("IMC feature")
+
+```
+
+
+## TLS images
+
+```{r}
+library(SingleCellExperiment)
+imc <- readRDS("/mnt/immucan_volume/processed_data/Panel_1/IMMUcan_NSCLC2/IMC/Rout/data/TLS_sce.rds")
+
+df <- as.data.frame(colData(imc))
+# check minor cell types 
+TLS_minor <- df %>%
+  dplyr::select(immucan_id,celltypes,TLS_celltypes,celltypes_minor) %>%
+  group_by(immucan_id, .drop = FALSE) %>%
+  dplyr::count(celltypes_minor)
+
+imc <- TLS_minor %>%
+  pivot_wider(id_cols = immucan_id,values_from = n, names_from = celltypes_minor, values_fill = 0)
+
+# check TLS clustered cells
+TLS_celltypes <- df %>%
+  dplyr::select(immucan_id,celltypes,TLS_celltypes,celltypes_minor) %>%
+  group_by(immucan_id, .drop = FALSE) %>%
+  dplyr::count(TLS_celltypes)
+
+imc2 <- TLS_celltypes %>%
+  pivot_wider(id_cols = immucan_id,values_from = n, names_from = TLS_celltypes, values_fill = 0)
+
+imc <- left_join(imc, imc2, "immucan_id",suffix = c("_minor","_cluster"))
+
+gc_dat <- plot_dat %>%
+  dplyr::select(immucan_id,gc, tls) %>%
+  mutate(gc = ifelse(is.na(gc), 0, gc),
+         tls = ifelse(is.na(tls), 0, tls)) %>%
+  filter(immucan_id %in% imc$immucan_id)
+gc_dat$immucan_id %in% imc$immucan_id
+
+imc <- imc %>%
+  filter(immucan_id %in% gc_dat$immucan_id)
+gc_dat <- gc_dat[match(imc$immucan_id,gc_dat$immucan_id),]
+identical(gc_dat$immucan_id,imc$immucan_id)
+```
+
+
+```{r}
+library(tidyverse)
+
+# -----------------------------------------------------------------------------
+# 1. Extract numeric matrices
+# -----------------------------------------------------------------------------
+imc_mat   <- imc %>% ungroup() %>% dplyr::select(-immucan_id) %>% as.matrix()
+gc_mat <- gc_dat %>% ungroup() %>% dplyr::select(-immucan_id)  %>% as.matrix()
+
+imc_cols   <- colnames(imc_mat)
+gc_cols <- colnames(gc_mat)
+
+cat("IMC features: ",   length(imc_cols),   "\n")
+cat("TLS and GC: ", length(gc_cols), "\n")
+cat("Total tests: ",    length(imc_cols) * length(gc_cols), "\n")
+
+
+# -----------------------------------------------------------------------------
+# 2. Compute all pairwise Spearman correlations
+# -----------------------------------------------------------------------------
+cor_list <- vector("list", length(imc_cols) * length(gc_cols))
+idx <- 1L
+
+for (imc_feat in imc_cols) {
+  for (gc_prot in gc_cols) {
+    
+    x <- imc_mat[, imc_feat]
+    y <- gc_mat[, gc_prot]
+    
+    # Only test if both vectors have sufficient non-NA observations
+    n_complete <- sum(complete.cases(x, y))
+    
+    if (n_complete >= 5) {
+      ct <- cor.test(x, y, method = "spearman", exact = FALSE)
+      cor_list[[idx]] <- tibble(
+        imc_feature  = imc_feat,
+        gc_feature = gc_prot,
+        rho           = ct$estimate,
+        pval          = ct$p.value,
+        n             = n_complete
+      )
+    } else {
+      cor_list[[idx]] <- tibble(
+        imc_feature   = imc_feat,
+        gc_feature = gc_prot,
+        rho           = NA_real_,
+        pval          = NA_real_,
+        n             = n_complete
+      )
+    }
+    idx <- idx + 1L
+  }
+}
+
+cor_df <- bind_rows(cor_list)
+
+
+# -----------------------------------------------------------------------------
+# 3. Multiple testing correction
+#    BH (FDR) correction across all tests; also Bonferroni for reference
+# -----------------------------------------------------------------------------
+cor_df <- cor_df %>%
+  mutate(
+    padj_BH          = p.adjust(pval, method = "BH"),
+    padj_bonferroni  = p.adjust(pval, method = "bonferroni")
+  ) %>%
+  arrange(pval)
+
+cat("\nSignificant associations (FDR < 0.05):", sum(cor_df$padj_BH < 0.05, na.rm = TRUE), "\n")
+cat("Significant associations (FDR < 0.10):", sum(cor_df$padj_BH < 0.10, na.rm = TRUE), "\n")
+
+
+# -----------------------------------------------------------------------------
+# 4. Preview top hits
+# -----------------------------------------------------------------------------
+cat("\nTop 20 associations by p-value:\n")
+print(cor_df %>%
+        filter(!is.na(rho)) %>%
+        slice_head(n = 20) %>%
+        mutate(across(c(rho, pval, padj_BH), \(x) signif(x, 3))))
+
+```
+
+```{r, fig.height=5, fig.width=5}
+cor_df <- cor_df %>%
+  mutate(sig = ifelse(padj_BH < 0.1, "*", "")) %>%
+  filter(sig == "*")
+
+# plot
+ggplot(cor_df, aes(x = gc_feature, y = imc_feature, fill = rho)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = sig), size = 6, vjust = 0.75) +
+  scale_fill_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0,
+    limits = c(-0.4, 0.4),
+    name = "Spearman rho"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 8),
+    legend.position = "right"
+  ) +
+  xlab("GC feature") +
+  ylab("IMC feature")
+
+```
+
+
+## RNA signature
+
+from https://doi.org/10.1016/j.immuni.2022.02.001
+
+```{r}
+library(org.Hs.eg.db)
+RNA_raw <- read.delim( "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/RNAseq/vstcounts_adj.txt", sep = "\t")
+
+RNA_raw <- RNA_raw %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("sample_id") %>%
+  mutate(
+    sample_id = str_split_i(sample_id, ".FIXT", 1),
+    Immucan_id = gsub("\\.", "_", sample_id)
+  ) %>%
+  dplyr::select(-sample_id)
+
+cnames <- RNA_raw$Immucan_id
+RNA_raw$Immucan_id <- NULL
+
+top_genes <- colnames(RNA_raw)
+# --- Map Ensembl IDs to gene symbols ---
+ensembl_ids <- str_split_i(top_genes, pattern = "\\.", 1)
+
+gene_symbols <- mapIds(
+  org.Hs.eg.db,
+  keys = ensembl_ids,
+  column = "SYMBOL",
+  keytype = "ENSEMBL",
+  multiVals = "first"
+)
+
+# Fallback: if mapping fails, keep original Ensembl
+final_names <- gene_symbols
+missing <- is.na(final_names)
+final_names[missing] <- top_genes[missing]
+
+# Apply name mapping (excluding Immucan_id column)
+colnames(RNA_raw) <- final_names
+vst <- RNA_raw
+```
+
+```{r}
+# --- inputs ---
+# vst: data.frame or matrix, rows = samples, cols = genes
+# (if it's the other way around, transpose with t(vst))
+
+signature <- c(
+  "IGHA1","IGHG1","IGHG2","IGHG3","IGHG4","IGHGP","IGHM",
+  "IGKC","IGLC1","IGLC2","IGLC3","JCHAIN","CD52","CD79A",
+  "FCRL5","MZB1","SSR4","XBP1","TRBC2","IL7R","CXCL12",
+  "LUM","C1QA","C7","APOE","PTLP","PTGDS","PIM2","DERL3"
+)
+
+# Heads-up on a couple of likely annotation mismatches:
+#   JCHAIN  -> often annotated as "JCHAIN" or "IGJ" (HGNC symbol)
+#   PTLP    -> very likely a typo for "PLTP" (phospholipid transfer protein)
+# Adjust if needed before matching.
+
+present <- intersect(signature, colnames(vst))
+missing <- setdiff(signature, colnames(vst))
+if (length(missing)) message("Not found in matrix: ", paste(missing, collapse = ", "))
+
+# z-score each gene across samples, then average per sample
+sig_mat   <- as.matrix(vst[, present, drop = FALSE])
+z         <- scale(sig_mat)                 # centers & scales each column
+sig_score <- rowMeans(z, na.rm = TRUE)
+
+# attach to a results table
+result <- data.frame(sample = rownames(vst), signature_score = sig_score)
+head(result)
+
+
+# singscore
+rna_mat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_mat.rds")
+
+
+gs_list_custom <- list(
+  TLS = c(
+    "IGHA1","IGHG1","IGHG2","IGHG3","IGHG4","IGHGP","IGHM",
+    "IGKC","IGLC1","IGLC2","IGLC3","JCHAIN","CD52","CD79A",
+    "FCRL5","MZB1","SSR4","XBP1","TRBC2","IL7R","CXCL12",
+    "LUM","C1QA","C7","APOE","PTLP","PTGDS","PIM2","DERL3"
+  )
+)
+
+# compute score
+rna_for_score <- t(rna_mat)
+
+# Filter gene sets to genes present in the RNA-seq matrix
+all_gs <- lapply(gs_list_custom, function(g) intersect(g, rownames(rna_for_score)))
+
+
+overlap <- sapply(all_gs, function(g) sum(g %in% rownames(rna_for_score)))
+total   <- sapply(all_gs, length)
+print(data.frame(found = overlap, total = total, pct = round(100 * overlap / total)))
+
+# ── Score with singscore ──────────────────────────────────────────────────────
+library(singscore)
+ranked <- rankGenes(rna_for_score)
+
+scores_list <- lapply(names(all_gs), function(nm) {
+  sc <- simpleScore(ranked, upSet = all_gs[[nm]], centerScore = TRUE)
+  setNames(sc$TotalScore, rownames(sc))
+})
+
+
+rna_scores <- as.data.frame(do.call(cbind, scores_list))
+colnames(rna_scores) <- names(all_gs)
+rownames(rna_scores) <- colnames(rna_for_score)
+rna_scores$immucan_id <- rownames(rna_scores)
+rownames(rna_scores) <- NULL
+
+# merge
+cor(result$signature_score, rna_scores$TLS)
+sig_dat <- data.frame(immucan_id = rna_scores$immucan_id,
+                      score = rna_scores$TLS,
+                      simple_score = result$signature_score)
+
+sig_dat %>%
+  ggplot(aes(x = score, y = simple_score))+
+  geom_point()
+```
+
+### tls
+
+```{r, fig.width=8, fig.height=4}
+sig_dat <- sig_dat %>%
+  mutate(immucan_id = gsub("_","-",immucan_id))
+
+p1 <- plot_dat %>%
+  dplyr::select(immucan_id,gc, tls) %>%
+  mutate(gc = ifelse(is.na(gc), 0, gc),
+         tls = ifelse(is.na(tls), 0, tls)) %>%
+  left_join(sig_dat, "immucan_id") %>%
+  ggplot(aes(x = tls,y = score))+
+  geom_point()+
+  theme_bw()+
+  ylab("RNAseq TLS score gsva")+
+  xlab("tls count (HE)")+
+  geom_smooth(method='lm', formula = y~x) +
+  stat_cor(aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),
+           label.x = 5, label.y = 1.5, size = 4, method = "pearson")
+ 
+p2 <- plot_dat %>%
+  dplyr::select(immucan_id,gc, tls) %>%
+  mutate(gc = ifelse(is.na(gc), 0, gc),
+         tls = ifelse(is.na(tls), 0, tls)) %>%
+  left_join(sig_dat, "immucan_id") %>%
+  ggplot(aes(x = tls,y = simple_score))+
+  geom_point()+
+  theme_bw()+
+  ylab("RNAseq TLS simple score")+
+  xlab("tls count (HE)")+
+  geom_smooth(method='lm', formula = y~x) +
+  stat_cor(aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),
+           label.x = 5, label.y = 1.5, size = 4, method = "pearson")
+
+cowplot::plot_grid(p1, p2)   
+```
+
+### gc
+
+```{r, fig.width=8, fig.height=4}
+
+p1 <- plot_dat %>%
+  dplyr::select(immucan_id,gc, tls) %>%
+  mutate(gc = ifelse(is.na(gc), 0, gc),
+         tls = ifelse(is.na(tls), 0, tls)) %>%
+  left_join(sig_dat, "immucan_id") %>%
+  ggplot(aes(x = gc,y = score))+
+  geom_point()+
+  theme_bw()+
+  ylab("RNAseq TLS score gsva")+
+  xlab("gc count (HE)")+
+  geom_smooth(method='lm', formula = y~x) +
+  stat_cor(aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),
+           label.x = 0.5, label.y = 1.5, size = 4, method = "pearson")+
+  coord_cartesian(xlim = c(0,5))
+ 
+p2 <- plot_dat %>%
+  dplyr::select(immucan_id,gc, tls) %>%
+  mutate(gc = ifelse(is.na(gc), 0, gc),
+         tls = ifelse(is.na(tls), 0, tls)) %>%
+  left_join(sig_dat, "immucan_id") %>%
+  ggplot(aes(x = gc,y = simple_score))+
+  geom_point()+
+  theme_bw()+
+  ylab("RNAseq TLS simple score")+
+  xlab("gc count (HE)")+
+  geom_smooth(method='lm', formula = y~x) +
+  stat_cor(aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),
+           label.x = 0.5, label.y = 1.5, size = 4, method = "pearson")+
+  coord_cartesian(xlim = c(0,5))
+
+cowplot::plot_grid(p1, p2)   
+```
+
+## mIF b cell patch correlation
+
+
+```{r, fig.width=8, fig.height=4}
+p1 <- sig_dat %>%
+  left_join(mif, "immucan_id") %>%
+  ggplot(aes(y = n,x = score))+
+  geom_point()+
+  theme_bw()+
+  xlab("B cell patch count (mIF)")+
+  ylab("RNAseq TLS score gsva")+
+  geom_smooth(method='lm', formula = y~x) +
+  stat_cor(aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),
+           label.x = 0, label.y = 600, size = 4, method = "pearson")
+  
+p2 <- sig_dat %>%
+  left_join(mif, "immucan_id") %>%
+  ggplot(aes(y = n,x = simple_score))+
+  geom_point()+
+  theme_bw()+
+  xlab("B cell patch count (mIF)")+
+  ylab("RNAseq TLS simple score")+
+  geom_smooth(method='lm', formula = y~x) +
+  stat_cor(aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),
+           label.x = -1.4, label.y = 600, size = 4, method = "pearson")
+
+cowplot::plot_grid(p1,p2)
+```
+
+## survival
+
+
+```{r}
+library(survival)
+library(tidyverse)
+
+traits <- read_csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/all_traits.csv")
+
+IF1 <- read_csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/IF/Rout/IF1_features/IF1_cell_type_densities.csv")
+IF1 <- IF1 %>%
+  mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
+  dplyr::select(immucan_id,tumor_size)
+
+
+# HE TLS density
+plot_dat <- left_join(dat, traits, "immucan_id")
+plot_dat <- left_join(plot_dat, IF1, "immucan_id")
+plot_dat <- plot_dat %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  mutate(TLS_density = tls/tumor_size,
+         TLS_density_dicho = as.factor(ntile(TLS_density,2)))
+survminer::ggforest(coxph(Surv(time_to_event, censoring) ~ TLS_density_dicho,data = plot_dat),main = "TLS density")
+
+# mIF B cell patch density
+plot_dat <- left_join(mif, traits, "immucan_id")
+plot_dat <- left_join(plot_dat, IF1, "immucan_id")
+plot_dat <- plot_dat %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  ungroup() %>%
+  mutate(TLS_density = n/tumor_size,
+         TLS_density_dicho = as.factor(ntile(TLS_density,2)))
+
+survminer::ggforest(coxph(Surv(time_to_event, censoring) ~TLS_density_dicho,data = plot_dat),main = "overall B cell patch density")
+
+# GC patch density
+plot_dat <- left_join(dat, traits, "immucan_id")
+plot_dat <- left_join(plot_dat, IF1, "immucan_id")
+plot_dat <- plot_dat %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
+  ungroup() %>%
+  mutate(TLS_density = gc/tumor_size,
+         TLS_density_dicho = as.factor(ntile(TLS_density,2)))
+
+survminer::ggforest(coxph(Surv(time_to_event, censoring) ~TLS_density_dicho,data = plot_dat ),main = "GC density")
+
+```
+
+
+
 
