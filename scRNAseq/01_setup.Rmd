@@ -1,0 +1,623 @@
+---
+title: "02_data_preparation"
+author: "Daniel Schulz"
+date: "2026-08-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# sc_01_qc.R
+# Task 1: Quality control of the scRNA-seq .h5ad dataset
+# Reads the file with zellkonverter (pure-R reader, matrix stays on disk),
+# explores its structure, computes per-cell QC metrics, filters low-quality
+# cells, and saves the filtered SCE for downstream scripts.
+
+```{r}
+# sc_00_setup.R
+# Package installation and shared configuration for scRNA-seq EGFR analysis
+# Source this file at the top of every analysis script.
+
+# ── 1. Package installation ───────────────────────────────────────────────────
+
+bioc_pkgs <- c(
+  "zellkonverter",        # read .h5ad with pure-R reader (no Python needed)
+  "SingleCellExperiment",
+  "scuttle",              # per-cell QC metrics
+  "scran",                # normalization, highly variable genes
+  "scater",               # QC plots, dimension reduction wrappers
+  "HDF5Array",            # on-disk matrix backend (keeps 17 GB off RAM)
+  "rhdf5",                # low-level HDF5 inspection
+  "BiocParallel",
+  "org.Hs.eg.db",         # Ensembl ID → gene symbol mapping
+  "AnnotationDbi"
+)
+
+
+install_if_missing <- function(pkgs, installer) {
+  missing <- pkgs[!pkgs %in% rownames(installed.packages())]
+  if (length(missing)) {
+    message("Installing: ", paste(missing, collapse = ", "))
+    installer(missing)
+  }
+}
+
+install_if_missing(bioc_pkgs, BiocManager::install)
+
+```
+
+# Paths
+
+```{r}
+
+DATA_DIR   <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/scRNAseq/data/"
+H5AD_FILE  <- file.path(DATA_DIR, "f678fb47-e51b-4dc5-b23f-f9df43a67ee5.h5ad")
+
+# Bulk WES / clinical metadata from the main NSCLC2 project
+SCORES_DIR <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Analysis/scores_for_sharing"
+ALL_TRAITS <- file.path(SCORES_DIR, "all_traits.csv")
+
+# All output goes here
+OUT_DIR <- file.path("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/scRNAseq/Rout/")
+
+FILTERED_SCE <- file.path(OUT_DIR, "sce_qc_filtered.rds")
+
+# Output of sc_02: EGFR-subset, gene-symbol rownames, fully in-memory
+EGFR_SCE <- file.path(OUT_DIR, "sce_egfr_subset.rds")
+
+library(BiocParallel)
+N_WORKERS <- max(1L, parallel::detectCores() - 2L)
+register(MulticoreParam(N_WORKERS))
+
+```
+
+```{r}
+library(zellkonverter)
+library(SingleCellExperiment)
+library(scuttle)
+library(scater)
+library(HDF5Array)
+library(rhdf5)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+```
+
+# read sce data
+
+```{r}
+
+listing <- h5ls(H5AD_FILE, recursive = TRUE)
+obs_children <- listing[listing$group == "/obs", ]
+print(obs_children)
+
+group_cols <- obs_children$name[obs_children$otype == "H5I_GROUP"]
+cat("Columns stored as nested HDF5 groups (likely categoricals):\n")
+print(group_cols)
+
+h5closeAll()
+
+decode_group_column <- function(file, group, col) {
+  path <- paste0(group, "/", col)
+  x <- rhdf5::h5read(file, path)
+  if (!is.list(x)) return(x)
+
+  nm <- names(x)
+  if (!is.null(nm) && all(c("codes", "categories") %in% nm)) {
+    ## BUG (found 2026-08): using 0 as the "missing" index is wrong. R
+    ## drops zero-valued subscripts from the result instead of inserting
+    ## NA at that position, so `cats[codes + 1L]` SHRINKS whenever any
+    ## code is -1 (missing) -- the output ends up shorter than `codes`,
+    ## and the later `out[codes < 0] <- NA` then extends/recycles that
+    ## shortened, already-misaligned vector against the full-length
+    ## `codes < 0` mask. Net effect: not just the missing entries end up
+    ## wrong -- valid "mutated"/"not mutated" calls get shifted onto the
+    ## wrong cells and often overwritten with NA too. Confirmed by
+    ## reproducing it directly: codes = c(-1,0,1,-1,0,1,1) should decode to
+    ## NA,mutated,not-mutated,NA,mutated,not-mutated,not-mutated, but the
+    ## old code above produced NA,not-mutated,mutated,NA,not-mutated,NA,NA.
+    ##
+    ## Fix: use NA_integer_ (not 0) as the missing index. `vec[NA]` is NA
+    ## and preserves length; `vec[0]` drops the position and shrinks it.
+    codes <- as.integer(x$codes)
+    cats  <- as.character(x$categories)
+    idx <- codes + 1L
+    idx[codes < 0] <- NA_integer_
+    out <- factor(cats[idx], levels = unique(cats))
+    return(out)
+  }
+  if (!is.null(nm) && all(c("values", "mask") %in% nm)) {
+    # pandas nullable Int64/boolean/Float64 extension array
+    vals <- x$values
+    mask <- as.logical(x$mask)   # TRUE = missing, per anndata's convention
+    vals[mask] <- NA
+    return(vals)
+  }
+
+  stop(sprintf("unrecognized nested structure (inner names: %s)",
+               paste(nm, collapse = ", ")))
+}
+
+# kept for compatibility with earlier calls in this file/your session
+decode_obs_column <- function(file, col) decode_group_column(file, "/obs", col)
+
+rebuild_group_dataframe <- function(file, group) {
+  listing <- rhdf5::h5ls(file, recursive = TRUE)
+  children <- listing[listing$group == group, ]
+  cols <- unique(children$name[children$otype %in% c("H5I_GROUP", "H5I_DATASET")])
+  cols <- setdiff(cols, c("_index", "__categories"))
+
+  col_list <- list()
+  for (cn in cols) {
+    val <- tryCatch(
+      decode_group_column(file, group, cn),
+      error = function(e) {
+        message(sprintf("SKIPPING %s column '%s': %s", group, cn, conditionMessage(e)))
+        NULL
+      }
+    )
+    if (!is.null(val)) col_list[[cn]] <- val
+  }
+
+  # figure out the row index (cell barcodes for /obs, gene ids for /var)
+  idx_attr <- tryCatch(
+    rhdf5::h5readAttributes(file, group)[["_index"]],
+    error = function(e) NULL
+  )
+  idx_name <- if (!is.null(idx_attr)) idx_attr else "_index"
+  row_ids <- as.character(rhdf5::h5read(file, paste0(group, "/", idx_name)))
+
+  # do.call splices col_list into separate ... arguments -- equivalent to
+  # DataFrame(col_list, ...) for a bare named list, but written explicitly
+  # here since col_list may legitimately be shorter than the full column set
+  # after skipping bad columns.
+  df <- do.call(S4Vectors::DataFrame, c(col_list, list(row.names = row_ids)))
+  rhdf5::h5closeAll()
+  df
+}
+
+rebuild_obs_dataframe <- function(file) rebuild_group_dataframe(file, "/obs")
+rebuild_var_dataframe <- function(file) rebuild_group_dataframe(file, "/var")
+
+sce <- zellkonverter::readH5AD(H5AD_FILE, reader = "R", use_hdf5 = TRUE)  # colData empty, warning as before
+
+x <- assay(sce, assayNames(sce)[1])
+class(x)
+dim(x)
+DelayedArray::seed(x)          # shows the actual backing chain zellkonverter built
+
+# does a SMALL slice work, or does even this fail?
+tryCatch(print(x[1:5, 1:5]), error = function(e) print(e))
+
+
+obs_df <- rebuild_obs_dataframe(H5AD_FILE)
+
+
+## ALIGNING obs_df with sce when colnames(sce) is NULL
+## ---------------------------------------------------------------------------
+## Because the original colData assignment threw inside zellkonverter's own
+## tryCatch, it never got to the point of copying obs's index into
+## colnames(sce) either -- that's *why* colnames(sce) is NULL, not evidence
+## that the assay columns are unordered or scrambled. The assay-loading path
+## (which did succeed) is untouched by any of this: it just reads /X's row
+## dimension off disk in on-disk order.
+##
+## The anndata/h5ad format guarantees index-alignment between X and obs by
+## construction: X.shape[0] == len(obs), and row i of X *is* obs row i --
+## that's what "obs indexes X" means in the format. Reading /X and reading
+## /obs both walk the file in raw on-disk order with no sorting/filtering in
+## either our decode code or zellkonverter's assay loader, and going from
+## AnnData's (n_obs, n_vars) layout to SCE's (n_vars, n_obs) is a transpose
+## (a dimension swap), not a permutation -- column j after transposing is
+## still exactly row j before. So obs_df's row order and sce's column order
+## are already the same order; there's nothing to "match up" by name because
+## colnames(sce) doesn't exist yet for either side to match against. Don't
+## try to reindex obs_df by colnames(sce) (that will just error/empty out
+## since colnames(sce) is NULL) -- assign directly, in this shared order:
+
+stopifnot(nrow(obs_df) == ncol(sce))   # sanity check on count, not order
+
+colnames(sce) <- rownames(obs_df)      # the cell barcodes decoded from /obs/_index
+colData(sce)  <- obs_df
+
+# rebuild rowData
+
+var_df <- rebuild_var_dataframe(H5AD_FILE)
+
+stopifnot(nrow(var_df) == nrow(sce))   # count check, not order
+
+## Same alignment argument as colData, mirrored onto the other dimension:
+## /var indexes the SECOND dimension of X (X.shape == (n_obs, n_vars)), which
+## after the obs-x-vars -> vars-x-obs transpose becomes the FIRST dimension
+## of the SCE assay -- i.e. row i of var *is* row i of the assay, by the same
+## on-disk-order + transpose-not-permutation reasoning as before. Assign
+## directly; there's no rownames(sce) yet to reindex against:
+
+rownames(sce) <- rownames(var_df)   # gene ids decoded from /var/_index
+rowData(sce)  <- var_df
+
+## And the same "don't just trust it" check, mirrored onto genes: recompute
+## a per-gene QC statistic scanpy commonly stores in var (e.g. n_cells with
+## nonzero counts, or mean expression) from the assay itself, for a random
+## subsample of genes, and compare:
+
+colnames(var_df)  # see what QC columns are actually available in your file
+qc_col <- "n_cells_by_counts"   # substitute whatever numeric QC column your var has
+
+if (qc_col %in% colnames(var_df)) {
+  set.seed(1)
+  chk <- sample(nrow(sce), min(2000, nrow(sce)))
+  recomputed <- Matrix::rowSums(assay(sce, assayNames(sce)[1])[chk, , drop = FALSE] > 0)
+  reported   <- var_df[[qc_col]][chk]
+  cat("correlation:", cor(recomputed, reported), "\n")
+  cat("max abs diff:", max(abs(recomputed - reported)), "\n")
+}
+
+# ── 2. Filter relevant studies from atlas ─────────────────────────────────────
+## EGFR data sets:
+# He_Fan -> only EGFR mutated
+# Wo_Zhou -> do not provide patient metadata -> cannot identify EGFR mutated patients
+# Kim_Lee_2020 -> no metadata available
+
+unique(sce$cell_type)
+table(sce$study, sce$EGFR_mutation)
+study_keep <- c("He_Fan_2021","Wu_Zhou_2021", "Kim_Lee_2020","Maynard_Bivona_2020","Chen_Zhang_2020",
+                "Lambrechts_Thienpont_2018","Zilionis_Klein_2019","Laughney_Massague_2020")
+sce <- sce[,sce$study %in% study_keep]
+
+```
+# assay structure - to be deleted
+
+```{r}
+
+# ── 3. Characterise the available assays ──────────────────────────────────────
+# The dataset contains three assays whose nature we need to establish before
+# choosing one for QC and downstream scoring:
+#   "count"                — expected to be raw integer counts
+#   "X"                    — unknown (could be normalised, log-normalised, etc.)
+#   "counts_length_scaled" — likely length-scaled counts (à la tximeta/fishpond)
+
+message("\n=== Characterising assay slots ===")
+cat("Assay names present:", paste(assayNames(sce), collapse = ", "), "\n\n")
+
+inspect_assay <- function(sce, aname, n_cells = 500, n_genes = 200) {
+  mat <- as.matrix(assay(sce[seq_len(min(n_genes, nrow(sce))),
+                              sample(ncol(sce), min(n_cells, ncol(sce)))],
+                         aname))
+  all_int  <- all(mat == floor(mat), na.rm = TRUE)
+  max_val  <- max(mat,  na.rm = TRUE)
+  min_val  <- min(mat,  na.rm = TRUE)
+  mean_val <- mean(mat, na.rm = TRUE)
+  sparsity <- mean(mat == 0, na.rm = TRUE)
+
+  type_guess <- if (all_int && max_val > 50)  "raw integer counts" else
+                if (all_int && max_val <= 50)  "raw counts (low depth or subset)" else
+                if (!all_int && max_val > 50)  "length-scaled / TPM (not log-transformed)" else
+                if (!all_int && max_val <= 20) "likely log-normalised" else
+                                               "normalised (unlogged)"
+
+  cat(sprintf(
+    "  %-25s  min=%.2f  max=%.2f  mean=%.3f  sparsity=%.1f%%  all_integer=%-5s  => %s\n",
+    aname, min_val, max_val, mean_val, 100 * sparsity, all_int, type_guess
+  ))
+  invisible(list(all_int = all_int, max_val = max_val, type = type_guess))
+}
+
+assay_info <- setNames(
+  lapply(assayNames(sce), inspect_assay, sce = sce),
+  assayNames(sce)
+)
+
+cat("\nConclusion:\n")
+cat("  'count'                — used for QC (assay.type='count') and as raw counts\n")
+cat("  'counts_length_scaled' — salmon/tximeta length-scaled estimates; not log-transformed\n")
+cat("  'X'                    — inspect max value above to confirm nature;\n")
+cat("                           if max <= 20 it is log-normalised and suitable for scoring;\n")
+cat("                           if max > 50  it is a (possibly size-factor-scaled) raw matrix\n")
+
+# Save assay summary
+assay_summary <- do.call(rbind, lapply(names(assay_info), function(nm) {
+  ai <- assay_info[[nm]]
+  data.frame(assay = nm, all_integer = ai$all_int,
+             max_value = ai$max_val, type_guess = ai$type,
+             stringsAsFactors = FALSE)
+}))
+write.csv(assay_summary, file.path(OUT_DIR, "assay_summary.csv"), row.names = FALSE)
+message("Saved: assay_summary.csv")
+
+```
+
+# QC
+```{r}
+# Identify mitochondrial genes (MT- prefix for human)
+mt_genes <- grepl("^MT-", rownames(sce), ignore.case = TRUE)
+cat(sprintf("Mitochondrial genes detected: %d\n", sum(mt_genes)))
+
+# If MT genes not found by prefix, try gene_name column in rowData
+if (sum(mt_genes) == 0 && "gene_name" %in% names(rowData(sce))) {
+  mt_genes <- grepl("^MT-", rowData(sce)$gene_name, ignore.case = TRUE)
+  cat(sprintf("Mitochondrial genes (via gene_name): %d\n", sum(mt_genes)))
+}
+
+
+qc_metrics <- scuttle::perCellQCMetrics(
+  sce,
+  assay.type = "count",
+  subsets = list(Mito = which(mt_genes)),
+  BPPARAM = bpparam()
+)
+
+# Add metrics to colData
+colData(sce) <- cbind(colData(sce), qc_metrics)
+
+cat("\nQC metric summaries:\n")
+print(summary(qc_metrics$sum))           # total UMI
+print(summary(qc_metrics$detected))      # genes detected
+print(summary(qc_metrics$subsets_Mito_percent))  # % mitochondrial
+
+# ── 5. Determine adaptive QC thresholds ───────────────────────────────────────
+# Adaptive thresholds based on MAD (median absolute deviation) are robust
+# to differences between samples / batches.
+
+# Determine batch variable (use sample/patient column if present)
+cd_now <- as.data.frame(colData(sce))
+batch_col <- NULL
+for (candidate in c("sample", "sample_id", "patient", "donor", "batch", "orig.ident")) {
+  if (candidate %in% names(cd_now)) {
+    batch_col <- candidate
+    break
+  }
+}
+cat(sprintf("\nBatch variable for adaptive QC: %s\n",
+            ifelse(is.null(batch_col), "none (global thresholds)", batch_col)))
+
+qc_filters <- scuttle::perCellQCFilters(
+  qc_metrics,
+  sub.fields = "subsets_Mito_percent",
+  batch = if (!is.null(batch_col)) cd_now[[batch_col]] else NULL
+)
+
+cat("\nCells failing each filter:\n")
+print(colSums(as.data.frame(qc_filters)))
+cat(sprintf("Total cells to remove: %d / %d (%.1f%%)\n",
+            sum(qc_filters$discard),
+            ncol(sce),
+            100 * mean(qc_filters$discard)))
+
+# ── 6. QC plots ───────────────────────────────────────────────────────────────
+
+message("\n=== Generating QC plots ===")
+
+qc_df <- data.frame(
+  nUMI      = qc_metrics$sum,
+  nGenes    = qc_metrics$detected,
+  pct_mito  = qc_metrics$subsets_Mito_percent,
+  discard   = qc_filters$discard,
+  batch     = if (!is.null(batch_col)) cd_now[[batch_col]] else "all"
+)
+
+# Violin plots per batch
+p_umi <- ggplot(qc_df, aes(x = batch, y = log10(nUMI + 1), fill = discard)) +
+  geom_violin(alpha = 0.7) +
+  scale_fill_manual(values = c("FALSE" = "#4393c3", "TRUE" = "#d6604d")) +
+  labs(title = "Total UMI (log10)", x = NULL, y = "log10(UMI + 1)") +
+  theme_bw(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_genes <- ggplot(qc_df, aes(x = batch, y = log10(nGenes + 1), fill = discard)) +
+  geom_violin(alpha = 0.7) +
+  scale_fill_manual(values = c("FALSE" = "#4393c3", "TRUE" = "#d6604d")) +
+  labs(title = "Genes detected (log10)", x = NULL, y = "log10(genes + 1)") +
+  theme_bw(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_mito <- ggplot(qc_df, aes(x = batch, y = pct_mito, fill = discard)) +
+  geom_violin(alpha = 0.7) +
+  geom_hline(yintercept = 20, linetype = "dashed", colour = "grey40") +
+  scale_fill_manual(values = c("FALSE" = "#4393c3", "TRUE" = "#d6604d")) +
+  labs(title = "% Mitochondrial reads", x = NULL, y = "% MT") +
+  theme_bw(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Scatter: nUMI vs nGenes, coloured by discard
+p_scatter <- ggplot(qc_df, aes(x = log10(nUMI + 1), y = log10(nGenes + 1),
+                                colour = discard, alpha = discard)) +
+  geom_point(size = 0.3) +
+  scale_colour_manual(values = c("FALSE" = "#4393c3", "TRUE" = "#d6604d")) +
+  scale_alpha_manual(values  = c("FALSE" = 0.2, "TRUE" = 0.8)) +
+  labs(title = "UMI vs Genes", x = "log10(UMI + 1)", y = "log10(genes + 1)") +
+  theme_bw(base_size = 10)
+
+p_scatter_mito <- ggplot(qc_df, aes(x = log10(nUMI + 1), y = pct_mito,
+                                     colour = discard, alpha = discard)) +
+  geom_point(size = 0.3) +
+  scale_colour_manual(values = c("FALSE" = "#4393c3", "TRUE" = "#d6604d")) +
+  scale_alpha_manual(values  = c("FALSE" = 0.2, "TRUE" = 0.8)) +
+  labs(title = "UMI vs % Mito", x = "log10(UMI + 1)", y = "% MT") +
+  theme_bw(base_size = 10)
+
+qc_plot <- (p_umi | p_genes | p_mito) / (p_scatter | p_scatter_mito) +
+  plot_annotation(title = "Per-cell QC metrics",
+                  subtitle = sprintf("%d cells before filtering", ncol(sce)))
+
+ggsave(file.path(OUT_DIR, "qc_metrics.png"), qc_plot,
+       width = 14, height = 9, dpi = 150)
+message("Saved: qc_metrics.png")
+
+# ── 7. Filter and save ────────────────────────────────────────────────────────
+
+sce <- sce[, !qc_filters$discard]
+message(sprintf("\nCells after QC: %d (removed %d)", ncol(sce),
+                sum(qc_filters$discard)))
+
+# Save per-sample QC summary
+if (!is.null(batch_col)) {
+  qc_summary <- qc_df %>%
+    group_by(batch) %>%
+    summarise(
+      total_cells    = n(),
+      kept_cells     = sum(!discard),
+      removed_cells  = sum(discard),
+      pct_removed    = round(100 * mean(discard), 1),
+      median_UMI     = round(median(nUMI[!discard])),
+      median_genes   = round(median(nGenes[!discard])),
+      median_pct_mt  = round(median(pct_mito[!discard]), 1),
+      .groups        = "drop"
+    )
+  write.csv(qc_summary, file.path(OUT_DIR, "qc_per_sample_summary.csv"),
+            row.names = FALSE)
+  print(qc_summary)
+}
+
+# select relevant studies and patient populations -
+
+# Wu_Zhou: patients that are LUAD and mutated. of these 9 are EGFR. maybe we can find out
+wu_zhou_mutated <- c("P38","P24","P13","P20","P33","P16","P8" ,"P28","P2","P34","P9","P29")
+wu_zhou_notmutated <- c("P21","P32","P35","P39","P12")
+cd <- as.data.frame(colData(sce))
+wu_donors_mutated <- cd %>%
+  filter(study == "Wu_Zhou_2021",
+         grepl(paste(wu_zhou_mutated,collapse = "|"),donor_id),
+         disease == "lung adenocarcinoma") %>%
+  distinct(donor_id) %>%
+  pull(donor_id)
+wu_donors_notmutated <- cd %>%
+  filter(study == "Wu_Zhou_2021",
+         grepl(paste(wu_zhou_notmutated,collapse = "|"),donor_id),
+         disease == "lung adenocarcinoma") %>%
+  distinct(donor_id) %>%
+  pull(donor_id)
+
+
+# treatment naive patients in the maynard bavona study
+naive <- c( "LT_S34","LT_S43","LT_S45","LT_S49","LT_S50","LT_S52","LT_S51","LT_S56","LT_S67",
+            "LT_S66","LT_S65","LT_S69","LT_S74")
+
+maynard_donors <- cd %>%
+  filter(study == "Maynard_Bivona_2020",
+         grepl(paste(naive,collapse = "|"),sample),
+         tissue %in% c("lung","lymph node")) %>%
+  distinct(donor_id) %>%
+  pull(donor_id)
+
+# primary tumor samples in the kim_Lee study
+kim <- readxl::read_xlsx("C:/Users/dschulz/data/NSCLC2/data/Kim_Lee_2020_metadata.xlsx", skip = 1)
+kim_mutated <- kim %>%
+  filter(select == TRUE) %>%
+  mutate(EGFR_mutation = ifelse(EGFR != "WT", "mutated", "not mutated")) %>%
+  filter(EGFR_mutation == "mutated") %>%
+  pull(Samples)
+kim_notmutated <- kim %>%
+  filter(select == TRUE) %>%
+  mutate(EGFR_mutation = ifelse(EGFR != "WT", "mutated", "not mutated")) %>%
+  filter(EGFR_mutation == "not mutated") %>%
+  pull(Samples)
+
+kim_donors_mutated <- cd %>%
+  filter(study == "Kim_Lee_2020",
+         grepl(paste(kim_mutated,collapse = "|"),sample)) %>%
+  distinct(donor_id) %>%
+  pull(donor_id)
+kim_donors_notmutated <- cd %>%
+  filter(study == "Kim_Lee_2020",
+         grepl(paste(kim_notmutated,collapse = "|"),sample)) %>%
+  distinct(donor_id) %>%
+  pull(donor_id)
+
+# remaining donors
+other_donors <- cd %>%
+  filter(study %in% c("He_Fan_2021","Laughney_Massague_2020","Maynard_Bivona_2020")) %>%
+  distinct(donor_id) %>%
+  pull(donor_id)
+
+# merge
+all_donors <- c(other_donors,kim_donors_mutated, kim_donors_notmutated,maynard_donors,wu_donors_mutated, wu_donors_notmutated)
+
+
+# subset sce
+cur_sce <- sce[,sce$donor_id %in% all_donors]
+
+# set mutation status
+cur_sce[,cur_sce$donor_id %in% kim_donors_mutated]$EGFR_mutation <- "mutated"
+cur_sce[,cur_sce$donor_id %in% kim_donors_notmutated]$EGFR_mutation <- "not mutated"
+cur_sce[,cur_sce$donor_id %in% wu_donors_mutated]$EGFR_mutation <- "mutated"
+cur_sce[,cur_sce$donor_id %in% wu_donors_notmutated]$EGFR_mutation <- "not mutated"
+
+table(cur_sce$donor_id,cur_sce$EGFR_mutation)
+
+# subset sce for only malignant cells
+sce_tumor <- cur_sce[,cur_sce$cell_type == "malignant cell"]
+table(sce_tumor$donor_id,sce_tumor$EGFR_mutation)
+
+
+# ── 3. store tumor cell object ────────────────────────────────────────────────
+# HDF5Array-backed (on-disk) assays prevent reliable saveRDS.
+# After subsetting to EGFR-annotated cells the object is small enough for RAM.
+
+message("\n=== Materialising assays into RAM (dgCMatrix) ===")
+for (aname in assayNames(sce_tumor)) {
+  message(sprintf("  %s ...", aname))
+  assay(sce_tumor, aname, withDimnames = FALSE) <-
+    as(assay(sce_tumor, aname), "dgCMatrix")
+}
+message("All assays now in-memory.")
+print(object.size(sce_tumor), units = "Mb")
+
+
+# ── 4. store CD4 T cell object ────────────────────────────────────────────────
+# HDF5Array-backed (on-disk) assays prevent reliable saveRDS.
+# After subsetting to EGFR-annotated cells the object is small enough for RAM.
+
+CD4_T_sce <- cur_sce[,cur_sce$cell_type_major == "T cell CD4"]
+message("\n=== Materialising assays into RAM (dgCMatrix) ===")
+for (aname in assayNames(CD4_T_sce)) {
+  message(sprintf("  %s ...", aname))
+  assay(CD4_T_sce, aname, withDimnames = FALSE) <-
+    as(assay(CD4_T_sce, aname), "dgCMatrix")
+}
+message("All assays now in-memory.")
+print(object.size(CD4_T_sce), units = "Mb")
+
+
+# ── 5. store CD8 T cell object ────────────────────────────────────────────────
+# HDF5Array-backed (on-disk) assays prevent reliable saveRDS.
+# After subsetting to EGFR-annotated cells the object is small enough for RAM.
+
+CD8_T_sce <- cur_sce[,cur_sce$cell_type_major == "T cell CD8"]
+message("\n=== Materialising assays into RAM (dgCMatrix) ===")
+for (aname in assayNames(CD8_T_sce)) {
+  message(sprintf("  %s ...", aname))
+  assay(CD8_T_sce, aname, withDimnames = FALSE) <-
+    as(assay(CD8_T_sce, aname), "dgCMatrix")
+}
+message("All assays now in-memory.")
+print(object.size(CD8_T_sce), units = "Mb")
+
+
+# ── 5. store regulatory T object ──────────────────────────────────────────────
+# HDF5Array-backed (on-disk) assays prevent reliable saveRDS.
+# After subsetting to EGFR-annotated cells the object is small enough for RAM.
+
+Treg_sce <- cur_sce[,cur_sce$cell_type_major == "T cell regulatory"]
+message("\n=== Materialising assays into RAM (dgCMatrix) ===")
+for (aname in assayNames(Treg_sce)) {
+  message(sprintf("  %s ...", aname))
+  assay(Treg_sce, aname, withDimnames = FALSE) <-
+    as(assay(Treg_sce, aname), "dgCMatrix")
+}
+message("All assays now in-memory.")
+print(object.size(Treg_sce), units = "Mb")
+
+
+# ── 9. Save the processed SCES ────────────────────────────────────────────────
+
+saveRDS(sce_tumor, "C:/Users/dschulz/data/NSCLC2/data/sce_tumor.rds")
+saveRDS(CD4_T_sce, "C:/Users/dschulz/data/NSCLC2/data/sce_CD4.rds")
+saveRDS(CD8_T_sce, "C:/Users/dschulz/data/NSCLC2/data/sce_CD8.rds")
+saveRDS(Treg_sce, "C:/Users/dschulz/data/NSCLC2/data/sce_Treg.rds")
+message("Saved EGFR-subset in-memory SCE: ", EGFR_SCE)
+message("\n=== EGFR status complete ===")
+
+```
