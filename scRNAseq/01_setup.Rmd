@@ -88,185 +88,65 @@ library(dplyr)
 # read sce data
 
 ```{r}
+sce <- zellkonverter::readH5AD(
+   "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/scRNAseq/data/f678fb47-e51b-4dc5-b23f-f9df43a67ee5.h5ad",
+   reader   = "R",
+   use_hdf5 = TRUE
+)
 
-listing <- h5ls(H5AD_FILE, recursive = TRUE)
-obs_children <- listing[listing$group == "/obs", ]
-print(obs_children)
-
-group_cols <- obs_children$name[obs_children$otype == "H5I_GROUP"]
-cat("Columns stored as nested HDF5 groups (likely categoricals):\n")
-print(group_cols)
-
-h5closeAll()
-
-decode_group_column <- function(file, group, col) {
-  path <- paste0(group, "/", col)
-  x <- rhdf5::h5read(file, path)
-  if (!is.list(x)) return(x)
-
-  nm <- names(x)
-  if (!is.null(nm) && all(c("codes", "categories") %in% nm)) {
-    ## BUG (found 2026-08): using 0 as the "missing" index is wrong. R
-    ## drops zero-valued subscripts from the result instead of inserting
-    ## NA at that position, so `cats[codes + 1L]` SHRINKS whenever any
-    ## code is -1 (missing) -- the output ends up shorter than `codes`,
-    ## and the later `out[codes < 0] <- NA` then extends/recycles that
-    ## shortened, already-misaligned vector against the full-length
-    ## `codes < 0` mask. Net effect: not just the missing entries end up
-    ## wrong -- valid "mutated"/"not mutated" calls get shifted onto the
-    ## wrong cells and often overwritten with NA too. Confirmed by
-    ## reproducing it directly: codes = c(-1,0,1,-1,0,1,1) should decode to
-    ## NA,mutated,not-mutated,NA,mutated,not-mutated,not-mutated, but the
-    ## old code above produced NA,not-mutated,mutated,NA,not-mutated,NA,NA.
-    ##
-    ## Fix: use NA_integer_ (not 0) as the missing index. `vec[NA]` is NA
-    ## and preserves length; `vec[0]` drops the position and shrinks it.
-    codes <- as.integer(x$codes)
-    cats  <- as.character(x$categories)
-    idx <- codes + 1L
-    idx[codes < 0] <- NA_integer_
-    out <- factor(cats[idx], levels = unique(cats))
-    return(out)
-  }
-  if (!is.null(nm) && all(c("values", "mask") %in% nm)) {
-    # pandas nullable Int64/boolean/Float64 extension array
-    vals <- x$values
-    mask <- as.logical(x$mask)   # TRUE = missing, per anndata's convention
-    vals[mask] <- NA
-    return(vals)
-  }
-
-  stop(sprintf("unrecognized nested structure (inner names: %s)",
-               paste(nm, collapse = ", ")))
-}
-
-# kept for compatibility with earlier calls in this file/your session
-decode_obs_column <- function(file, col) decode_group_column(file, "/obs", col)
-
-rebuild_group_dataframe <- function(file, group) {
-  listing <- rhdf5::h5ls(file, recursive = TRUE)
-  children <- listing[listing$group == group, ]
-  cols <- unique(children$name[children$otype %in% c("H5I_GROUP", "H5I_DATASET")])
-  cols <- setdiff(cols, c("_index", "__categories"))
-
-  col_list <- list()
-  for (cn in cols) {
-    val <- tryCatch(
-      decode_group_column(file, group, cn),
-      error = function(e) {
-        message(sprintf("SKIPPING %s column '%s': %s", group, cn, conditionMessage(e)))
-        NULL
-      }
-    )
-    if (!is.null(val)) col_list[[cn]] <- val
-  }
-
-  # figure out the row index (cell barcodes for /obs, gene ids for /var)
-  idx_attr <- tryCatch(
-    rhdf5::h5readAttributes(file, group)[["_index"]],
-    error = function(e) NULL
-  )
-  idx_name <- if (!is.null(idx_attr)) idx_attr else "_index"
-  row_ids <- as.character(rhdf5::h5read(file, paste0(group, "/", idx_name)))
-
-  # do.call splices col_list into separate ... arguments -- equivalent to
-  # DataFrame(col_list, ...) for a bare named list, but written explicitly
-  # here since col_list may legitimately be shorter than the full column set
-  # after skipping bad columns.
-  df <- do.call(S4Vectors::DataFrame, c(col_list, list(row.names = row_ids)))
-  rhdf5::h5closeAll()
-  df
-}
-
-rebuild_obs_dataframe <- function(file) rebuild_group_dataframe(file, "/obs")
-rebuild_var_dataframe <- function(file) rebuild_group_dataframe(file, "/var")
-
-sce <- zellkonverter::readH5AD(H5AD_FILE, reader = "R", use_hdf5 = TRUE)  # colData empty, warning as before
-
-x <- assay(sce, assayNames(sce)[1])
-class(x)
-dim(x)
-DelayedArray::seed(x)          # shows the actual backing chain zellkonverter built
-
-# does a SMALL slice work, or does even this fail?
-tryCatch(print(x[1:5, 1:5]), error = function(e) print(e))
+```
 
 
-obs_df <- rebuild_obs_dataframe(H5AD_FILE)
-
-
-## ALIGNING obs_df with sce when colnames(sce) is NULL
-## ---------------------------------------------------------------------------
-## Because the original colData assignment threw inside zellkonverter's own
-## tryCatch, it never got to the point of copying obs's index into
-## colnames(sce) either -- that's *why* colnames(sce) is NULL, not evidence
-## that the assay columns are unordered or scrambled. The assay-loading path
-## (which did succeed) is untouched by any of this: it just reads /X's row
-## dimension off disk in on-disk order.
-##
-## The anndata/h5ad format guarantees index-alignment between X and obs by
-## construction: X.shape[0] == len(obs), and row i of X *is* obs row i --
-## that's what "obs indexes X" means in the format. Reading /X and reading
-## /obs both walk the file in raw on-disk order with no sorting/filtering in
-## either our decode code or zellkonverter's assay loader, and going from
-## AnnData's (n_obs, n_vars) layout to SCE's (n_vars, n_obs) is a transpose
-## (a dimension swap), not a permutation -- column j after transposing is
-## still exactly row j before. So obs_df's row order and sce's column order
-## are already the same order; there's nothing to "match up" by name because
-## colnames(sce) doesn't exist yet for either side to match against. Don't
-## try to reindex obs_df by colnames(sce) (that will just error/empty out
-## since colnames(sce) is NULL) -- assign directly, in this shared order:
-
-stopifnot(nrow(obs_df) == ncol(sce))   # sanity check on count, not order
-
-colnames(sce) <- rownames(obs_df)      # the cell barcodes decoded from /obs/_index
-colData(sce)  <- obs_df
-
-# rebuild rowData
-
-var_df <- rebuild_var_dataframe(H5AD_FILE)
-
-stopifnot(nrow(var_df) == nrow(sce))   # count check, not order
-
-## Same alignment argument as colData, mirrored onto the other dimension:
-## /var indexes the SECOND dimension of X (X.shape == (n_obs, n_vars)), which
-## after the obs-x-vars -> vars-x-obs transpose becomes the FIRST dimension
-## of the SCE assay -- i.e. row i of var *is* row i of the assay, by the same
-## on-disk-order + transpose-not-permutation reasoning as before. Assign
-## directly; there's no rownames(sce) yet to reindex against:
-
-rownames(sce) <- rownames(var_df)   # gene ids decoded from /var/_index
-rowData(sce)  <- var_df
-
-## And the same "don't just trust it" check, mirrored onto genes: recompute
-## a per-gene QC statistic scanpy commonly stores in var (e.g. n_cells with
-## nonzero counts, or mean expression) from the assay itself, for a random
-## subsample of genes, and compare:
-
-colnames(var_df)  # see what QC columns are actually available in your file
-qc_col <- "n_cells_by_counts"   # substitute whatever numeric QC column your var has
-
-if (qc_col %in% colnames(var_df)) {
-  set.seed(1)
-  chk <- sample(nrow(sce), min(2000, nrow(sce)))
-  recomputed <- Matrix::rowSums(assay(sce, assayNames(sce)[1])[chk, , drop = FALSE] > 0)
-  reported   <- var_df[[qc_col]][chk]
-  cat("correlation:", cor(recomputed, reported), "\n")
-  cat("max abs diff:", max(abs(recomputed - reported)), "\n")
-}
+```{r}
 
 # ── 2. Filter relevant studies from atlas ─────────────────────────────────────
 ## EGFR data sets:
 # He_Fan -> only EGFR mutated
 # Wo_Zhou -> do not provide patient metadata -> cannot identify EGFR mutated patients
-# Kim_Lee_2020 -> no metadata available
+# Kim_Lee_2020 -> metadata available
+# Maynard_Bivona -> metadata available
 
-unique(sce$cell_type)
-table(sce$study, sce$EGFR_mutation)
-study_keep <- c("He_Fan_2021","Wu_Zhou_2021", "Kim_Lee_2020","Maynard_Bivona_2020","Chen_Zhang_2020",
-                "Lambrechts_Thienpont_2018","Zilionis_Klein_2019","Laughney_Massague_2020")
-sce <- sce[,sce$study %in% study_keep]
+lee <- readxl::read_xlsx("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/scRNAseq/data/Kim_Lee_2020_metadata.xlsx", skip = 1)
+lee_pats_mutated <- lee %>% 
+  filter(EGFR != "na", 
+         `Tissue origins` == "tLung") %>%
+  mutate(EGFR_mutation = ifelse(EGFR == "WT", "not mutated", "mutated"),
+         `Patient id` = paste0("Kim_Lee_2020_",`Patient id`)) %>%
+  select(`Patient id`, EGFR_mutation)
 
+
+may <- readxl::read_xlsx("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/scRNAseq/data/Maynard_et_al_patient_metadata.xlsx", sheet = 2)
+may_pats <- may %>%
+  filter(Histolgy == "Adenocarcinoma",
+         grepl("EGFR", `Oncogenic Driver Mutation`),
+         `Biopsy Site` == "Lung",
+         `Treatment Hx` == "tx naive") %>%
+  mutate(EGFR_mutation = ifelse(`Oncogenic Driver Mutation` == "WT", "not mutated", "mutated"),
+         `Patient ID` = paste0("Maynard_Bivona_2020_",`Patient ID`)) %>%
+  select(`Patient ID`, EGFR_mutation)
+
+cur_dat <- as.data.frame(colData(sce))
+unique(cur_dat$EGFR_mutation)
+pats <- cur_dat %>%
+  filter(EGFR_mutation %in% c("mutated", "not mutated")) %>%
+  pull(donor_id) %>%
+  unique() %>%
+  as.character()
+
+pats <- c(pats, may_pats$`Patient ID`, lee_pats_mutated$`Patient id`)
+
+egfr_sce <- sce <- sce[,sce$donor_id %in% pats]
+
+message("\n=== Materialising assays into RAM (dgCMatrix) ===")
+for (aname in assayNames(egfr_sce)) {
+  message(sprintf("  %s ...", aname))
+  assay(egfr_sce, aname, withDimnames = FALSE) <-
+    as(assay(egfr_sce, aname), "dgCMatrix")
+}
+message("All assays now in-memory.")
+print(object.size(egfr_sce), units = "Mb")
+
+saveRDS(egfr_sce,"/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/scRNAseq/Rout/egfr_sce.rds")
 ```
 # assay structure - to be deleted
 
