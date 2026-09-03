@@ -124,6 +124,9 @@ cat("RNA matrix after symbol mapping:", nrow(rna_mat), "samples x", ncol(rna_mat
 rna_in_imaging <- rownames(rna_mat) %in% rownames(imaging_mat)
 cat("RNA samples also in imaging:", sum(rna_in_imaging), "/", nrow(rna_mat), "\n")
 
+# remove metastatic patient sample
+imaging_mat <- imaging_mat[rownames(imaging_mat) != "LUNG-NSCLC2-0677",]
+
 # ── 5. Save ───────────────────────────────────────────────────────────────────
 
 saveRDS(rna_mat,     file.path(OUT, "rna_mat.rds"))
