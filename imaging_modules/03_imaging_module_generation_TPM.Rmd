@@ -41,11 +41,11 @@ HC_METHOD        <- "ward.D2"
 N_FEAT_CLUSTERS  <- NULL   # NULL → TREE_HEIGHT auto-cut; integer overrides
 TREE_HEIGHT      <- 0.8    # cut on (1-r)/2 scale: 0.4 ≈ r > 0.2 within cluster
 MIN_CLUSTER_SIZE <- 3      # drop clusters smaller than this (noise / singletons)
-N_META_CLUSTERS  <- 5      # number of meta-clusters (group imaging clusters by RNA profile)
+N_META_CLUSTERS  <- 7      # number of meta-clusters (group imaging clusters by RNA profile)
 
 # ── Load ──────────────────────────────────────────────────────────────────────
 imaging_mat <- readRDS(file.path(OUT, "imaging_mat.rds"))
-rna_scores  <- readRDS(file.path(OUT, "rna_scores.rds"))
+rna_scores  <- readRDS(file.path(OUT, "rna_scores_tpm.rds"))
 
 cat("Imaging matrix:", nrow(imaging_mat), "patients ×", ncol(imaging_mat), "features\n")
 cat("RNA scores    :", nrow(rna_scores),  "patients ×", ncol(rna_scores),  "axes\n")
@@ -198,7 +198,7 @@ p_sil <- ggplot(sil_df, aes(x = k, y = avg_sil)) +
 cut_heights <- sort(cl_hc2$height, decreasing = TRUE)
 cut_h <- mean(cut_heights[c(N_META_CLUSTERS - 1, N_META_CLUSTERS)])
 
-pdf( file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_2_supp/image_module_diagnostics.pdf", width = 10, height = 6)
+pdf( file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_2_supp/image_module_diagnostics_TPM.pdf", width = 10, height = 6)
 
 print(p_sil)
 
@@ -278,100 +278,12 @@ ht_cor <- Heatmap(
   heatmap_legend_param = list(title = "Pearson r")
 )
 
-pdf("/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_2_supp/S2A_feature_correlation_heatmap.pdf",
+pdf("/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_2_supp/S2A_feature_correlation_heatmap_TPM.pdf",
     width = 14, height = 8)
 draw(ht_cor)
 dev.off()
 ```
 
-to be deleted
-```{r, fig.height=15, fig.width=10, eval = FALSE}
-# Patient ordering: Ward.D2 HC on cluster scores (NA-tolerant mean scores)
-cs_complete <- cluster_scores[rowSums(is.na(cluster_scores)) == 0, , drop = FALSE]
-pat_hc      <- hclust(dist(cs_complete, method = "euclidean"), method = "ward.D2")
-pat_ordered <- c(rownames(cs_complete)[pat_hc$order],
-                 setdiff(rownames(imaging_mat), rownames(cs_complete)))
-
-# Top annotation: all Bagaev RNA axes, scaled 0-1 for display
-rna_ann_mat <- matrix(NA_real_,
-                      nrow = length(pat_ordered),
-                      ncol = ncol(rna_scores),
-                      dimnames = list(pat_ordered, colnames(rna_scores)))
-rna_shared <- intersect(pat_ordered, rownames(rna_scores))
-rna_ann_mat[rna_shared, ] <- as.matrix(rna_scores[rna_shared, , drop = FALSE])
-
-# Center each RNA axis for display
-rna_ann_scaled <- t(scale(rna_ann_mat))
-
-rna_col <- colorRamp2(c(-2, 0, 2), c("#4DBBD5", "white", "#E64B35"))
-
-top_ann <- HeatmapAnnotation(
-  df  = as.data.frame(t(rna_ann_scaled)),
-  col = setNames(
-    lapply(seq_len(nrow(rna_ann_scaled)), function(i) rna_col),
-    rownames(rna_ann_scaled)),
-  show_legend        = FALSE,
-  show_annotation_name = TRUE,
-  annotation_name_gp = gpar(fontsize = 6),
-  height             = unit(3 * nrow(rna_ann_scaled), "mm")
-)
-
-# Re-order features by RNA meta-cluster (cl_hc2 order), preserving within-cluster
-# dendrogram order so the feature correlation structure is still visible within blocks.
-cl_in_rna_order  <- as.integer(sub("^C0*", "", rownames(cl_rna_cor)[cl_hc2$order]))
-feat_sorted_meta <- unlist(lapply(cl_in_rna_order, function(cl) {
-  cl_feats <- names(feat_cl)[feat_cl == cl]
-  feat_sorted[feat_sorted %in% cl_feats]   # preserve original dendrogram order within cluster
-}))
-cl_sorted_meta   <- feat_cl[feat_sorted_meta]
-meta_sorted_main <- feat_meta[feat_sorted_meta]
-panel_sorted_meta <- sub("_.*", "", feat_sorted_meta)
-
-plot_mat <- t(img_z[pat_ordered, feat_sorted_meta, drop = FALSE])
-feat_col <- colorRamp2(c(-3, 0, 3), c("#2166AC", "white", "#B2182B"))
-
-row_ann2 <- rowAnnotation(
-  Meta  = as.character(meta_sorted_main),
-  Panel = panel_sorted_meta,
-  col   = list(Meta  = meta_col,
-               Panel = panel_pal),
-  annotation_name_gp = gpar(fontsize = 8),
-  width = unit(6, "mm"),
-  show_legend = FALSE)
-
-# assign names to meta clusters
-meta_cluster_names <-structure(c("Cold","Proliferating","Highly_inflamed","Thelper_MHCII_enriched","Inflamed_proliferating","Medium_inflamed","Neutrophil_enriched","Mixed"),
-                               names = c(paste0("M",c(1:8))))
-
-ht_main <- Heatmap(
-  plot_mat,
-  name               = "z-score",
-  col                = feat_col,
-  cluster_rows       = FALSE,
-  cluster_columns    = FALSE,
-  row_split          = factor(meta_sorted_main, levels = 1:N_META_CLUSTERS),
-  show_row_names     = FALSE,
-  show_column_names  = FALSE,
-  top_annotation     = top_ann,
-  left_annotation    = row_ann2,
-  row_title          = meta_cluster_names[paste0("M", 1:N_META_CLUSTERS)],
-  row_title_gp       = gpar(fontsize = 9, fontface = "bold"),
-  column_title       = paste0("Imaging features — ", N_META_CLUSTERS,
-                               " meta-clusters  (", length(pat_ordered), " patients)"),
-  column_title_gp    = gpar(fontsize = 11),
-  heatmap_legend_param = list(title = "z-score")
-)
-
-h_per_feature <- 1.2  # mm per feature row
-fig_h <- max(8, length(feat_sorted) * h_per_feature / 25.4 + 3)  # inches
-
-pdf(file.path(FIGURES, "feature_cluster_heatmap.pdf"),
-    width = 16, height = fig_h)
-draw(ht_main)
-dev.off()
-cat("Feature × patient heatmap saved.\n")
-
-```
 
 # 2A imaging modules
 ```{r, fig.height=8, fig.width=10}
@@ -381,8 +293,8 @@ cat("Feature × patient heatmap saved.\n")
 #meta_cluster_names <-structure(c("Highly_inflamed","Thelper_MHCII", "Mixed","Inflamed_proliferating","Proliferating","Neutrophils","Cold"),
 #                               names = c(paste0("M",c(1:7))))
 
-meta_cluster_names <-structure(c("Highly_inflamed","Thelper_MHCII","Medium_inflamed","Cold_proliferating","Cold_fibrotic_TAN"),
-                               names = c(paste0("M",c(1:5))))
+meta_cluster_names <-structure(c("Cold_proliferating","Highly_inflamed","Medium_inflamed","Thelper_MHCII","Cold_fibrotic", "TAN", "Mixed"),
+                               names = c(paste0("M",c(1:7))))
 
 
 
@@ -439,11 +351,12 @@ ht_rna <- Heatmap(
   )
 )
 
-pdf("/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_2/2A_cluster_rna_heatmap.pdf",
+pdf("/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_2/2A_cluster_rna_heatmap_TPM.pdf",
     width  =12,
     height = 12)
 draw(ht_rna)
 dev.off()
+
 ```
 
 
@@ -461,7 +374,7 @@ cluster_df <- data.frame(
 )
 cluster_df <- cluster_df[order(cluster_df$meta_cluster, cluster_df$cluster), ]
 write.csv(cluster_df,
-          file.path(OUT, "imaging_feature_clusters.csv"),
+          file.path(OUT, "imaging_feature_clusters_TPM.csv"),
           row.names = FALSE)
 
 # Per-patient meta-cluster scores (mean of z-scored features per meta-cluster)
@@ -481,9 +394,9 @@ meta_scores[all_miss, ] <- NA
 
 write.csv(
   data.frame(immucan_id = rownames(meta_scores), meta_scores, check.names = FALSE),
-  file.path(OUT, "patient_imaging_meta_cluster_scores.csv"),
+  file.path(OUT, "patient_imaging_meta_cluster_scores_tpm.csv"),
   row.names = FALSE)
-saveRDS(meta_scores, file.path(OUT, "patient_imaging_meta_cluster_scores.rds"))
+saveRDS(meta_scores, file.path(OUT, "patient_imaging_meta_cluster_scores_tpm.rds"))
 
 # Also save fine-grained cluster scores
 #saveRDS(cluster_scores, file.path(OUT, "imaging_cluster_scores.rds"))
@@ -514,7 +427,7 @@ cor(df %>%
       dplyr::select(-immucan_id), use = "pairwise.complete.obs") %>%
   as.data.frame() %>%
   dplyr::select(Factor1, Factor2, Factor3, Factor4, Factor5, Factor6) %>%
-  dplyr::slice(1:5) %>%
+  dplyr::slice(1:7) %>%
   pheatmap(color = colorRampPalette(c("dark blue", "white", "dark red"))(100),
          breaks = seq(-1, 1, length.out = 101))
 ```
@@ -540,7 +453,7 @@ for(j in c("LUAD", "LUSC", "Other")) {
     filter(LUAD_vs_LUSC == j)
   
   surv_ob <- survival::Surv(df$time_to_event,df$censoring)
-  for (i in colnames(meta_scores)[1:5]) {
+  for (i in colnames(meta_scores)[1:7]) {
     p.list[[paste0(j, "_", i)]] <- survival::coxph( as.formula(paste0("surv_ob ~ ", i)),
                                                     data = df) 
   }
@@ -582,7 +495,7 @@ p <- df1 %>%
 p
 ```
 
-# cluster scores
+# survival for individual clusters
 
 ```{r, fig.height=20, fig.width=6}
 cluster_scores <- as.data.frame(cluster_scores)
@@ -727,6 +640,7 @@ draw(ht_meta_pat)
 # patient cluster survival
 
 ```{r, fig.height=8, fig.width=12}
+library(survminer)
 pcl <-  data.frame(immucan_id = rownames(meta_complete)[pat_col_order],
              patient_cluster = as.integer(pat_cl_ord),
              stringsAsFactors = FALSE)
@@ -750,11 +664,7 @@ surv_fit <- survfit(Surv(time_to_event, censoring) ~ pgroup, data = pcl )
 p <- ggsurvplot(surv_fit,  data = pcl , risk.table = TRUE, pval = TRUE)
 p
 
-p <- plot_grid(p$plot,p$table,ncol = 1, rel_heights = c(1,0.5))
+p <- cowplot::plot_grid(p$plot,p$table,ncol = 1, rel_heights = c(1,0.5))
 p
-
-survminer::ggforest(coxph( Surv(time_to_event, censoring) ~ pgroup,
-                data = pcl %>% filter(LUAD_vs_LUSC == "LUAD")))
-
 ```
 

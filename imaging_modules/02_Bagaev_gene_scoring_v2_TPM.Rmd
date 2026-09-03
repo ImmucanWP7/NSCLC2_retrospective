@@ -27,17 +27,19 @@ library(tidyverse)
 OUT     <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing"
 FIGURES <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Revision/"
 
-rna_mat <- readRDS(file.path(OUT, "rna_mat.rds"))
+rna_mat <- readRDS(file.path(OUT, "rna_mat_tpm.rds"))
+```
 
+```{r}
 # ── Load Bagaev signatures ────────────────────────────────────────────────────
 df <- read_xlsx(
   "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/annotations/Bagaev_FGES.xlsx",
   sheet = 1, skip = 1)
 
 df <- df %>%
-  select(-ID) %>%
+  dplyr::select(-ID) %>%
   pivot_longer(cols = -`Process/Signature`) %>%
-  select(-name) %>%
+  dplyr::select(-name) %>%
   filter(!is.na(value))
 
 colnames(df) <- c("name", "gene")
@@ -75,8 +77,10 @@ rownames(rna_scores) <- colnames(rna_for_score)
 
 cat("\nRNA scores:", nrow(rna_scores), "patients ×", ncol(rna_scores), "axes\n")
 
-saveRDS(rna_scores, file.path(OUT, "rna_scores.rds"))
+saveRDS(rna_scores, file.path(OUT, "rna_scores_tpm.rds"))
 cat("Saved rna_scores.rds\n")
+
+apply(rna_scores,2,max)
 
 ```
 
@@ -100,7 +104,7 @@ ht <- Heatmap(
   heatmap_legend_param = list(title = "z-score\n(per axis)")
 )
 
-pdf(file.path(FIGURES, "02_rna_scores_heatmap_Bagaev.pdf"), width = 14, height = 7)
+pdf(file.path(FIGURES, "02_rna_scores_heatmap_Bagaev_tpm.pdf"), width = 14, height = 7)
 draw(ht)
 dev.off()
 cat("Heatmap saved\n")
@@ -154,7 +158,7 @@ ht <- Heatmap(
   heatmap_legend_param = list(title = "distance\n(1 - r)")
 )
 ht
-pdf(file.path(FIGURES, "02_rna_scores_heatmap_Bagaev.pdf"), width = 14, height = 7)
+pdf(file.path(FIGURES, "02_rna_scores_heatmap_Bagaev_tpm.pdf"), width = 14, height = 7)
 draw(ht)
 dev.off()
 cat("Heatmap saved\n")

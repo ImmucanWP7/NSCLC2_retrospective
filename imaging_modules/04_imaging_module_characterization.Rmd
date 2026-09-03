@@ -7,6 +7,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+options(bitmapType = "cairo")
 ```
 
 # wordcloud
@@ -28,7 +29,7 @@ TOP_N <- 15  # features per meta-cluster to display
 
 # ── Load ──────────────────────────────────────────────────────────────────────
 imaging_mat <- readRDS(file.path(OUT, "imaging_mat.rds"))
-meta_scores <- read.csv(file.path(OUT, "patient_imaging_meta_cluster_scores.csv"),
+meta_scores <- read.csv(file.path(OUT, "patient_imaging_meta_cluster_scores_tpm.csv"),
                         row.names = 1, check.names = FALSE)
 
 shared <- intersect(rownames(imaging_mat), rownames(meta_scores))
@@ -93,6 +94,7 @@ p <- ggplot(plot_df, aes(label = feature, size = abs_r, color = panel)) +
   labs(title = paste0("Top ", TOP_N, " features correlated with each imaging meta-cluster"),
        subtitle = "Feature name size proportional to |r| with meta-cluster score; color = imaging panel")
 
+
 ggsave(file.path(FIGURES, "05_meta_cluster_feature_wordcloud.pdf"),device = cairo_pdf,
        p, width = 16, height = 10)
 ```
@@ -109,11 +111,11 @@ mc_dist <- as.dist((1 - mc_cor) / 2)
 mds_raw <- cmdscale(mc_dist, k = 2)
 
 # Keep nodes well inside [0,1] so large circles don't get clipped
-rescale_range <- function(x, lo = 0.18, hi = 0.82)
+rescale_range <- function(x, lo = 0.18, hi = 0.72)
   lo + (x - min(x)) / (max(x) - min(x)) * (hi - lo)
 
-pos <- cbind(rescale_range(mds_raw[, 1]),
-             rescale_range(mds_raw[, 2]))
+  pos <- cbind(rescale_range(mds_raw[, 1], lo = 0.18, hi = 0.82),
+               rescale_range(mds_raw[, 2], lo = 0.18, hi = 0.68))
 
 # Post-MDS repulsion: push overlapping nodes apart until all circles have
 # at least MIN_GAP clearance between their edges.
@@ -140,6 +142,14 @@ for (iter in seq_len(2000)) {
   }
   if (!moved) break
 }
+
+# Safety clamp: repulsion has no upper/lower bound, so nodes can drift past
+# the reserved safe zone. Clamp centers back in so circle + label always
+# fit inside [0,1]. Can't just re-rescale here - that would distort
+# inter-node distances and undo the MIN_DIST guarantee from repulsion.
+LABEL_HEADROOM <- 0.06   # room for text height above the label offset
+pos[, 1] <- pmin(pmax(pos[, 1], NODE_R), 1 - NODE_R)
+pos[, 2] <- pmin(pmax(pos[, 2], NODE_R), 1 - NODE_R - 0.01 - LABEL_HEADROOM)
 
 mds_df <- data.frame(
   meta_cluster = rownames(mds_raw),
@@ -175,7 +185,7 @@ base_graph <- ggplot() +
   scale_x_continuous(limits = c(0, 1), expand = c(0, 0)) +
   scale_y_continuous(limits = c(0, 1), expand = c(0, 0)) +
   theme_void() +
-  theme(plot.margin = margin(0, 0, 0, 0))
+  theme(plot.margin = margin(0,0,0,0))
 
 # ── Word cloud sub-plots (transparent background, one per node) ───────────────
 # WC_SIZE matches the circle diameter so text fills the circle area
@@ -188,7 +198,7 @@ wc_plots <- lapply(mc_names, function(mc) {
     scale_size_area(max_size = 8) +
     scale_color_manual(values = panel_pal) +
     theme_void() +
-    theme(plot.margin    = margin(0, 0, 0, 0),
+    theme(plot.margin    = margin(0,0,0,0),
           plot.background = element_rect(fill = NA, color = NA))
 })
 names(wc_plots) <- mc_names
@@ -221,7 +231,7 @@ legend_grob <- get_legend(
 )
 
 final <- plot_grid(composed, legend_grob, ncol = 1, rel_heights = c(1, 0.05))
-
+final
 ggsave(file.path(FIGURES, "05_meta_cluster_network.pdf"),
        final, width = 10, height = 10)
 ```

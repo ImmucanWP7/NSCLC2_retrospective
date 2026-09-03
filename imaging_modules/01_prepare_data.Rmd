@@ -72,6 +72,9 @@ cat("Imaging matrix:", nrow(imaging_mat), "patients x", ncol(imaging_mat), "feat
 ```
 
 # RNA
+
+## vst
+here we will use the vst, batch corrected counts
 ```{r}
 rna_raw <- read.table("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/RNAseq/vstcounts_adj_proteins.txt",
                       header = TRUE, row.names = 1, check.names = FALSE)
@@ -118,10 +121,43 @@ if (any(duplicated(colnames(rna_mat)))) {
 cat("RNA matrix after symbol mapping:", nrow(rna_mat), "samples x", ncol(rna_mat), "genes\n")
 ```
 
+## tpm
+
+the correlations between tpm and vst per gene across all patients is ~0.35 on average
+
+
+```{r}
+rna_mat_tpm <- t(read.delim("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/TPM/tpm_protein_coding.txt"))
+rownames(rna_mat_tpm) <- gsub("\\.","-",rownames(rna_mat_tpm))
+
+matched_genes <- intersect(colnames(rna_mat), colnames(rna_mat_tpm))
+dim(rna_mat)
+dim(rna_mat_tpm)
+
+cat("matched genes between vst and tpm data: ",length(matched_genes), "\n")
+cat("percent of gene overlap between vst and tpm data: ",length(matched_genes)/length(rownames(rna_mat)), "\n")
+cat("percent of gene overlap between vst and tpm data: ",length(matched_genes)/length(rownames(rna_mat_tpm)), "\n")
+
+df <- rna_mat[,colnames(rna_mat) %in% matched_genes]
+df_tpm <- rna_mat_tpm[,colnames(rna_mat_tpm) %in% matched_genes]
+
+df <- df[,match(colnames(df_tpm), colnames(df))]
+identical(colnames(df), colnames(df_tpm))
+identical(rownames(df_tpm),rownames(df))
+
+# correlation between tpm and counts
+cor_list <- lapply(1:124, function(i) {
+  cor(df[i,],df_tpm[i,])
+})
+
+hist(unlist(cor_list), breaks = 100)
+```
+
+
 ```{r}
 # ── 4. Overlap check ──────────────────────────────────────────────────────────
 
-rna_in_imaging <- rownames(rna_mat) %in% rownames(imaging_mat)
+rna_in_imaging <- rownames(rna_mat_tpm) %in% rownames(imaging_mat)
 cat("RNA samples also in imaging:", sum(rna_in_imaging), "/", nrow(rna_mat), "\n")
 
 # remove metastatic patient sample
@@ -129,8 +165,8 @@ imaging_mat <- imaging_mat[rownames(imaging_mat) != "LUNG-NSCLC2-0677",]
 
 # ── 5. Save ───────────────────────────────────────────────────────────────────
 
-saveRDS(rna_mat,     file.path(OUT, "rna_mat.rds"))
+saveRDS(rna_mat_tpm,     file.path(OUT, "rna_mat_tpm.rds"))
 saveRDS(imaging_mat, file.path(OUT, "imaging_mat.rds"))
 
-cat("Saved rna_mat.rds and imaging_mat.rds to", OUT, "\n")
+cat("Saved rna_mat_tpm.rds and imaging_mat.rds to", OUT, "\n")
 ```
