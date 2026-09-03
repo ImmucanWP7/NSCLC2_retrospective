@@ -1,0 +1,435 @@
+---
+title: "RNAseq - TPM (Salmon) pre-processing"
+author: "Daniel Schulz"
+date: "2026-08-25"
+output: html_document
+---
+
+Analysis description:
+ NSCLC2 (old Specta Lung, retrospective cohort) RNAseq dataset, quantified with **Salmon**.
+ This script replaces `preprocessing.Rmd` (STAR/HTSeq raw counts) for TPM input.
+
+ Input layout assumed here: **one quantification file per sample**, all in one
+ directory (no per-sample sub-directories, no `aux_info/`). The file type is
+ auto-detected (see section 1a), so all of these work:
+   - `quant.sf`          (transcript-level Salmon -> aggregated to genes via tx2gene)
+   - `quant.genes.sf`    (gene-level Salmon, i.e. run with --geneMap)
+   - a generic 2+ column table with an id column and a TPM column
+
+ 1) Import per-sample TPM and build the gene-level matrix
+ 2) Prepare metadata (clinical; library/QC tables only if they exist)
+ 3) Sample-level filtering
+ 4) Gene filtering (per-batch detection if a batch is known, + expression filter)
+ 5) Re-normalisation to 1e6 and log2(TPM+1)
+ 6) Optional batch correction of log2(TPM+1) -- for PCA/linear models only
+ 7) Protein-coding subset and symbol-level matrix for `singscore`
+
+ What is deliberately NOT done here, and why (see TPM_preprocessing_QC_steps.md):
+  - no TMM / calcNormFactors / cpm(): TPM columns already sum to 1e6
+  - no DESeq2::vst(): VST is fitted on the NB mean-variance relation of integer
+    counts and is not defined for continuous, length-normalised values
+  - no sva::ComBat_seq(): requires integer counts
+  - no voom
+ The variance-stabilising transform for TPM is log2(TPM + 1).
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Libraries
+```{r libs, message=FALSE}
+library(tximport)     # only needed for transcript-level input
+library(sva)          # ComBat (log-scale, NOT ComBat_seq)
+library(limma)        # removeBatchEffect (alternative to ComBat)
+library(ggplot2)
+```
+
+# Paths and parameters
+```{r paths}
+mnt_path   <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/"
+quant_dir  <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNAseq/TPM_counts/"   # directory holding one file per sample
+out_tab    <- paste0(mnt_path, "Rout/tables/TPM/")
+out_plot   <- paste0(mnt_path, "Rout/plots/TPM/")
+
+clinical_file <- "/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/clinical.csv"
+annot_file    <- paste0(mnt_path, "annotations/gencode.v29.annotation.genes.txt")
+
+## qc_matrix.tsv from the STAR-counts pipeline. This is the source of lib.kit
+## and dv200 -- see 2c for which of its columns are usable and which are not.
+## Set to the first path that exists (project folder, then the mnt volume).
+qc_file <- read.delim("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNAseq/STAR_counts/qc_matrix.tsv")
+
+seq_qc <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNAseq/STAR_counts/sequencing_qc.csv")
+# ---- parameters -------------------------------------------------------------
+quant_pattern    <- "\\.(sf|txt|tsv|csv)$"  # which files in quant_dir are quantifications
+tpm.val          <- 1     # expression filter: TPM cut-off
+min.samplefrac   <- 0.10  # expression filter: fraction of samples that must pass
+min_mapping_rate <- 0     # Salmon percent_mapped filter; 0 = disabled (no aux_info available)
+sample_to_exclude <- "LUNG-NSCLC2-0677"   # metastatic sample, as in the counts pipeline
+batch_var        <- "lib.kit"             # set to NA to skip all batch-aware steps
+# -----------------------------------------------------------------------------
+
+for (d in c(out_tab, out_plot)) if (!dir.exists(d)) dir.create(d, recursive = TRUE)
+```
+
+# read counts_tpm files
+
+```{r}
+library(stringr)
+quant_files <- list.files(quant_dir, pattern = "counts_TPM", full.names = TRUE)
+
+tpm_depth <- lapply(quant_files, function(x){
+  df <- read.delim(x, check.names = FALSE)
+  cur_name <- str_split_i(basename(x),"-FIXT",1)
+  read_depth <- as.numeric(colnames(df)[2])
+  return(read_depth)
+})
+
+
+tpm_list <- lapply(quant_files, function(x){
+  df <- read.delim(x, check.names = FALSE)
+  cur_name <- str_split_i(basename(x),"-FIXT",1)
+  gene_names <- df[,1]
+  rownames(df) <- gene_names
+  df[,1] <- NULL
+  colnames(df) <- c(cur_name)
+  
+  return(df)
+})
+
+# all gene entries are identical
+all(unlist(lapply(tpm_list, function(x){
+  identical(rownames(x),rownames(tpm_list[[1]]))
+})))
+
+tpm_df <- do.call(cbind, tpm_list)
+
+```
+
+# read transcripts_tpm files
+
+```{r}
+library(stringr)
+quant_files <- list.files(quant_dir, pattern = "transcript", full.names = TRUE)
+
+trx_depth <- lapply(quant_files, function(x){
+  df <- read.delim(x, check.names = FALSE)
+  cur_name <- str_split_i(basename(x),"-FIXT",1)
+  read_depth <- as.numeric(colnames(df)[2])
+  return(read_depth)
+})
+
+
+trx_list <- lapply(quant_files, function(x){
+  df <- read.delim(x, check.names = FALSE)
+  cur_name <- str_split_i(basename(x),"-FIXT",1)
+  gene_names <- df[,1]
+  rownames(df) <- gene_names
+  df[,1] <- NULL
+  colnames(df) <- c(cur_name)
+  
+  return(df)
+})
+
+# all gene entries are identical
+all(unlist(lapply(trx_list, function(x){
+  identical(rownames(x),rownames(trx_list[[1]]))
+})))
+
+trx_df <- do.call(cbind, trx_list)
+colSums(trx_df)
+colSums(tpm_df)
+min(colSums(tpm_df))
+max(colSums(tpm_df))
+
+# get gene names
+#tx2gene <- read.delim("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/annotations/gencode.v29.annotation.genes.txt", header = TRUE)
+#sum(tx2gene$gene_id %in% rownames(trx_df))
+
+tx_clean <- sub("\\..*", "", rownames(trx_df))   # strip version numbers
+
+library(dplyr)
+library(ensembldb)
+library(EnsDb.Hsapiens.v86)
+
+mapping <- select(EnsDb.Hsapiens.v86,
+                   keys = tx_clean,
+                   keytype = "TXID",
+                   columns = c("GENEID", "SYMBOL"))
+unique(mapping$SYMBOL)
+
+library(dplyr)
+gene_tpm <- trx_df %>%
+  mutate(tx_clean = sub("\\..*", "", rownames(trx_df))) %>%
+  left_join(mapping, by = c("tx_clean" = "TXID")) %>%
+  dplyr::filter(!is.na(SYMBOL)) %>%          # drop transcripts that didn't map
+  group_by(SYMBOL) %>%
+  summarise(across(.cols = -c(GENEID,tx_clean), \(x) sum(x, na.rm = TRUE)), .groups = "drop")
+
+# remove metastatic sample
+gene_tpm$`LUNG-NSCLC2-0677` <- NULL
+
+detach("package:EnsDb.Hsapiens.v86", unload = TRUE)
+detach("package:ensembldb", unload = TRUE)
+```
+
+Small helpers used throughout.
+
+```{r helpers}
+write_tab <- function(x, file) {
+  write.table(x, file = file, sep = "\t", quote = FALSE,
+              col.names = TRUE, row.names = TRUE)
+}
+
+## renormalise columns to sum to 1e6 (needed after any gene subsetting)
+renorm_tpm <- function(x) {
+  x <- as.matrix(x)
+  sweep(x, 2, colSums(x, na.rm = TRUE), "/") * 1e6
+}
+
+## strip Ensembl version suffix: ENSG00000141510.16 -> ENSG00000141510
+strip_version <- function(x) sub("\\..*$", "", x)
+```
+
+
+# Sanity checks
+
+Any column not summing to ~1e6 means the input is not raw TPM over the full
+transcriptome (already subset, or something other than TPM).
+
+```{r tpm_sanity}
+tpm_unfiltered <- gene_tpm[,-1]
+rownames(tpm_unfiltered) <- gene_tpm$SYMBOL
+tpm_unfiltered <- as.matrix(tpm_unfiltered)
+storage.mode(tpm_unfiltered) <- "double"
+stopifnot(!any(is.na(tpm_unfiltered)))
+stopifnot(all(tpm_unfiltered >= 0))
+stopifnot(sum(duplicated(rownames(tpm_unfiltered))) == 0)
+dim(tpm_unfiltered)
+
+col_sums <- colSums(tpm_unfiltered)
+summary(col_sums)
+if (any(abs(col_sums - 1e6) > 1e6 * 0.01))
+  warning("some columns deviate >1% from 1e6 - check whether the input really is ",
+          "raw TPM over the whole transcriptome")
+```
+
+
+# 2. qc data
+
+```{r}
+cur_names <- str_split_i(basename(quant_files),"_#_", 1)
+seq_qc <- seq_qc %>%
+  filter(sample_id %in% cur_names)
+ 
+qc_file <- qc_file %>%
+  filter(ID %in% cur_names) %>%
+  dplyr::rename(sample_id = ID)
+ 
+qc <- left_join(qc_file, seq_qc,"sample_id")
+
+colnames(qc)
+qc<- qc %>%
+  dplyr::select(sample_id,patient_id,dv200.x,assay_library, qc_status,Failed_Tests, percent_unique.x, rin) %>%
+  mutate(lib.kit =ifelse(grepl("Takara", assay_library), "takara","kapa") )
+colnames(qc) <- gsub(".x","",colnames(qc))
+
+qc
+```
+
+
+## lib kit effect
+
+The critical question before any batch correction. dv200 differs markedly by kit
+(KAPA mean 53.1, range 22.8-87.3; Takara mean 31.9, range 19.6-51.7) -- Takara
+was evidently chosen for the more degraded RNA.
+
+They are **correlated but not collinear**: 68 of 124 samples fall in the
+overlapping dv200 window 22.8-51.7, split 36 KAPA / 32 Takara. That overlap is
+what makes the two effects statistically separable, so both can go into a model
+as covariates.
+
+The consequence for `ComBat`: correcting on kit alone will also remove part of
+the genuine degradation signal, because the two are correlated. That is
+acceptable for a QC/exploratory PCA, but for any inferential model prefer
+`~ lib.kit + dv200` over a pre-corrected matrix.
+
+```{r kit_dv200_confounding}
+has_batch <- TRUE
+metadata <- qc %>% 
+  filter(!grepl("0677", patient_id))
+if (has_batch && "dv200" %in% colnames(metadata)) {
+  print(tapply(metadata$dv200, metadata$lib.kit, summary))
+
+  ## how much of dv200 does kit explain?
+  fit <- lm(dv200 ~ lib.kit, data = metadata)
+  message("R^2 of dv200 ~ lib.kit: ", round(summary(fit)$r.squared, 3))
+
+  ## size of the overlap region: samples of both kits at comparable dv200
+  rng <- tapply(metadata$dv200, metadata$lib.kit, range, na.rm = TRUE)
+  lo  <- max(vapply(rng, `[`, numeric(1), 1))
+  hi  <- min(vapply(rng, `[`, numeric(1), 2))
+  ov  <- !is.na(metadata$dv200) & metadata$dv200 >= lo & metadata$dv200 <= hi
+  message("dv200 overlap window [", round(lo, 1), ", ", round(hi, 1), "]: ",
+          sum(ov), " samples")
+  print(table(metadata$lib.kit[ov]))
+
+  pdf(paste0(out_plot, "kit_vs_dv200.pdf"), width = 6, height = 4)
+  print(
+    ggplot(metadata, aes(x = lib.kit, y = dv200, fill = lib.kit)) +
+      geom_boxplot(outlier.shape = NA) + geom_jitter(width = .15, size = 1) +
+      annotate("rect", xmin = -Inf, xmax = Inf, ymin = lo, ymax = hi, alpha = .1) +
+      labs(title = "dv200 by library kit (shaded = overlap window)",
+           subtitle = "overlap is what makes kit and degradation separable") +
+      theme_light()
+  )
+  dev.off()
+}
+
+rownames(metadata) <- metadata$patient_id
+stopifnot(all(rownames(metadata) == colnames(tpm_unfiltered)))
+```
+
+
+# 3. Sample-level filtering
+```{r sample_filter}
+keep_sample <- rep(TRUE, ncol(tpm_unfiltered))
+names(keep_sample) <- colnames(tpm_unfiltered)
+
+## a) metastatic sample: keep primary tumours only
+keep_sample[grepl(sample_to_exclude, names(keep_sample))] <- FALSE
+
+message("kept ", sum(keep_sample), " / ", length(keep_sample), " samples")
+
+tpm_unfiltered <- tpm_unfiltered[, keep_sample, drop = FALSE]
+metadata       <- metadata[keep_sample, , drop = FALSE]
+stopifnot(all(rownames(metadata) == colnames(tpm_unfiltered)))
+
+
+write.table(tpm_unfiltered, file =  paste0(out_tab, "tpm_gene_unfiltered.txt"), sep = "\t", quote = FALSE,
+            col.names = TRUE, row.names = TRUE)
+```
+
+
+# 4. Gene filtering
+
+Stage 1 -- detection. With a known batch: the gene must be seen (TPM > 0) in at
+least one sample of **each** batch, so that batch-specific dropouts cannot
+generate apparent biological structure. Without a batch: detected in at least
+one sample overall.
+
+Stage 2 -- expression: TPM >= `tpm.val` in at least `min.samplefrac` of samples.
+Direct analogue of the old "1 CPM in >=10% of samples".
+
+```{r gene_filter}
+if (has_batch) {
+  batch <- droplevels(factor(metadata[[batch_var]]))
+  keep_detect <- Reduce(`&`, lapply(levels(batch), function(b) {
+    idx <- which(batch == b)
+    rowSums(tpm_unfiltered[, idx, drop = FALSE] > 0) > 0
+  }))
+  message("per-batch detection filter over levels: ", paste(levels(batch), collapse = ", "))
+} else {
+  keep_detect <- rowSums(tpm_unfiltered > 0) > 0
+  message("no batch available -> plain detection filter (TPM > 0 in >= 1 sample)")
+}
+tpm_f1 <- tpm_unfiltered[keep_detect, , drop = FALSE]
+message("after detection filter: ", nrow(tpm_f1), " genes")
+
+min.samplenum <- round(ncol(tpm_f1) * min.samplefrac, 0)
+isexpr <- rowSums(tpm_f1 >= tpm.val) >= min.samplenum
+tpm_filt_raw <- tpm_f1[isexpr, , drop = FALSE]
+message("after expression filter (TPM >= ", tpm.val, " in >= ", min.samplenum,
+        " samples): ", nrow(tpm_filt_raw), " genes (",
+        round(100 * nrow(tpm_filt_raw) / nrow(tpm_unfiltered), 1), "% of features)")
+```
+
+Diagnostic: how much of each library's total TPM survives the filter? Should be
+>95% everywhere; a low value flags a sample whose signal sits in genes the
+cohort filter removed.
+
+```{r filter_diagnostic}
+frac_kept <- colSums(tpm_filt_raw) / colSums(tpm_unfiltered)
+summary(frac_kept)
+
+diag_df <- data.frame(sample_id = names(frac_kept), frac = frac_kept)
+diag_df$batch <- if (has_batch) factor(metadata[[batch_var]]) else factor("all")
+
+pdf(paste0(out_plot, "fraction_TPM_retained_after_filtering.pdf"), width = 10, height = 4)
+print(
+  ggplot(diag_df, aes(x = reorder(sample_id, frac), y = frac, fill = batch)) +
+    geom_col() + coord_cartesian(ylim = c(min(0.9, min(frac_kept)), 1)) +
+    labs(x = "", y = "fraction of total TPM retained") +
+    theme_light() + theme(axis.text.x = element_text(angle = 90, size = 4))
+)
+dev.off()
+```
+
+
+# 5. Re-normalisation and log2 transformation
+
+After removing genes the columns no longer sum to 1e6, so rescale. This step is
+irrelevant for `singscore` (a monotone per-sample transform leaves ranks
+unchanged) but necessary for anything comparing absolute values across samples.
+
+```{r renorm}
+head(tpm_filt_raw)
+tpm_filt <- renorm_tpm(tpm_filt_raw)
+stopifnot(all(abs(colSums(tpm_filt) - 1e6) < 1))
+
+log2tpm <- log2(tpm_filt + 1)   # variance-stabilising transform for TPM
+
+write.table(tpm_filt, file =  paste0(out_tab, "tpm_gene_filtered.txt"), sep = "\t", quote = FALSE,
+            col.names = TRUE, row.names = TRUE)
+write.table(log2tpm, file =  paste0(out_tab, "log2tpm_filtered.txt"), sep = "\t", quote = FALSE,
+            col.names = TRUE, row.names = TRUE)
+
+```
+
+
+# 6. Optional: batch correction of log2(TPM+1)
+
+For **PCA, clustering and cross-sample linear models only**. Do NOT feed this
+matrix to `singscore` -- ranking is within-sample, and pre-correcting mixes
+information across samples.
+
+`ComBat_seq` is not usable here (integer counts only); `ComBat` on the log scale
+is the correct counterpart. Skipped entirely if no batch is known.
+
+```{r combat}
+if (has_batch) {
+  mod0 <- model.matrix(~ 1, data = metadata)
+  log2tpm_combat <- sva::ComBat(dat = as.matrix(log2tpm),
+                                batch = droplevels(factor(metadata[[batch_var]])),
+                                mod = mod0, par.prior = TRUE, prior.plots = FALSE)
+  write_tab(log2tpm_combat, paste0(out_tab, "log2tpm_filtered_combat.txt"))
+
+  ## lighter alternative (additive shift only):
+  # log2tpm_rbe <- limma::removeBatchEffect(as.matrix(log2tpm),
+  #                                         batch = factor(metadata[[batch_var]]))
+} else {
+  message("no batch variable -> ComBat skipped, no log2tpm_filtered_combat.txt written")
+}
+```
+
+
+# 7. Annotation, protein-coding subset, and the singscore matrix
+
+## 7a. Protein-coding subset (renormalised)
+```{r protein_coding}
+annot <- read.delim(annot_file, sep = "\t")
+
+prot_coding <- annot %>%
+  filter(gene_type == "protein_coding") %>%
+  pull(gene_name)
+
+
+tpm_pc <- tpm_filt[prot_coding %in% rownames(tpm_filt),]
+tpm_pc     <- renorm_tpm(tpm_pc)
+log2tpm_pc <- log2(tpm_pc + 1)
+
+write.table(tpm_pc, file =  paste0(out_tab, "tpm_protein_coding.txt"), sep = "\t", quote = FALSE,
+            col.names = TRUE, row.names = TRUE)
+write.table(log2tpm_pc, file =  paste0(out_tab, "log2tpm_protein_coding.txt"), sep = "\t", quote = FALSE,
+            col.names = TRUE, row.names = TRUE)
+```
