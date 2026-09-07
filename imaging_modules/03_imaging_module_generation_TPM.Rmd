@@ -188,28 +188,27 @@ p_sil <- ggplot(sil_df, aes(x = k, y = avg_sil)) +
            label = paste0("k = ", N_META_CLUSTERS),
            hjust = 0, color = "firebrick", size = 3.5) +
   scale_x_continuous(breaks = 2:max_k) +
-  labs(title    = "Meta-cluster silhouette width",
-       subtitle = "Average silhouette across k; higher = better separation",
-       x = "k (number of meta-clusters)",
-       y = "Average silhouette width") +
+  labs(title    = "Meta-cluster silhouette width across k")+
   theme_bw(base_size = 11)
 
 # Height midpoint bracketing the k = N_META_CLUSTERS cut on the dendrogram
 cut_heights <- sort(cl_hc2$height, decreasing = TRUE)
 cut_h <- mean(cut_heights[c(N_META_CLUSTERS - 1, N_META_CLUSTERS)])
 
-pdf( file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_2_supp/image_module_diagnostics_TPM.pdf", width = 10, height = 6)
+pdf( file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_3_supp/S3C_image_module_SIL_diagnostics_TPM.pdf", width = 5, height = 3)
 
 print(p_sil)
 
-par(mar = c(4, 4, 3, 2))
+dev.off()
+
+pdf( file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_3_supp/S3C_image_module_DEND_diagnostics_TPM.pdf", width = 6, height = 3)
+
 plot(as.dendrogram(cl_hc2),
      #leaflab = "none",
-     main    = paste0("Meta-cluster dendrogram  (Ward.D2, Euclidean on Bagaev r)\n",
-                      "Dashed line = k = ", N_META_CLUSTERS, " cut"),
-     ylab    = "Height")
+     main    = "Meta-cluster dendrogram evaluation",
+     ylab    = "Height",
+     cex.main = 0.8)
 abline(h = cut_h, col = "firebrick", lty = 2, lwd = 1.5)
-
 dev.off()
 
 # Map meta-cluster assignment down to individual features
@@ -222,7 +221,7 @@ meta_col <- setNames(
   as.character(1:N_META_CLUSTERS))
 ```
 
-# S2A Figure of imaging clusters
+# S3A Figure of imaging clusters
 ```{r, fig.height=8, fig.width=9}
 
 # Features in original co-variance dendrogram order (shows correlation blocks)
@@ -278,7 +277,7 @@ ht_cor <- Heatmap(
   heatmap_legend_param = list(title = "Pearson r")
 )
 
-pdf("/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_2_supp/S2A_feature_correlation_heatmap_TPM.pdf",
+pdf("/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_3_supp/S3A_feature_correlation_heatmap_TPM.pdf",
     width = 14, height = 8)
 draw(ht_cor)
 dev.off()
@@ -293,7 +292,7 @@ dev.off()
 #meta_cluster_names <-structure(c("Highly_inflamed","Thelper_MHCII", "Mixed","Inflamed_proliferating","Proliferating","Neutrophils","Cold"),
 #                               names = c(paste0("M",c(1:7))))
 
-meta_cluster_names <-structure(c("Cold_proliferating","Highly_inflamed","Medium_inflamed","Thelper_MHCII","Cold_fibrotic", "TAN", "Mixed"),
+meta_cluster_names <-structure(c("Cold_fibrotic","Cold_proliferating","Thelper_MHCII","Highly_inflamed","Medium_inflamed", "TAN", "Mixed"),
                                names = c(paste0("M",c(1:7))))
 
 
@@ -337,11 +336,11 @@ ht_rna <- Heatmap(
   row_title_gp      = gpar(fontsize = 14, fontface = "bold"),
   column_title      = "Imaging modules",
   column_title_gp   = gpar(fontsize = 14),
-  cell_fun          = function(j, i, x, y, width, height, fill) {
-    r <- cl_rna_ordered[i, j]
-    if (!is.na(r) && abs(r) >= 0.3)
-      grid.text(sprintf("%.2f", r), x, y, gp = gpar(fontsize = 7))
-  },
+  #cell_fun          = function(j, i, x, y, width, height, fill) {
+  #  r <- cl_rna_ordered[i, j]
+  #  if (!is.na(r) && abs(r) >= 0.3)
+  #    grid.text(sprintf("%.2f", r), x, y, gp = gpar(fontsize = 7))
+  #},
   heatmap_legend_param = list(
     title       = "Pearson r",
     title_gp    = gpar(fontsize = 14),

@@ -160,13 +160,9 @@ hist(unlist(cor_list), breaks = 100)
 rna_in_imaging <- rownames(rna_mat_tpm) %in% rownames(imaging_mat)
 cat("RNA samples also in imaging:", sum(rna_in_imaging), "/", nrow(rna_mat), "\n")
 
-# remove metastatic patient sample
-imaging_mat <- imaging_mat[rownames(imaging_mat) != "LUNG-NSCLC2-0677",]
 
 # ── 5. Save ───────────────────────────────────────────────────────────────────
-
+saveRDS(rna_mat,     file.path(OUT, "rna_mat.rds"))
 saveRDS(rna_mat_tpm,     file.path(OUT, "rna_mat_tpm.rds"))
 saveRDS(imaging_mat, file.path(OUT, "imaging_mat.rds"))
-
-cat("Saved rna_mat_tpm.rds and imaging_mat.rds to", OUT, "\n")
 ```
