@@ -195,13 +195,13 @@ p_sil <- ggplot(sil_df, aes(x = k, y = avg_sil)) +
 cut_heights <- sort(cl_hc2$height, decreasing = TRUE)
 cut_h <- mean(cut_heights[c(N_META_CLUSTERS - 1, N_META_CLUSTERS)])
 
-pdf( file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_3_supp/S3C_image_module_SIL_diagnostics_TPM.pdf", width = 5, height = 3)
+pdf( file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_3_supp/S3B_image_module_SIL_diagnostics_TPM.pdf", width = 5, height = 3)
 
 print(p_sil)
 
 dev.off()
 
-pdf( file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_3_supp/S3C_image_module_DEND_diagnostics_TPM.pdf", width = 6, height = 3)
+pdf( file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_3_supp/S3B_image_module_DEND_diagnostics_TPM.pdf", width = 6, height = 3)
 
 plot(as.dendrogram(cl_hc2),
      #leaflab = "none",

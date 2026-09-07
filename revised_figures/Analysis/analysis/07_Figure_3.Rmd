@@ -9,6 +9,7 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+options(bitmapType = "cairo")
 ```
 
 ```{r, message=FALSE}
@@ -51,9 +52,9 @@ cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds
 clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/clinical.csv")
 traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
 
-modules <- as.data.frame(readRDS( "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/patient_imaging_meta_cluster_scores.rds"))
+modules <- as.data.frame(readRDS( "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/patient_imaging_meta_cluster_scores_tpm.rds"))
 
-rna <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_scores.rds")
+rna <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_scores_tpm.rds")
 rna$immucan_id  <- rownames(rna)
 rownames(rna) <- NULL
 
@@ -72,191 +73,7 @@ hist_col_3 = setNames(c("blue","orange", "gray40"),c("LUAD","LUSC","Other"))
 
 ```
 
-# enrichment in clinical traits - move to supplements
-
-## LUAD
-```{r, fig.height=10, fig.width=6}
-cur_traits <- traits %>%
-  filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
-  dplyr::select("TPS_score","age_dicho", "gender","stage_1_2","stage_1_3","stage_2_3","never_vs_current_smoker",
-                "never_vs_Ex_smoker","current_vs_Ex_smoker", "N0_vs_Nx","M0_vs_Mx", "long_survivors","T1_vs_Tother")
-condition <- c("positive","low", "Female","I","I","II","Non-smoker","Non-smoker","Ex-smoker", "node_neg", "met_neg", "alive","T1")
-
-names(condition) <- colnames(cur_traits)
-
-
-p.list <- list()
-l.list <- list()
-for (i in names(condition)) {
-  x <- factor(cur_traits$TPS_score)
-  x <- relevel(x, ref = "negative")
-  
-  y <- factor(unlist(cur_traits[,i]))
-  y <- relevel(y, ref = condition[i])
-
-  p.list[[i]] <- fisher.test(table(x, y))
-  l.list[[i]] <- c(levels(y)[1])
-}
-
-out <- data.frame(feature = names(p.list),
-                  p.value = unlist(lapply(p.list, function(x){
-                    x$p.value})),
-                  odds_ratio = unlist(lapply(p.list, function(x){
-                    x$estimate})),
-                  reference = unlist(l.list))
-
-out <- out[-1,]
-
-out <- out %>%
-  mutate(feature = ifelse(feature == "age_dicho","Old_over_Young", feature),
-         feature = ifelse(feature == "gender","Male_over_Female", feature),
-         feature = ifelse(feature == "stage_1_2","Stage_II_over_I", feature),
-         feature = ifelse(feature == "stage_1_3","Stage_III_over_I", feature),
-         feature = ifelse(feature == "stage_2_3","Stage_III_over_II", feature),
-         feature = ifelse(feature == "LUAD_vs_LUSC","LUSC_over_LUAD", feature),
-         feature = ifelse(feature == "never_vs_current_smoker","Smoker_over_Never-smoker", feature),
-         feature = ifelse(feature == "never_vs_Ex_smoker","Ex-smoker_over_Never-smoker", feature),
-         feature = ifelse(feature == "current_vs_Ex_smoker","Smoker_over_Ex-smoker", feature),
-         feature = ifelse(feature == "N0_vs_Nx","Node-pos_over_Node-neg", feature),
-         feature = ifelse(feature == "M0_vs_Mx","Met-pos_over_Met-neg", feature),
-         feature = ifelse(feature == "long_survivors","Dead_over_Alive", feature),
-         feature = ifelse(feature == "T1_vs_Tother","T1_over_T-other", feature))
-
-
-out <- out %>%
-  mutate(TPS_score = "high",
-         FDR = p.adjust(p.value,method = "BH"),
-         sig = ifelse(p.value < 0.05 & odds_ratio > 1, "UP_trend",NA),
-         sig = ifelse(FDR < 0.1 & odds_ratio > 1, "UP",sig),
-         sig = ifelse(p.value < 0.05 & odds_ratio < 1, "DOWN_trend",sig),
-         sig = ifelse(FDR < 0.1 & odds_ratio < 1, "DOWN",sig),
-         sig = ifelse(is.na(sig),"NOTSIG", sig))
-
-p_LUAD <- out %>%
-  ggplot(aes(x=feature, y = TPS_score,col = odds_ratio, size= -log10(p.value)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
-  geom_point()+
-  theme_bw()+
-  #scale_colour_viridis_c()+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  scale_color_gradient2(low = "blue",mid = "white",   high = "red",midpoint = 1)+
-  scale_size(range = c(1,4))+
-  new_scale_colour() +
-  geom_point(data = out,shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.5)+
-  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 12),
-        axis.text.y = element_text(size = 12),
-        legend.text = element_text(size = 12),
-        legend.title = element_text(size = 12),
-        axis.title.y = element_blank())+
-  coord_flip()
-p_LUAD
-
-#ggsave(filename = paste0(out_folder,"3B_TPS_enrichment_in_clinical.pdf"),
-#       plot = p,
-#       device = "pdf",
-#       width = 4.5,
-#       height = 6)
-```
-
-
-## LUSC
-```{r, fig.height=10, fig.width=6}
-cur_traits <- traits %>%
-  filter(LUAD_vs_LUSC == "Squamous cell carcinoma") %>%
-  dplyr::select("TPS_score","age_dicho", "gender","stage_1_2","stage_1_3","stage_2_3","current_vs_Ex_smoker", "N0_vs_Nx","M0_vs_Mx", "long_survivors","T1_vs_Tother")
-condition <- c("positive","low", "Female","I","I","II","Ex-smoker", "node_neg", "met_neg", "alive","T1")
-
-names(condition) <- colnames(cur_traits)
-
-
-p.list <- list()
-l.list <- list()
-for (i in names(condition)) {
-  x <- factor(cur_traits$TPS_score)
-  x <- relevel(x, ref = "negative")
-  
-  y <- factor(unlist(cur_traits[,i]))
-  y <- relevel(y, ref = condition[i])
-
-  p.list[[i]] <- fisher.test(table(x, y))
-  l.list[[i]] <- c(levels(y)[1])
-}
-
-out <- data.frame(feature = names(p.list),
-                  p.value = unlist(lapply(p.list, function(x){
-                    x$p.value})),
-                  odds_ratio = unlist(lapply(p.list, function(x){
-                    x$estimate})),
-                  reference = unlist(l.list))
-
-out <- out[-1,]
-
-out <- out %>%
-  mutate(feature = ifelse(feature == "age_dicho","Old_over_Young", feature),
-         feature = ifelse(feature == "gender","Male_over_Female", feature),
-         feature = ifelse(feature == "stage_1_2","Stage_II_over_I", feature),
-         feature = ifelse(feature == "stage_1_3","Stage_III_over_I", feature),
-         feature = ifelse(feature == "stage_2_3","Stage_III_over_II", feature),
-         feature = ifelse(feature == "LUAD_vs_LUSC","LUSC_over_LUAD", feature),
-         feature = ifelse(feature == "never_vs_current_smoker","Smoker_over_Never-smoker", feature),
-         feature = ifelse(feature == "never_vs_Ex_smoker","Ex-smoker_over_Never-smoker", feature),
-         feature = ifelse(feature == "current_vs_Ex_smoker","Smoker_over_Ex-smoker", feature),
-         feature = ifelse(feature == "N0_vs_Nx","Node-pos_over_Node-neg", feature),
-         feature = ifelse(feature == "M0_vs_Mx","Met-pos_over_Met-neg", feature),
-         feature = ifelse(feature == "long_survivors","Dead_over_Alive", feature),
-         feature = ifelse(feature == "T1_vs_Tother","T1_over_T-other", feature))
-
-
-out <- out %>%
-  mutate(TPS_score = "high",
-         FDR = p.adjust(p.value,method = "BH"),
-         sig = ifelse(p.value < 0.05 & odds_ratio > 1, "UP_trend",NA),
-         sig = ifelse(FDR < 0.1 & odds_ratio > 1, "UP",sig),
-         sig = ifelse(p.value < 0.05 & odds_ratio < 1, "DOWN_trend",sig),
-         sig = ifelse(FDR < 0.1 & odds_ratio < 1, "DOWN",sig),
-         sig = ifelse(is.na(sig),"NOTSIG", sig))
-
-
-p_LUSC <- out %>%
-  ggplot(aes(x=feature, y = TPS_score,col = odds_ratio, size= -log10(p.value)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
-  geom_point()+
-  theme_bw()+
-  #scale_colour_viridis_c()+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  scale_color_gradient2(low = "blue",mid = "white",   high = "red",midpoint = 1)+
-  scale_size(range = c(1,4))+
-  new_scale_colour() +
-  geom_point(data = out,shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.5)+
-  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 12),
-        axis.text.y = element_text(size = 12),
-        legend.text = element_text(size = 12),
-        legend.title = element_text(size = 12),
-        axis.title.y = element_blank())+
-  coord_flip()
-p_LUSC
-
-#ggsave(filename = paste0(out_folder,"3B_TPS_enrichment_in_clinical.pdf"),
-#       plot = p,
-#       device = "pdf",
-#       width = 4.5,
-#       height = 6)
-```
-
-```{r, fig.width=10, fig.height=6}
-p <- plot_grid(p_LUAD, p_LUSC)
-p
-```
-
-# 3B TPS
+# TPS stats
 
 ```{r}
 cur_var <- "TPS_score"
@@ -268,19 +85,25 @@ title_name <- "TPS"
 ```
 
 ```{r}
+fisher.test(table(traits$TPS_score,traits$LUAD_vs_LUSC))
 table(traits$TPS_score,traits$LUAD_vs_LUSC)
+table(traits$simple_histology)
+table(traits$TPS_score)
+57/184
 ```
 
-## RNA
+# 3B RNA modules for TPS
 
-### LUAD
+## LUAD
 ```{r}
 dat_z <- left_join(rna, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUAD") %>%
   pivot_longer(cols = 1:29)
 
+library(scales)
 result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B, zscore_data = TRUE)
+result$data
 p_LUAD <- result$plot +
   ggtitle(paste0("RNA modules for ", title_name," in LUAD"))+
   coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
@@ -289,7 +112,7 @@ cur_order <- result$data$name
 
 ```
 
-### LUSC
+## LUSC
 ```{r, fig.height=5, fig.width=15}
 dat_z <- left_join(rna, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
@@ -305,18 +128,18 @@ p_LUSC
 
 p <- plot_grid(p_LUAD, p_LUSC, nrow = 1, rel_widths = c(1.1, 0.6))
 p
-ggsave(plot = p, path = out_folder,filename = "3C_RNA_modules_for_TPS.pdf",width = 10, height = 6,device = cairo_pdf)
+ggsave(plot = p, path = out_folder,filename = "3B_RNA_modules_for_TPS.pdf",width = 10, height = 6,device = cairo_pdf)
 
 ```
 
-## Imaging modules
+# 3C Imaging modules for TPS
 
-### LUAD
+## LUAD
 ```{r}
 dat_z <- left_join(modules, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUAD") %>%
-  pivot_longer(cols = 1:5)
+  pivot_longer(cols = 1:7)
 
 result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
 p_LUAD <- result$plot +
@@ -327,12 +150,12 @@ cur_order <- result$data$name
 
 ```
 
-### LUSC
+## LUSC
 ```{r, fig.height=5, fig.width=15}
 dat_z <- left_join(modules, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUSC") %>%
-  pivot_longer(cols = 1:5)
+  pivot_longer(cols = 1:7)
 
 result <- lollipop_plot(dat_z,condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B,order = FALSE, order_vec = cur_order)
 p_LUSC <- result$plot+ 
@@ -344,11 +167,11 @@ p_LUSC
 p <- plot_grid(p_LUAD, p_LUSC, nrow = 1, rel_widths = c(1, 0.6))
 p
 
-ggsave(plot = p, path = out_folder,filename = "3D_Imaging_modules_for_TPS.pdf",width = 8, height = 3.5,device = cairo_pdf)
+ggsave(plot = p, path = out_folder,filename = "3C_Imaging_modules_for_TPS.pdf",width = 8, height = 3.5,device = cairo_pdf)
 
 ```
 
-## inflammation 
+# 3D inflammation for TPS 
 
 ### get gene signatures
 ```{r}
@@ -357,7 +180,7 @@ library(AnnotationDbi)
 library(msigdbr)
 library(singscore)
 
-rna_mat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_mat.rds")
+rna_mat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_mat_tpm.rds")
 
 
 # ── gene signatures ────────────────────────────────────────────────────
@@ -401,7 +224,7 @@ rna_for_score <- t(rna_mat)
 
 # Filter gene sets to genes present in the RNA-seq matrix
 all_gs <- lapply(all_gs, function(g) intersect(g, rownames(rna_for_score)))
-all_gs <- all_gs[sapply(all_gs, length) >= 5]
+all_gs <- all_gs[sapply(all_gs, length) >= 4]
 
 
 
@@ -426,12 +249,12 @@ rownames(rna_scores) <- NULL
 
 ```
 
-### LUAD 
+## LUAD 
 ```{r }
 dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUAD") %>%
-  pivot_longer(cols = 1:13)
+  pivot_longer(cols = 1:11)
 
 result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B, zscore_data = TRUE)
 
@@ -439,19 +262,20 @@ p_LUAD <- result$plot+
     ylab("Inf. signatures")+
     ggtitle(paste0("Inf. signatures for ", title_name," in LUAD"))+
   theme(axis.title.y = element_blank())+
-  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))+
+  xlab("Δ enrichment score" )
 
 p_LUAD
 
 cur_order <- result$data$name
 ```
 
-### LUSC
+## LUSC
 ```{r, fig.height=5, fig.width=15}
 dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUSC") %>%
-  pivot_longer(cols = 1:13)
+  pivot_longer(cols = 1:11)
 
 result <- lollipop_plot(dat_z,condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B, order = FALSE, order_vec = cur_order, zscore_data = TRUE)
 
@@ -459,16 +283,17 @@ p_LUSC <- result$plot+
     ylab("Inf. signatures")+
   ggtitle(paste0("Inf. signatures for ", title_name," in LUSC"))+
   theme(axis.text.y = element_blank())+
-  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))
+  coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))+
+  xlab("Δ enrichment score" )
 p_LUSC
 
 p <- plot_grid(p_LUAD, p_LUSC, nrow = 1, rel_widths = c(1, 0.6))
 
-ggsave(plot = p, path = out_folder,filename = "3E_inflammation_signatures_for_TPS.pdf",width = 12, height = 4.5,device = cairo_pdf)
+ggsave(plot = p, path = out_folder,filename = "3D_inflammation_signatures_for_TPS.pdf",width = 12, height = 4.5,device = cairo_pdf)
 ```
 
 
-# 3G - Cox model for infiltration
+# 3F - Cox model for infiltration
 
 ```{r}
 inf_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/infiltration_harmonized.rds"))
@@ -557,7 +382,7 @@ p1 <- df1 %>%
   ggtitle("HR for low infiltration ratio")
   p1
 
-ggsave(filename = paste0(out_folder,"3G_cox_model_infiltration.pdf"),
+ggsave(filename = paste0(out_folder,"3F_cox_model_infiltration.pdf"),
        plot = p1,
        device = "pdf",
        width = 3,
@@ -616,7 +441,7 @@ res %>%
 
 
 
-# tumor type enrichment TPS
+# 3G tumor type enrichment TPS
 
 ```{r}
 scores <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/tumor_subtype_scores.csv")
@@ -642,10 +467,10 @@ p <- scores %>%
         axis.title.x = element_blank())
   
 p
-ggsave(plot = p, path = out_folder,filename = "3H_tumor_types_for_TPS_LUAD.pdf",width = 4, height = 3.5,device = cairo_pdf)
+ggsave(plot = p, path = out_folder,filename = "3G_tumor_types_for_TPS_LUAD.pdf",width = 4, height = 3.5,device = cairo_pdf)
 ```
 
-# tumor type enrichment TMB
+# 3H tumor type enrichment TMB
 
 ```{r}
 scores <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/tumor_subtype_scores.csv")
@@ -671,12 +496,12 @@ p <- scores %>%
         axis.title.x = element_blank())
   
 p
-ggsave(plot = p, path = out_folder,filename = "3I_tumor_types_for_TMB_LUAD.pdf",width = 4, height = 3.5,device = cairo_pdf)
+ggsave(plot = p, path = out_folder,filename = "3H_tumor_types_for_TMB_LUAD.pdf",width = 4, height = 3.5,device = cairo_pdf)
 ```
 
 
 
-# TMB
+# TMB stats
 
 ```{r}
 unique(traits$TMB_score)
@@ -692,9 +517,9 @@ title_name <- "TMB"
 table(traits$TMB_score,traits$LUAD_vs_LUSC)
 ```
 
-## RNA
+# 3I RNA for TMB
 
-### LUAD
+## LUAD
 ```{r}
 dat_z <- left_join(rna, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
@@ -726,17 +551,17 @@ p_LUSC
 
 p <- plot_grid(p_LUAD, p_LUSC, nrow = 1, rel_widths = c(1, 0.6))
 
-ggsave(plot = p, path = out_folder,filename = "3J_RNA modues_for_TPS.pdf",width = 10, height = 6,device = cairo_pdf)
+ggsave(plot = p, path = out_folder,filename = "3I_RNA modues_for_TPS.pdf",width = 10, height = 6,device = cairo_pdf)
 ```
 
-## Imaging modules
+# 3J Imaging modules for TMB
 
-### LUAD
+## LUAD
 ```{r}
 dat_z <- left_join(modules, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUAD") %>%
-  pivot_longer(cols = 1:5)
+  pivot_longer(cols = 1:7)
 
 result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
 p_LUAD <- result$plot +
@@ -752,7 +577,7 @@ result$data
 dat_z <- left_join(modules, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUSC") %>%
-  pivot_longer(cols = 1:5)
+  pivot_longer(cols = 1:7)
 
 result <- lollipop_plot(dat_z,condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B,order = FALSE, order_vec = cur_order)
 p_LUSC <- result$plot+ 
@@ -764,19 +589,19 @@ p_LUSC
 p <- plot_grid(p_LUAD, p_LUSC, nrow = 1, rel_widths = c(1, 0.6))
 p
 
-ggsave(plot = p, path = out_folder,filename = "3K_Imaging_modules_for_TMB.pdf",width = 8, height = 3.5,device = cairo_pdf)
+ggsave(plot = p, path = out_folder,filename = "3J_Imaging_modules_for_TMB.pdf",width = 8, height = 3.5,device = cairo_pdf)
 ```
 
-## inflammation 
+# 3K inflammation  for TMB
 
-### get gene signatures
+## get gene signatures
 ```{r}
 library(org.Hs.eg.db)
 library(AnnotationDbi)
 library(msigdbr)
 library(singscore)
 
-rna_mat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_mat.rds")
+rna_mat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_mat_tpm.rds")
 
 
 # ── gene signatures ────────────────────────────────────────────────────
@@ -820,7 +645,7 @@ rna_for_score <- t(rna_mat)
 
 # Filter gene sets to genes present in the RNA-seq matrix
 all_gs <- lapply(all_gs, function(g) intersect(g, rownames(rna_for_score)))
-all_gs <- all_gs[sapply(all_gs, length) >= 5]
+all_gs <- all_gs[sapply(all_gs, length) >= 4]
 
 
 
@@ -850,7 +675,7 @@ rownames(rna_scores) <- NULL
 dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUAD") %>%
-  pivot_longer(cols = 1:13)
+  pivot_longer(cols = 1:11)
 
 result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B, zscore_data = TRUE)
 
@@ -869,7 +694,7 @@ cur_order <- result$data$name
 dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUSC") %>%
-  pivot_longer(cols = 1:13)
+  pivot_longer(cols = 1:11)
 
 result <- lollipop_plot(dat_z,condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B, order = FALSE, order_vec = cur_order, zscore_data = TRUE)
 
@@ -883,7 +708,7 @@ p_LUSC
 
 p <- plot_grid(p_LUAD, p_LUSC, nrow = 1, rel_widths = c(1, 0.6))
 p
-ggsave(plot = p, path = out_folder,filename = "3L_inflammation_signatures_for_TMB.pdf",width = 12, height = 4.5,device = cairo_pdf)
+ggsave(plot = p, path = out_folder,filename = "3K_inflammation_signatures_for_TMB.pdf",width = 12, height = 4.5,device = cairo_pdf)
 
 ```
 
@@ -894,7 +719,7 @@ dat_z <- left_join(modules, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUAD",
          smoking_status == "Current smoker") %>%
-  pivot_longer(cols = 1:5)
+  pivot_longer(cols = 1:7)
 
 table(dat_z$TMB_score)
 result <- lollipop_plot(dat_z, condition = cur_var, var_A = var_A, var_B = var_B, col_A = col_A, col_B = col_B)
@@ -905,1053 +730,4 @@ p_LUAD
 cur_order <- result$data$name
 result$data
 ```
-
-
----------------------------------------------
---- to be deleted ---------------------------
----------------------------------------------
-
-
-# 3C diff abundance TPS - to be deleted or supps
-
-we will estimate the dispersion from the whole data
-```{r, fig.height=20, fig.width=10}
-condition <- c("negative")
-names(condition) <- c("TPS_score")
-
-# loop over conditions and do two way abundance difference tests
-p.list <- list()
-for (i in c(data_type,"cello1","cello2")) {
-    
-    if(grepl("cello",i)){
-      abundances <- cello_dat %>%
-        select(contains(i))
-      abundances <- t(abundances)
-      colnames(abundances) <- cello_dat$immucan_id
-    } else {
-      abundances <- dat %>%
-        select(contains(i)) %>%
-        filter(complete.cases(.))
-      abundances <- t(abundances)
-      colnames(abundances) <-dat %>%
-        select(contains(i),immucan_id) %>%
-        filter(complete.cases(.)) %>%
-        pull(immucan_id)
-    }
-    anno <- traits %>%
-      filter(!is.na(.data[["TPS_score"]]))
-    
-    #new from here
-    meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-    meta$histology_TPS <- paste0(meta$simple_histology,"_",meta$TPS_score)
-    Size <- factor(meta[,"histology_TPS"])
-    meta$Size <- Size
-    
-    # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
-    y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-    design <- model.matrix(~0+group,data = y.ab$samples)
-    colnames(design) <- levels(y.ab$samples$group)
-    # we do not fit a trend 
-    y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-    y.ab$common.dispersion
-    #plotBCV(y.ab,pch = 5)
-    
-    # we only compare the diff abundance for Adeno vs Sqam.
-    fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-    fit_LUAD <- glmLRT(glmfit = fit.ab,contrast = c(-1,1,0,0,0,0,0,0,0,0,0,0,0))
-    fit_LUSC <- glmLRT(glmfit = fit.ab,contrast = c(0,0,0,0,0,0,0,0,0,-1,1,0,0))
-    #plotQLDisp(fit.ab, pch = 5)
-
-    res_list <- list(fit_LUAD,fit_LUSC)
-    
-    cur_list <- lapply(res_list,function(x){
-      sig_dat <- x$table
-      sig_dat$celltypes <- rownames(sig_dat)
-      sig_dat$comparison <- grep("Adeno|Squamous",x$comparison,value = TRUE)
-      return(sig_dat)
-    })
-
-    p.list[[i]] <- do.call(rbind,cur_list)
-    
-    
-}
-
-cur_dat <- do.call(rbind,p.list)
-cur_dat <- cur_dat %>%
-  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = ifelse(grepl("Adeno",comparison),"TPS-high_LUAD","TPS-high_LUSC")) %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig = ifelse(PValue < 0.05 & logFC > 0, "UP_trend",NA),
-         sig = ifelse(FDR < 0.1 & logFC > 0, "UP",sig),
-         sig = ifelse(PValue < 0.05 & logFC < 0, "DOWN_trend",sig),
-         sig = ifelse(FDR < 0.1 & logFC < 0, "DOWN",sig),
-         sig = ifelse(is.na(sig),"NOTSIG", sig),
-         ct_name = gsub("_density","",str_split_i(celltypes,"__",1)))
-  
-to_show <- cur_dat %>%
-  filter(sig %in% c("UP","DOWN")) %>%
-  pull(celltypes)
-
-cur_dat <- cur_dat %>%
-  filter(celltypes %in% to_show) %>%
-  mutate(celltypes = gsub("_abundance","",celltypes))
-
-## spatial cluster renaming
-cur_dat <- cur_dat %>%
-  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
-
-# get max and min fold change values
-max_up <- max(cur_dat$logFC)+1
-min_down <- min(cur_dat$logFC)-1
-
-# plot the data
-p <- cur_dat %>%
-  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  geom_point()+
-  theme_bw()+
-  scale_colour_gradientn(colours = c("blue","white","red"), 
-                         values = rescale(c(round(min_down),0,round(max_up))),
-                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  scale_size(range = c(1,10))+
-  new_scale_colour() +
-  geom_point(data = cur_dat,shape = 1,aes(size = -log10(PValue), col = sig), stroke =1)+
-  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 16),
-        axis.text.y = element_text(size = 16),
-        legend.text = element_text(size = 20),
-        legend.title = element_text(size = 20),
-        legend.location = "plot",
-        axis.title.x = element_blank(),
-        axis.title.y = element_blank())+
-  coord_flip()
-p
-
-ggsave(filename = paste0(out_folder,"3C_diff_abundance_TPS_LUSC_LUAD_bubble_plot.pdf"),
-       plot = p,
-       device = "pdf",
-       width = 7.5,
-       height = 19)
-```
-
-
-# 3D correlation of T cell density and TPS
-
-```{r}
-inf_dat <- inf_dat %>%
-  group_by(immucan_id) %>%
-  mutate(mean_total_CD8_density = mean(total_CD8,na.rm =TRUE),
-         mean_bystanding = mean(bystanding,na.rm =TRUE),
-         mean_infiltrating = mean(infiltrating,na.rm =TRUE),
-         mean_ignored = mean(ignored,na.rm =TRUE)) %>%
-  select(immucan_id,mean_total_CD8_density, mean_bystanding, mean_ignored, mean_infiltrating,mean_inf_ratio,mean_inf_ratio_dicho) %>%
-  distinct()
-cur_traits <- left_join(traits, inf_dat, "immucan_id")
-
-# LUAD
-cur_dat <- cur_traits %>%
-    filter(simple_histology == "Adenocarcinoma")
-
-labs <- cor.test(cur_dat[["TPS"]],cur_dat[["mean_total_CD8_density"]],use = "complete.obs",method = "spearman")
-p1 <- cur_traits %>%
-  filter(simple_histology == "Adenocarcinoma") %>%
-  ggplot(aes(x = log2(TPS),y = log2(.data[["mean_total_CD8_density"]])))+
-  geom_point()+
-  ggtitle(paste0("cor: ",round(labs$estimate,digits = 3)," p.value = ",formatC(labs$p.value,format = "e",digits = 1)))+
-  theme(plot.title = element_text(size=6))+
-  theme_bw()
-
-# LUSC
-cur_dat <- cur_traits %>%
-    filter(simple_histology == "Squamous cell carcinoma")
-
-labs <- cor.test(cur_dat[["TPS"]],cur_dat[["mean_total_CD8_density"]],use = "complete.obs",method = "spearman")
-p2 <- cur_traits %>%
-  filter(simple_histology == "Squamous cell carcinoma") %>%
-  ggplot(aes(x = log2(TPS),y = log2(.data[["mean_total_CD8_density"]])))+
-  geom_point()+
-  ggtitle(paste0("cor: ",round(labs$estimate,digits = 3)," p.value = ",round(labs$p.value,digits = 2)))+
-  theme(plot.title = element_text(size=6))+
-  theme_bw()
-
-
-p <- plot_grid(p1,p2, nrow = 2)
-
-p
-
-
-# combined plot with colors
-p1 <- cur_traits %>%
-  mutate(LUAD_vs_LUSC = ifelse(is.na(LUAD_vs_LUSC), "Other", LUAD_vs_LUSC),
-         LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma","LUAD", LUAD_vs_LUSC),
-          LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Squamous cell carcinoma","LUSC", LUAD_vs_LUSC)) %>%
-  ggplot(aes(x = log2(TPS),y = log2(mean_total_CD8_density), col = (LUAD_vs_LUSC)))+
-  geom_point()+
-  geom_smooth(method = "lm",alpha = 0.2, show.legend = FALSE)+
-  ggpmisc::stat_poly_eq(
-    aes(label = after_stat(paste(rr.label, p.value.label, sep = "*\", \"*"))),
-    formula = y ~ x, 
-    parse = TRUE,
-    size = 6,
-    vstep = 0.07)+
-  theme_bw()+
-  theme(legend.position = "bottom",
-        axis.text.x = element_text(size = 14),
-        axis.text.y = element_text(size = 14),
-        axis.title.x =  element_text(size = 14),
-        axis.title.y = element_text(size = 14),
-        legend.text = element_text(size = 15),
-        legend.title = element_text(size = 15))+
-  scale_colour_manual(values = hist_col_3)+
-  labs(y = expression("Log2 CD8 density [mm"^2*"]"),color = "Histology")+
-  coord_cartesian(ylim = c(4,13))+
-  guides(color = guide_legend(override.aes = list(size = 5)))
-
-p1 
-ggsave(filename = paste0(out_folder,"3D_correlation_T_cell_density_and_TPS_colored.pdf"),
-       plot = p1,
-       device = "pdf",
-       width = 5,
-       height = 4)
-```
-
-# 3F correlation interaction ratio and TPS
-
-```{r}
-# LUAD
-cur_dat <- cur_traits %>%
-    filter(simple_histology == "Adenocarcinoma")
-
-labs <- cor.test(cur_dat[["TPS"]],cur_dat[["mean_inf_ratio"]],use = "complete.obs",method = "spearman")
-p1 <- cur_traits %>%
-  filter(simple_histology == "Adenocarcinoma") %>%
-  ggplot(aes(x = log2(TPS),y = log2(.data[["mean_inf_ratio"]])))+
-  geom_point()+
-  ggtitle(paste0("cor: ",round(labs$estimate,digits = 3)," p.value = ",round(labs$p.value,digits = 2)))+
-  theme(plot.title = element_text(size=6))+
-  theme_bw()
-
-# LUSC
-cur_dat <- cur_traits %>%
-    filter(simple_histology == "Squamous cell carcinoma")
-
-labs <- cor.test(cur_dat[["TPS"]],cur_dat[["mean_inf_ratio"]],use = "complete.obs",method = "spearman")
-p2 <- cur_traits %>%
-  filter(simple_histology == "Squamous cell carcinoma") %>%
-  ggplot(aes(x = log2(TPS),y = log2(.data[["mean_inf_ratio"]])))+
-  geom_point()+
-  ggtitle(paste0("cor: ",round(labs$estimate,digits = 3)," p.value = ",round(labs$p.value,digits = 2)))+
-  theme(plot.title = element_text(size=6))+
-  theme_bw()
-
-
-
-p <- plot_grid(p1, p2, nrow = 2)
-
-p
-
-p1 <- cur_traits %>%
-  mutate(LUAD_vs_LUSC = ifelse(is.na(LUAD_vs_LUSC), "Other", LUAD_vs_LUSC),
-         LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma","LUAD", LUAD_vs_LUSC),
-          LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Squamous cell carcinoma","LUSC", LUAD_vs_LUSC)) %>%
-  ggplot(aes(x = log2(TPS),y = log2(mean_inf_ratio), col = (LUAD_vs_LUSC)))+
-  geom_point()+
-  geom_smooth(method = "lm",alpha = 0.2, show.legend = FALSE)+
-  ggpmisc::stat_poly_eq(
-    aes(label = after_stat(paste(rr.label, p.value.label, sep = "*\", \"*"))),
-    formula = y ~ x, 
-    parse = TRUE,
-    size = 6,
-    vstep = 0.07)+
-  theme_bw()+
-  theme(legend.position = "bottom",
-        axis.text.x = element_text(size = 14),
-        axis.text.y = element_text(size = 14),
-        axis.title.x =  element_text(size = 14),
-        axis.title.y = element_text(size = 14),
-        legend.text = element_text(size = 15),
-        legend.title = element_text(size = 15))+
-  scale_colour_manual(values = hist_col_3)+
-  labs(y = "Log2 Infiltration ratio",color = "Histology")+
-  guides(color = guide_legend(override.aes = list(size = 5)))
-
-p1 
-ggsave(filename = paste0(out_folder,"3F_correlation_interaction_ratio_and_TPS_colored.pdf"),
-       plot = p1,
-       device = "pdf",
-       width = 5,
-       height = 4)
-
-```
-
-
-# 3H
-RNA based pathway activity as calculated by Jane Merlevede [here](../../RNA/CURIE/inflammation_quantification_NSCLC2/inflammation_quantification_analysis.Rmd). We will extract the relevant information to prepare the figure here
-
-```{r}
-cur_dat <- read.table(paste0(mount_path,"data/RNAseq/CURIE/inflammation_quantification_NSCLC2/outputs/pathwayActivity/PathwayActivity_NSCLC2_mlm"))
-p <- cur_dat %>%
-  as.data.frame() %>%
-  mutate(immucan_id = paste0("LUNG-",rownames(cur_dat))) %>%
-  left_join(traits,by = "immucan_id") %>%
-  mutate(LUAD_vs_LUSC = ifelse(is.na(LUAD_vs_LUSC),"Other",LUAD_vs_LUSC),
-         LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma","LUAD",LUAD_vs_LUSC),
-         LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Squamous cell carcinoma","LUSC",LUAD_vs_LUSC)) %>%
-  filter(!is.na(TPS_score)) %>%
-  mutate(TPS_score = ifelse(TPS_score == "positive", "high","low")) %>%
-  ggplot(aes(x = LUAD_vs_LUSC,y = JAK.STAT, fill = TPS_score))+
-  geom_boxplot()+
-  geom_jitter(aes(color = TPS_score),position = position_jitterdodge(jitter.width = 0.2), size= 1.75, show.legend = FALSE)+
-  scale_fill_manual(values = alpha(c("orange", "darkgreen"),alpha = 0.6))+
-  scale_color_manual(values = c("orange", "darkgreen"))+
-  stat_compare_means(size = 8,label = "p.signif",method = "t.test")+
-  theme_bw()+
-  theme(legend.position = "bottom",
-        axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 1, size = 16),
-        axis.text.y= element_text(size = 14),
-        axis.title.x = element_blank(),
-        axis.title.y = element_text(size = 14),
-        legend.text = element_text(size = 16),
-        legend.title = element_text(size = 16))+
-    guides(fill = guide_legend(override.aes = list(size = 5)))+
-  coord_cartesian(ylim = c(-2,4.1))
-  
-
-p
-
-ggsave(filename = paste0(out_folder,"3H_inflammation_score_across_TPS.pdf"),
-       plot = p,
-       device = "pdf",
-       width = 3.2,
-       height = 6)
-```
-
-# 3I enrichment in clinical traits for TMB
-
-```{r, fig.height=5, fig.width=5}
-cur_traits <- traits %>% dplyr::select("TMB_score","age_dicho", "gender","stage_1_2","stage_1_3","stage_2_3","LUAD_vs_LUSC","never_vs_current_smoker",
-            "never_vs_Ex_smoker","current_vs_Ex_smoker", "N0_vs_Nx","M0_vs_Mx", "long_survivors","T1_vs_Tother", "TPS_score")
-condition <- c("high","low", "Female","I","I","II","Adenocarcinoma","Non-smoker","Non-smoker","Ex-smoker", "node_neg", "met_neg", "alive","T1", "negative")
-
-names(condition) <- colnames(cur_traits)
-
-p.list <- list()
-l.list <- list()
-for (i in names(condition)) {
-  x <- factor(cur_traits$TMB_score)
-  x <- relevel(x, ref = "low")
-  
-  y <- factor(unlist(cur_traits[,i]))
-  y <- relevel(y, ref = condition[i])
-
-  p.list[[i]] <- fisher.test(table(x, y))
-  l.list[[i]] <- c(levels(y)[1])
-}
-
-out <- data.frame(feature = names(p.list),
-                  p.value = unlist(lapply(p.list, function(x){
-                    x$p.value})),
-                  odds_ratio = unlist(lapply(p.list, function(x){
-                    x$estimate})),
-                  reference = unlist(l.list))
-
-out <- out[-1,]
-
-out <- out %>%
-  mutate(feature = ifelse(feature == "TPS_score","TPS-High_over_Low", feature),
-         feature = ifelse(feature == "age_dicho","Old_over_Young", feature),
-         feature = ifelse(feature == "gender","Male_over_Female", feature),
-         feature = ifelse(feature == "stage_1_2","Stage_II_over_I", feature),
-         feature = ifelse(feature == "stage_1_3","Stage_III_over_I", feature),
-         feature = ifelse(feature == "stage_2_3","Stage_III_over_II", feature),
-         feature = ifelse(feature == "LUAD_vs_LUSC","LUSC_over_LUAD", feature),
-         feature = ifelse(feature == "never_vs_current_smoker","Smoker_over_Never-smoker", feature),
-         feature = ifelse(feature == "never_vs_Ex_smoker","Ex-smoker_over_Never-smoker", feature),
-         feature = ifelse(feature == "current_vs_Ex_smoker","Smoker_over_Ex-smoker", feature),
-         feature = ifelse(feature == "N0_vs_Nx","Node-pos_over_Node-neg", feature),
-         feature = ifelse(feature == "M0_vs_Mx","Met-pos_over_Met-neg", feature),
-         feature = ifelse(feature == "long_survivors","Dead_over_Alive", feature),
-         feature = ifelse(feature == "T1_vs_Tother","T1_over_T-other", feature))
-
-
-out <- out %>%
-  mutate(TMB_score = "high",
-         FDR = p.adjust(p.value,method = "BH"),
-         sig = ifelse(p.value < 0.05 & odds_ratio > 1, "UP_trend",NA),
-         sig = ifelse(FDR < 0.1 & odds_ratio > 1, "UP",sig),
-         sig = ifelse(p.value < 0.05 & odds_ratio < 1, "DOWN_trend",sig),
-         sig = ifelse(FDR < 0.1 & odds_ratio < 1, "DOWN",sig),
-         sig = ifelse(is.na(sig),"NOTSIG", sig),
-         odds_ratio = ifelse(is.infinite(odds_ratio),10, odds_ratio))
-
-p <- out %>%
-  ggplot(aes(x=feature, y = TMB_score,col = odds_ratio, size= -log10(p.value)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
-  geom_point()+
-  theme_bw()+
-  #scale_colour_viridis_c()+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  scale_color_gradient2(low = "blue",mid = "white",   high = "red",midpoint = 1)+
-  scale_size(range = c(1,4))+
-  new_scale_colour() +
-  geom_point(data = out,shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.5)+
-  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
-        axis.text.y = element_text(size = 10),
-        legend.text = element_text(size = 10),
-        legend.title = element_text(size = 10),
-        axis.title.y = element_blank())+
-  coord_flip()
-p
-
-ggsave(filename = paste0(out_folder,"3I_TMB_enrichment_in_clinical.pdf"),
-       plot = p,
-       device = "pdf",
-       width = 4,
-       height = 4.9)
-```
-
-
-
-
-
-# 3I new enrichment in clinical traits for TMB - move to supplements
-
-## LUAD
-```{r, fig.height=10, fig.width=6}
-cur_traits <- traits %>%
-  filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
-  dplyr::select("TMB_score","age_dicho", "gender","stage_1_2","stage_1_3","stage_2_3","never_vs_current_smoker",
-                "never_vs_Ex_smoker","current_vs_Ex_smoker", "N0_vs_Nx","M0_vs_Mx", "long_survivors","T1_vs_Tother", "TPS_score")
-condition <- c("high","low", "Female","I","I","II","Non-smoker","Non-smoker","Ex-smoker", "node_neg", "met_neg", "alive","T1", "negative")
-
-names(condition) <- colnames(cur_traits)
-
-
-p.list <- list()
-l.list <- list()
-for (i in names(condition)) {
-  x <- factor(cur_traits$TMB_score)
-  x <- relevel(x, ref = "low")
-  
-  y <- factor(unlist(cur_traits[,i]))
-  y <- relevel(y, ref = condition[i])
-
-  p.list[[i]] <- fisher.test(table(x, y))
-  l.list[[i]] <- c(levels(y)[1])
-}
-
-out <- data.frame(feature = names(p.list),
-                  p.value = unlist(lapply(p.list, function(x){
-                    x$p.value})),
-                  odds_ratio = unlist(lapply(p.list, function(x){
-                    x$estimate})),
-                  reference = unlist(l.list))
-
-out <- out[-1,]
-
-out <- out %>%
-  mutate(feature = ifelse(feature == "age_dicho","Old_over_Young", feature),
-         feature = ifelse(feature == "gender","Male_over_Female", feature),
-         feature = ifelse(feature == "stage_1_2","Stage_II_over_I", feature),
-         feature = ifelse(feature == "stage_1_3","Stage_III_over_I", feature),
-         feature = ifelse(feature == "stage_2_3","Stage_III_over_II", feature),
-         feature = ifelse(feature == "LUAD_vs_LUSC","LUSC_over_LUAD", feature),
-         feature = ifelse(feature == "never_vs_current_smoker","Smoker_over_Never-smoker", feature),
-         feature = ifelse(feature == "never_vs_Ex_smoker","Ex-smoker_over_Never-smoker", feature),
-         feature = ifelse(feature == "current_vs_Ex_smoker","Smoker_over_Ex-smoker", feature),
-         feature = ifelse(feature == "N0_vs_Nx","Node-pos_over_Node-neg", feature),
-         feature = ifelse(feature == "M0_vs_Mx","Met-pos_over_Met-neg", feature),
-         feature = ifelse(feature == "long_survivors","Dead_over_Alive", feature),
-         feature = ifelse(feature == "T1_vs_Tother","T1_over_T-other", feature))
-
-
-out <- out %>%
-  mutate(TMB_score = "high",
-         FDR = p.adjust(p.value,method = "BH"),
-         sig = ifelse(p.value < 0.05 & odds_ratio > 1, "UP_trend",NA),
-         sig = ifelse(FDR < 0.1 & odds_ratio > 1, "UP",sig),
-         sig = ifelse(p.value < 0.05 & odds_ratio < 1, "DOWN_trend",sig),
-         sig = ifelse(FDR < 0.1 & odds_ratio < 1, "DOWN",sig),
-         sig = ifelse(is.na(sig),"NOTSIG", sig),
-         odds_ratio = ifelse(is.infinite(odds_ratio), 10, odds_ratio))
-
-p_LUAD <- out %>%
-  ggplot(aes(x=feature, y = TMB_score,col = odds_ratio, size= -log10(p.value)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
-  geom_point()+
-  theme_bw()+
-  #scale_colour_viridis_c()+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  scale_color_gradient2(low = "blue",mid = "white",   high = "red",midpoint = 1)+
-  scale_size(range = c(1,4))+
-  new_scale_colour() +
-  geom_point(data = out,shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.5)+
-  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 12),
-        axis.text.y = element_text(size = 12),
-        legend.text = element_text(size = 12),
-        legend.title = element_text(size = 12),
-        axis.title.y = element_blank())+
-  coord_flip()
-p_LUAD
-
-#ggsave(filename = paste0(out_folder,"3B_TPS_enrichment_in_clinical.pdf"),
-#       plot = p,
-#       device = "pdf",
-#       width = 4.5,
-#       height = 6)
-```
-
-
-## LUSC
-```{r, fig.height=10, fig.width=6}
-cur_traits <- traits %>%
-  filter(LUAD_vs_LUSC == "Squamous cell carcinoma") %>%
-  dplyr::select("TMB_score","age_dicho", "gender","stage_1_2","stage_1_3","stage_2_3","current_vs_Ex_smoker", "N0_vs_Nx","M0_vs_Mx", "long_survivors","T1_vs_Tother", "TPS_score")
-condition <- c("high","low", "Female","I","I","II","Ex-smoker", "node_neg", "met_neg", "alive","T1", "negative")
-
-names(condition) <- colnames(cur_traits)
-
-
-p.list <- list()
-l.list <- list()
-for (i in names(condition)) {
-  x <- factor(cur_traits$TMB_score)
-  x <- relevel(x, ref = "high")
-  
-  y <- factor(unlist(cur_traits[,i]))
-  y <- relevel(y, ref = condition[i])
-
-  p.list[[i]] <- fisher.test(table(x, y))
-  l.list[[i]] <- c(levels(y)[1])
-}
-
-out <- data.frame(feature = names(p.list),
-                  p.value = unlist(lapply(p.list, function(x){
-                    x$p.value})),
-                  odds_ratio = unlist(lapply(p.list, function(x){
-                    x$estimate})),
-                  reference = unlist(l.list))
-
-out <- out[-1,]
-
-out <- out %>%
-  mutate(feature = ifelse(feature == "age_dicho","Old_over_Young", feature),
-         feature = ifelse(feature == "gender","Male_over_Female", feature),
-         feature = ifelse(feature == "stage_1_2","Stage_II_over_I", feature),
-         feature = ifelse(feature == "stage_1_3","Stage_III_over_I", feature),
-         feature = ifelse(feature == "stage_2_3","Stage_III_over_II", feature),
-         feature = ifelse(feature == "LUAD_vs_LUSC","LUSC_over_LUAD", feature),
-         feature = ifelse(feature == "never_vs_current_smoker","Smoker_over_Never-smoker", feature),
-         feature = ifelse(feature == "never_vs_Ex_smoker","Ex-smoker_over_Never-smoker", feature),
-         feature = ifelse(feature == "current_vs_Ex_smoker","Smoker_over_Ex-smoker", feature),
-         feature = ifelse(feature == "N0_vs_Nx","Node-pos_over_Node-neg", feature),
-         feature = ifelse(feature == "M0_vs_Mx","Met-pos_over_Met-neg", feature),
-         feature = ifelse(feature == "long_survivors","Dead_over_Alive", feature),
-         feature = ifelse(feature == "T1_vs_Tother","T1_over_T-other", feature))
-
-
-out <- out %>%
-  mutate(TMB_score = "high",
-         FDR = p.adjust(p.value,method = "BH"),
-         sig = ifelse(p.value < 0.05 & odds_ratio > 1, "UP_trend",NA),
-         sig = ifelse(FDR < 0.1 & odds_ratio > 1, "UP",sig),
-         sig = ifelse(p.value < 0.05 & odds_ratio < 1, "DOWN_trend",sig),
-         sig = ifelse(FDR < 0.1 & odds_ratio < 1, "DOWN",sig),
-         sig = ifelse(is.na(sig),"NOTSIG", sig),
-         odds_ratio = ifelse(is.infinite(odds_ratio), 10, odds_ratio))
-
-p_LUSC <- out %>%
-  ggplot(aes(x=feature, y = TMB_score,col = odds_ratio, size= -log10(p.value)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
-  geom_point()+
-  theme_bw()+
-  #scale_colour_viridis_c()+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  scale_color_gradient2(low = "blue",mid = "white",   high = "red",midpoint = 1)+
-  scale_size(range = c(1,4))+
-  new_scale_colour() +
-  geom_point(data = out,shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.5)+
-  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 12),
-        axis.text.y = element_text(size = 12),
-        legend.text = element_text(size = 12),
-        legend.title = element_text(size = 12),
-        axis.title.y = element_blank())+
-  coord_flip()
-p_LUSC
-
-#ggsave(filename = paste0(out_folder,"3B_TPS_enrichment_in_clinical.pdf"),
-#       plot = p,
-#       device = "pdf",
-#       width = 4.5,
-#       height = 6)
-```
-
-```{r, fig.width=10, fig.height=6}
-p <- plot_grid(p_LUAD, p_LUSC)
-p
-```
-# 3J bubble plot for TMB with histology
-
-```{r, fig.height=15, fig.width=10}
-condition <- c("low")
-names(condition) <- c("TMB_score")
-
-# loop over conditions and do two way abundance difference tests
-p.list <- list()
-for (i in c(data_type,"cello1","cello2")) {
-    
-    if(grepl("cello",i)){
-      abundances <- cello_dat %>%
-        select(contains(i))
-      abundances <- t(abundances)
-      colnames(abundances) <- cello_dat$immucan_id
-    } else {
-      abundances <- dat %>%
-        select(contains(i)) %>%
-        filter(complete.cases(.))
-      abundances <- t(abundances)
-      colnames(abundances) <- dat %>%
-        select(contains(i),immucan_id) %>%
-        filter(complete.cases(.)) %>%
-        pull(immucan_id)
-    }
-    anno <- traits %>%
-      filter(!is.na(.data[["TMB_score"]]))
-    
-    # remove patients without TMB info from the abundance data
-    abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
-    
-    # new from here
-    meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-    meta$histology_TMB <- paste0(meta$simple_histology,"_",meta$TMB_score)
-    Size <- factor(meta[,"histology_TMB"])
-    meta$Size <- Size
-    
-    # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
-    y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-    design <- model.matrix(~0+group,data = y.ab$samples)
-    colnames(design) <- levels(y.ab$samples$group)
-    # we do not fit a trend 
-    y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-    y.ab$common.dispersion
-    #plotBCV(y.ab,pch = 5)
-    
-    # we only compare the diff abundance for Adeno vs Sqam.
-    fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-    fit_LUAD <- glmLRT(glmfit = fit.ab,contrast = c(1,-1,0,0,0,0,0,0,0,0,0))
-    fit_LUSC <- glmLRT(glmfit = fit.ab,contrast = c(0,0,0,0,0,0,0,0,1,-1,0))
-    #plotQLDisp(fit.ab, pch = 5)
-
-    res_list <- list(fit_LUAD,fit_LUSC)
-    
-    cur_list <- lapply(res_list,function(x){
-      sig_dat <- x$table
-      sig_dat$celltypes <- rownames(sig_dat)
-      sig_dat$comparison <- grep("Adeno|Squamous",x$comparison,value = TRUE)
-      return(sig_dat)
-    })
-
-    p.list[[i]] <- do.call(rbind,cur_list)
-    
-    
-}
-
-cur_dat <- do.call(rbind,p.list)
-cur_dat <- cur_dat %>%
-  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = ifelse(grepl("Adeno",comparison),"TMB-high_LUAD","TMB-high_LUSC")) %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig = ifelse(PValue < 0.05 & logFC > 0, "UP_trend",NA),
-         sig = ifelse(FDR < 0.1 & logFC > 0, "UP",sig),
-         sig = ifelse(PValue < 0.05 & logFC < 0, "DOWN_trend",sig),
-         sig = ifelse(FDR < 0.1 & logFC < 0, "DOWN",sig),
-         sig = ifelse(is.na(sig),"NOTSIG", sig),
-         ct_name = gsub("_density","",str_split_i(celltypes,"__",1)))
-  
-to_show <- cur_dat %>%
-  filter(sig %in% c("UP","DOWN")) %>%
-  pull(celltypes)
-
-cur_dat <- cur_dat %>%
-  filter(celltypes %in% to_show) %>%
-  mutate(celltypes = gsub("_abundance","",celltypes))
-
-## spatial cluster renaming
-cur_dat <- cur_dat %>%
-  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
-
-# get max and min fold change values
-max_up <- max(cur_dat$logFC)+1
-min_down <- min(cur_dat$logFC)-1
-
-# plot the data
-p <- cur_dat %>%
-  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  geom_point()+
-  theme_bw()+
-  scale_colour_gradientn(colours = c("blue","white","red"), 
-                         values = rescale(c(round(min_down),0,round(max_up))),
-                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  scale_size(range = c(1,10))+
-  new_scale_colour() +
-  geom_point(data = cur_dat,shape = 1,aes(size = -log10(PValue), col = sig), stroke =1)+
-  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 16),
-        axis.text.y = element_text(size = 16),
-        legend.text = element_text(size = 16),
-        legend.title = element_text(size = 16),
-        legend.location = "plot",
-        axis.title.x = element_blank(),
-        axis.title.y = element_blank(),
-        title = element_text(size = 16))
-  
-
-p
-ggsave(filename = paste0(out_folder,"3J_diff_abundance_TMB_LUSC_LUAD_bubble_plot.pdf"),
-       plot = p,
-       device = "pdf",
-       width = 15,
-       height = 6)
-```
-
-
-sanity checks
-
-```{r}
-cello_dat %>%
-  select(immucan_id,CN_1__cello2) %>%
-  left_join(traits,"immucan_id") %>%
-  filter(simple_histology == "Squamous cell carcinoma")%>%
-  ggplot(aes(x = TMB_score,y = log10(CN_1__cello2)))+
-  geom_boxplot()+
-  stat_compare_means()
-
-cello_dat %>%
-  select(immucan_id,CN_9__cello2) %>%
-  left_join(traits,"immucan_id") %>%
-  filter(simple_histology == "Squamous cell carcinoma")%>%
-  ggplot(aes(x = TMB_score,y = log10(CN_9__cello2)))+
-  geom_boxplot()+
-  stat_compare_means()
-```
-
-# 3K TMB vs TPS
-
-```{r, fig.height=6, fig.width=15}
-table(traits$TMB_score,traits$TPS_score)
-traits <- traits %>%
-  mutate(TMB_TPS = ifelse(TMB_score == "low" & TPS_score == "positive", "TMBlow_TPShigh",ifelse(TMB_score == "high" & TPS_score == "negative", "TMBhigh_TPSlow", NA))) 
-condition <- c("TMBhigh_TPSlow")
-names(condition) <- c("TMB_TPS")
-
-# loop over conditions and do two way abundance difference tests
-p.list <- list()
-for (i in c(data_type,"cello1","cello2")) {
-    
-    if(grepl("cello",i)){
-      abundances <- cello_dat %>%
-        select(contains(i))
-      abundances <- t(abundances)
-      colnames(abundances) <- cello_dat$immucan_id
-    } else {
-      abundances <- dat %>%
-        select(contains(i)) %>%
-        filter(complete.cases(.))
-      abundances <- t(abundances)
-      colnames(abundances) <- dat %>%
-        select(contains(i),immucan_id) %>%
-        filter(complete.cases(.)) %>%
-        pull(immucan_id)
-    }
-    anno <- traits %>%
-      filter(!is.na(.data[["TMB_TPS"]]))
-    
-    # remove patients without TMB info from the abundance data
-    abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
-    
-    meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-    meta$histology_TMB_TPS <- paste0(meta$simple_histology,"_",meta$TMB_TPS)
-    Size <- factor(meta[,"histology_TMB_TPS"])
-    meta$Size <- Size
-    
-    # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
-    y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-    design <- model.matrix(~0+group,data = y.ab$samples)
-    colnames(design) <- levels(y.ab$samples$group)
-    # we do not fit a trend 
-    y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-    y.ab$common.dispersion
-    #plotBCV(y.ab,pch = 5)
-    
-    # we only compare the diff abundance for Adeno vs Sqam.
-    fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-    fit_LUAD <- glmLRT(glmfit = fit.ab,contrast = c(-1,1,0,0,0,0,0,0))
-    fit_LUSC <- glmLRT(glmfit = fit.ab,contrast = c(0,0,0,0,0,-1,1,0))
-    #plotQLDisp(fit.ab, pch = 5)
-
-    res_list <- list(fit_LUAD,fit_LUSC)
-    
-    cur_list <- lapply(res_list,function(x){
-      sig_dat <- x$table
-      sig_dat$celltypes <- rownames(sig_dat)
-      sig_dat$comparison <- grep("Adeno|Squamous",x$comparison,value = TRUE)
-      return(sig_dat)
-    })
-
-    p.list[[i]] <- do.call(rbind,cur_list)
-    
-    
-}
-
-cur_dat <- do.call(rbind,p.list)
-cur_dat <- cur_dat %>%
-  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = ifelse(grepl("Adeno",comparison),"LUAD","LUSC")) %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig = ifelse(PValue < 0.05 & logFC > 0, "UP_trend",NA),
-         sig = ifelse(FDR < 0.1 & logFC > 0, "UP",sig),
-         sig = ifelse(PValue < 0.05 & logFC < 0, "DOWN_trend",sig),
-         sig = ifelse(FDR < 0.1 & logFC < 0, "DOWN",sig),
-         sig = ifelse(is.na(sig),"NOTSIG", sig),
-         ct_name = gsub("_density","",str_split_i(celltypes,"__",1)))
-  
-to_show <- cur_dat %>%
-  filter(sig %in% c("UP","DOWN")) %>%
-  pull(celltypes)
-
-cur_dat <- cur_dat %>%
-  filter(celltypes %in% to_show) %>%
-  mutate(celltypes = gsub("_abundance","",celltypes))
-
-## spatial cluster renaming
-cur_dat <- cur_dat %>%
-  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
-
-# get max and min fold change values
-max_up <- max(cur_dat$logFC)+1
-min_down <- min(cur_dat$logFC)-1
-
-# plot the data
-p <- cur_dat %>%
-  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  #geom_tile(aes(fill = sig))+
-  #theme_bw()+
-  geom_point()+
-  theme_bw()+
-  scale_colour_gradientn(colours = c("blue","white","red"), 
-                         values = rescale(c(round(min_down),0,round(max_up))),
-                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  #theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-  #      panel.background = element_blank(), axis.line = element_line(colour = "black"))+
-  #theme_bw()+
-  #scale_color_gradient(low = "white",   high = "red")+
-  scale_size(range = c(1,10))+
-  new_scale_colour() +
-  geom_point(data = cur_dat,shape = 1,aes(size = -log10(PValue), col = sig), stroke =1)+
-  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#428bc7","NOTSIG" = "snow2"), name = "stats")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 16),
-        axis.text.y = element_text(size = 16),
-        legend.text = element_text(size = 14),
-        legend.title = element_text(size = 14),
-        legend.location = "plot",
-        axis.title.x = element_blank(),
-        axis.title.y = element_blank(),
-        title = element_text(size = 14))+
-  ggtitle("Differential abundance for TPS-high/TMB-low over TPS-low/TMB-high")
-  
-
-p
-
-ggsave(filename = paste0(out_folder,"3K_diff_abundance_TMB_vs_TPS.pdf"),
-       plot = p,
-       device = "pdf",
-       width = 20,
-       height = 5.5)
-```
-
-
-# 3L inflammation signature for TMB
-
-```{r}
-cur_dat <- read.table(paste0(mount_path,"data/RNASeq/CURIE/inflammation_quantification_NSCLC2/outputs/pathwayActivity/PathwayActivity_NSCLC2_mlm"))
-my_comp <-  list( c("low", "high"))
-
-cur_dat <- cur_dat %>%
-  as.data.frame() %>%
-  mutate(immucan_id = paste0("LUNG-",rownames(cur_dat))) %>%
-  left_join(traits,by = "immucan_id")
-
-cur_dat <- cur_dat %>%
-  pivot_longer(cols = c(JAK.STAT,NFkB,TNFa))
-
-p <- cur_dat %>%
-  select(-TMB) %>%
-  dplyr::rename(TMB = TMB_score) %>%
-  filter(!is.na(TMB)) %>%
-  ggplot(aes(x = name,y = value, fill = TMB))+
-  geom_boxplot(outliers = FALSE)+
-  geom_jitter(aes(color = TMB),position = position_jitterdodge(jitter.width = 0.2), size= 1)+
-  #facet_wrap(.~name)+
-  scale_fill_manual(values = alpha(c("blue", "red"),alpha = 0.5))+
-  scale_color_manual(values = c("blue", "red"))+
-  stat_compare_means(size = 8,label = "p.signif",method = "t.test")+
-  theme_bw()+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 1, size = 18),
-        axis.text.y = element_text(size = 18),
-        axis.title.x = element_blank(),
-        axis.title.y = element_text(size = 18),
-        legend.text = element_text(size = 18),
-        legend.title = element_text(size = 18),
-        strip.text.x = element_text(size = 18))+
-  ylab("Pathway score")
-
-p
-ggsave(filename = paste0(out_folder,"3L_inflammation_score_for_TMB.pdf"),
-       plot = p,
-       device = "pdf",
-       width = 4.5,
-       height = 7)
-```
-
-not in figures.
-testing for TMB and TPS subgroups
-
-```{r, fig.height=6, fig.width=15}
-table(traits$TMB_score,traits$TPS_score)
-traits <- traits %>%
-  mutate(TMB_TPS = ifelse(TMB_score == "high" & TPS_score == "positive", "TMBhigh_TPShigh",ifelse(TMB_score == "low" & TPS_score == "positive", "TMBlow_TPShigh", NA)))
-condition <- c("TMBlow_TPShigh")
-names(condition) <- c("TMB_TPS")
-
-# loop over conditions and do two way abundance difference tests
-p.list <- list()
-for (i in c(data_type,"cello1","cello2")) {
-    
-    if(grepl("cello",i)){
-      abundances <- cello_dat %>%
-        select(contains(i))
-      abundances <- t(abundances)
-      colnames(abundances) <- cello_dat$immucan_id
-    } else {
-      abundances <- dat %>%
-        select(contains(i)) %>%
-        filter(complete.cases(.))
-      abundances <- t(abundances)
-      colnames(abundances) <- dat %>%
-        select(contains(i),immucan_id) %>%
-        filter(complete.cases(.)) %>%
-        pull(immucan_id)
-    }
-    anno <- traits %>%
-      filter(!is.na(.data[["TMB_TPS"]]))
-    
-    # remove patients without TMB info from the abundance data
-    abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
-    
-    # new from here
-    meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-    Size <- factor(meta[,"TMB_TPS"])
-    meta$Size <- Size
-    
-    # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
-    y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-    design <- model.matrix(~0+group,data = y.ab$samples)
-    colnames(design) <- levels(y.ab$samples$group)
-    # we do not fit a trend 
-    y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-    y.ab$common.dispersion
-    #plotBCV(y.ab,pch = 5)
-    
-    # we only compare the diff abundance for Adeno vs Sqam.
-    fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-    fit <- glmLRT(glmfit = fit.ab,contrast = c(1,-1))
-    #plotQLDisp(fit.ab, pch = 5)
-
-    sig_dat <- fit$table
-    sig_dat$celltypes <- rownames(sig_dat)
-
-    p.list[[i]] <- sig_dat
-    
-    
-}
-
-# define logFC cutoff
-cutoff <- 0.7
-cur_dat <- do.call(rbind,p.list)
-cur_dat <- cur_dat %>%
-  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = "TMBhigh_TPShigh-over-TMBlow_TPShigh") %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         sig = ifelse(FDR < 0.1 & abs(logFC) > cutoff,TRUE,FALSE),
-         direction = ifelse(logFC > 0 ,"up", "down"),
-         ct_name = gsub("_abundance","",str_split_i(celltypes,"__",1)))
-  
-to_show <- cur_dat %>%
-  filter(sig == TRUE) %>%
-  pull(celltypes)
-
-cur_dat <- cur_dat %>%
-  filter(celltypes %in% to_show) %>%
-  mutate(celltypes = gsub("_abundance","",celltypes))
-
-## spatial cluster renaming
-cur_dat <- cur_dat %>%
-  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
-
-# get max and min fold change values
-max_up <- max(cur_dat$logFC)+1
-min_down <- min(cur_dat$logFC)-1
-
-# plot the data
-plot_dat <- cur_dat
-p <- plot_dat %>%
-  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  geom_point()+
-  theme_bw()+
-  scale_colour_gradientn(
-    colours = c("blue", "white", "red"), 
-    values = rescale(c(round(min_down), 0, round(max_up))),
-    limits = c(round(min_down), round(max_up)),
-    guide = guide_colorbar(
-      title = "logFC",                   
-      barwidth = 12,                     
-      barheight = 1.5,                   
-      title.theme = element_text(size = 16),
-      label.theme = element_text(size = 14)
-    )
-  )+
-  scale_size(range = c(1,8))+
-  new_scale_colour() +
-  geom_point(data = plot_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =2.5)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "FDR < 0.1")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 14),
-        axis.text.y = element_text(size = 14),
-        legend.text = element_text(size = 14),
-        legend.title = element_text(size = 14),
-        axis.title.x = element_blank(),
-        axis.title.y = element_blank(),
-        legend.position = "bottom",
-        plot.title = element_text(hjust = 0.5, size = 14))+
-  ggtitle("Differential abundance for TMB-high")
-  
-
-p
-```
-
 

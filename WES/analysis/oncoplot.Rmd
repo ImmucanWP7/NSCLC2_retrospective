@@ -330,6 +330,56 @@ alt_predef <- setNames( pals::alphabet(n = length(alt_predef)),alt_predef)
 alt_predef
 ```
 
+```{r fig.width=20, fig.height=8}
+col_meta <- c("gender", "Histology", "simple_stage", "smoking_status", "age_dicho")
+
+# Define colors
+Stage_col = setNames(c("palevioletred3","darkseagreen3","dodgerblue", "darkblue"),c("I","II","III","IV"))
+Stage_col_num = setNames(c("palevioletred3","darkseagreen3","dodgerblue", "darkblue"),c("1","2","3", "4"))
+hist_col_2= setNames(c("blue","orange"),c("LUAD","LUSC"))
+hist_col_3 = setNames(c("blue","orange", "gray40"),c("LUAD","LUSC","Other"))
+# smoking
+smoking_status_col_3 <- setNames(c("blue", "lightblue", "cyan3"),sort(c("Current","Former", "Never")))
+smoking_status_col_4 <- setNames(c("blue", "lightblue", "cyan3", "gray40"),sort(c("Current","Former", "Never", "Unknown")))
+
+data_meta <- data_meta %>%
+  mutate(Histology = LUAD_vs_LUSC,
+         Histology = ifelse(is.na(LUAD_vs_LUSC),"Other", ifelse(Histology == "Adenocarcinoma", "LUAD", "LUSC")),
+         smoking_status = ifelse(is.na(smoking_status),"Unknown",smoking_status),
+         smoking_status = ifelse(smoking_status == "Ex-smoker", "Former", smoking_status),
+         smoking_status = ifelse(smoking_status == "Current smoker", "Current", smoking_status),
+         smoking_status = ifelse(smoking_status == "Non-smoker", "Never", smoking_status))
+
+
+col_list <- list(gender = c("Male" = "#6f50a1", "Female" = "#0d6d64"),
+               Histology =hist_col_3,
+               simple_stage = Stage_col,
+               smoking_status = smoking_status_col_4,
+               age_dicho = c("low" = "blue3", "high" = "red4")
+               )
+
+# drivers
+# mutations: KRAS
+KRAS_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+EGFR_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+PIK3CA_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+STK11_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+KEAP1_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+BRAF_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+RET_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+MET_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+ROS1_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+TP53_col <- setNames(c("red", "blue"),sort(c(TRUE,FALSE)))
+
+
+
+## Define alteration functions
+alt_predef <- unique(unlist(sapply(data_plot, unique)))
+#alt_predef <- alt_predef[c(1,3:length(alt_predef))]
+alt_predef <- alt_predef[!is.na(alt_predef)]
+alt_predef <- setNames( pals::alphabet(n = length(alt_predef)),alt_predef)
+alt_predef
+```
 
 ```{r}
 
@@ -432,7 +482,7 @@ ht <- ComplexHeatmap::oncoPrint(data_plot,
                     #, heatmap_legend_param = list(legend_gp = gpar(fontsize = 12))
   )
 ht
-pdf(file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_4/4A_oncoprint_COSMIC_20260210.pdf",width = 10,height = 9)
+pdf(file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_4/4A_oncoprint_COSMIC_20260210.pdf",width = 10,height = 9)
 draw(ht,
     heatmap_legend_side = "bottom"
     ,annotation_legend_side = "bottom"

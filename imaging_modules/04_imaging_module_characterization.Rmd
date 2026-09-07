@@ -232,7 +232,7 @@ legend_grob <- get_legend(
 
 final <- plot_grid(composed, legend_grob, ncol = 1, rel_heights = c(1, 0.05))
 final
-ggsave(file.path(FIGURES, "s3C_meta_cluster_network.pdf"),
+ggsave(file.path(FIGURES, "S3B_meta_cluster_network.pdf"),
        final, width = 10, height = 10)
 ```
 
@@ -271,7 +271,7 @@ inlet <- ggplot() +
         plot.background  = element_rect(fill = "white", color = "grey70",
                                         linewidth = 0.6))
 
-ggsave(file.path(FIGURES, "S3C_meta_cluster_network_inlet.pdf"),
+ggsave(file.path(FIGURES, "S3B_meta_cluster_network_inlet.pdf"),
        inlet, width = 4, height = 4)
 ```
 

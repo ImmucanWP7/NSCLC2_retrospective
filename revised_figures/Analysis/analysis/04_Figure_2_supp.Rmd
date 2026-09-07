@@ -24,7 +24,7 @@ if (!dir.exists(out_folder)) {
   dir.create(out_folder)
 }
 ```
-# S1C IMC P1 - P2 correlation
+# S2A IMC P1 - P2 correlation
 ## load data
 ```{r}
 d1 <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/celltypes_density_dat_p1.csv"))

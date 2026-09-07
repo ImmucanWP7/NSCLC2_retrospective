@@ -209,7 +209,7 @@ ht2 <- Heatmap(
   row_names_gp = gpar(fontsize = 3)
 )
 
-pdf(file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_3_supp/tumor_subtypes.pdf",width = 8,height = 8)
+pdf(file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/S4B_Figure_4_supp/tumor_subtypes.pdf",width = 8,height = 8)
 draw(ht2)
 dev.off()
 ```

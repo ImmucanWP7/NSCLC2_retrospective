@@ -35,11 +35,17 @@ lollipop_plot <- function(data, condition, var_A, var_B, order = TRUE, order_vec
 
   # ensure the legend shows a break at the true min (and max) of the data,
   # in addition to the automatically chosen "pretty" breaks
+  round_up   <- function(x, digits = 1) ceiling(x * 10^digits) / 10^digits
+  round_down <- function(x, digits = 1) floor(x * 10^digits) / 10^digits
+
   size_range  <- range(volcano_df$neg_log10_p, na.rm = TRUE)
-  size_breaks <- sort(unique(c(round(size_range[1], 1),
-                               scales::breaks_pretty()(size_range),
-                               round(size_range[2], 1))))
-  size_breaks <- size_breaks[size_breaks >= size_range[1] & size_breaks <= size_range[2]]
+  size_breaks <- seq(size_range[1], size_range[2], length.out = 4)
+
+  n <- length(size_breaks)
+  size_breaks[1]        <- round_up(size_breaks[1], 1)      # stays >= true min - safe
+  size_breaks[n]         <- round_down(size_breaks[n], 1)    # stays <= true max - safe
+  size_breaks[-c(1, n)] <- round(size_breaks[-c(1, n)], 1)   # interior points, normal rounding is fine
+  size_breaks <- unique(size_breaks)
 
   p2 <- ggplot(volcano_df, aes(x = delta_z, y = name)) +
     geom_segment(aes(x = 0, xend = delta_z, y = name, yend = name), color = "grey70") +

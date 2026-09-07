@@ -1,5 +1,5 @@
 ---
-title: "Figure S3"
+title: "Figure S4"
 author: "Daniel Schulz"
 date: "2024-11-13"
 output: html_document
@@ -29,11 +29,13 @@ library(ggnewscale)
 
 ```{r}
 mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
-out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_3_supp/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_4_supp/"
 
 if (!dir.exists(out_folder)) {
   dir.create(out_folder)
 }
+
+source("../code/lollipop_function.R")
 ```
 
 # load data
@@ -45,16 +47,19 @@ cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds
 clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/clinical.csv")
 traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
 
-rna <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_scores.rds")
+rna <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_scores_tpm.rds")
 rna$immucan_id  <- rownames(rna)
 rownames(rna) <- NULL
 
+modules <- as.data.frame(readRDS( "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/patient_imaging_meta_cluster_scores_tpm.rds"))
+modules$immucan_id <- rownames(modules)
+rownames(modules) <- NULL
 
 # variables
 data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2))
 ```
 
-# S3A Kaplan Meier stage
+# S4A Kaplan Meier stage
 
 ```{r, fig.height=6}
 cur_clin <- clin_dat
@@ -70,14 +75,14 @@ p <- ggsurvplot(surv_fit, data = cur_clin, risk.table = TRUE, pval = TRUE,palett
 
 p <- plot_grid(p$plot,p$table,ncol = 1, rel_heights = c(1,0.5))
 p
-ggsave(p,filename = paste0(out_folder,"S3A_Kaplan_Meier_CPS_score.pdf"),device = "pdf",width = 6, height = 5)
+ggsave(p,filename = paste0(out_folder,"S4A_Kaplan_Meier_CPS_score.pdf"),device = "pdf",width = 6, height = 5)
 ```
 
-# S3B
+# S4B
 code here: to be included in this script: [tumor subtyping](../../../RNA/tumor_subtypes/tumor_subtypes_oncotypes.Rmd)
 
 
-# S3C RNA modules for stage 
+# S4C_D RNA modules for stage 
 ```{r}
 dat_z <- left_join(rna, traits, "immucan_id") %>%
   filter(!is.na(simple_stage),
@@ -148,26 +153,43 @@ p2
 # plotting in chunk below
 ```
 
-# S3D TCGA RNA modules
+# S4C_D TCGA RNA modules
 ```{r, fig.width=10, fig.height=6}
 library(singscore)
 tcga <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/MOFA/tcga_LUAD_LUSC.rds")
 sce <- as(tcga, "SingleCellExperiment")
 # subset to LUAD
 sce <- sce[,sce$histology == "LUAD"]
-ranked_data <- rankGenes(sce)
+
+# use length normalized data from TCGA
+tpm_mat <- assay(tcga, "tpm_unstrand")
+tpm_mat <- as.matrix(tpm_mat)   # in case it's a DelayedArray/sparse matrix
+
+# if your gene set is symbols rather than Ensembl IDs, map via rowData
+if ("gene_name" %in% colnames(rowData(tcga))) {
+  symbols <- rowData(tcga)$gene_name
+  keep <- !is.na(symbols) & !duplicated(symbols)   # drop NA + duplicate symbols
+  tpm_mat <- tpm_mat[keep, ]
+  rownames(tpm_mat) <- symbols[keep]
+}
+
+# 3. rank
+ranked_data <- rankGenes(tpm_mat)
+
+#ranked_data <- rankGenes(sce)
 
 # load Bageav genes
 df <- readxl::read_xlsx(
   "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/annotations/Bagaev_FGES.xlsx",
-  sheet = 3, skip = 1)[, 1:2]
-colnames(df) <- c("gene", "name")
+  sheet = 1, skip = 1)
 
 df <- df %>%
-  filter(!is.na(gene), !is.na(name)) %>%
-  mutate(gene = trimws(gene),
-         name = trimws(name),
-         name = gsub(" ", "_", name))
+  dplyr::select(-ID) %>%
+  pivot_longer(cols = -`Process/Signature`) %>%
+  dplyr::select(-name) %>%
+  filter(!is.na(value))
+
+colnames(df) <- c("name", "gene")
 
 signatures <- split(df$gene, df$name)
 
@@ -226,7 +248,7 @@ sigs <- dat_z %>%
 
 
 summary_dat_val <- sigs %>%
-  filter(name %in% c("Angiogenesis","Cancer-associated_fibroblasts","Granulocyte_traffic","Myeloid_cells_traffic","Protumor_cytokines"))%>%
+  filter(name %in% c("Matrix","EMT signature","Cancer-associated fibroblasts","Granulocyte traffic","Myeloid cells traffic","Protumor cytokines"))%>%
   ungroup() %>%
   as.data.frame()
 
@@ -290,12 +312,12 @@ p_val <- dat_z %>%
 
 
 p <- plot_grid(p2 + theme(axis.text.x = element_blank()), p_val, ncol = 1, rel_heights = c(1.2,2))
-
-ggsave(plot = p, path = out_folder,filename = "S3C_RNA_modules_for_stage_and_TCGA_validation.pdf",width = 6, height = 5,device = cairo_pdf)
+p
+ggsave(plot = p, path = out_folder,filename = "S4C_RNA_modules_for_stage_and_TCGA_validation.pdf",width = 6, height = 5,device = cairo_pdf)
 
 
 p1
-ggsave(plot = p1, path = out_folder,filename = "S3D_RNA_modules_for_stage_and_TCGA_exploratory.pdf",width = 6, height = 3,device = cairo_pdf)
+ggsave(plot = p1, path = out_folder,filename = "S4D_RNA_modules_for_stage_and_TCGA_exploratory.pdf",width = 6, height = 3,device = cairo_pdf)
 ```
 
 
@@ -334,688 +356,8 @@ p2
 sigs
 ```
 
-#  to be deleted - S3B TCGA across stages adenocarcinoma
-```{r}
-tcga <- read.csv(paste0(mount_path,"data/RNAseq/luad_tcga_pan_can_atlas_2018/luad_tcga_pan_can_atlas_2018/xcell_between_samples_scores.csv"), sep = "\t")
-tcga_patient <- read.csv(paste0(mount_path,"data/RNAseq/luad_tcga_pan_can_atlas_2018/luad_tcga_pan_can_atlas_2018/data_clinical_patient.txt"), sep = "\t")
-tcga_clin <- read.csv(paste0(mount_path,"data/RNAseq/luad_tcga_pan_can_atlas_2018/luad_tcga_pan_can_atlas_2018/data_clinical_sample.txt"), sep = "\t")
 
-tcga <- as.data.frame(t(tcga))
-tcga <- tcga %>%
-  mutate(PATIENT_ID = rownames(tcga)) %>%
-  select(PATIENT_ID,everything())
-rownames(tcga) <- NULL
-
-tcga_patient <- tcga_patient %>%
-  mutate(PATIENT_ID = gsub("-",".",PATIENT_ID))
-
-tcga <- tcga %>%
-  left_join(tcga_patient %>% select(PATIENT_ID,AJCC_PATHOLOGIC_TUMOR_STAGE),"PATIENT_ID") %>%
-  mutate(stage = ifelse(AJCC_PATHOLOGIC_TUMOR_STAGE %in% c("STAGE I","STAGE IA","STAGE IB"),1,NA),
-         stage = ifelse(AJCC_PATHOLOGIC_TUMOR_STAGE %in% c("STAGE II","STAGE IIA","STAGE IIB"),2,stage),
-         stage = ifelse(AJCC_PATHOLOGIC_TUMOR_STAGE %in% c("STAGE IIIA","STAGE IIIB"),3,stage)) %>%
-  filter(!is.na(stage)) %>%
-  select(-AJCC_PATHOLOGIC_TUMOR_STAGE)
-
-res <- tcga %>%
-  pivot_longer(-c(PATIENT_ID, stage)) %>%
-  mutate(stage = as.numeric(as.factor(stage))) %>%
-  group_by(name) %>%
-  nest() %>%
-  mutate(model = map(data, ~ lm(value ~ stage, data = .x)),
-         summary = map(model, broom::tidy)) %>%
-  select(name, summary) %>%
-  unnest(c(summary)) %>%
-  filter(term == "stage") %>%
-  ungroup() %>%
-  mutate(FDR = p.adjust(p = p.value,method = "BH")) %>%
-  filter(FDR < 0.1)
-
-res <- res %>%
-  mutate(p.plot = ifelse(p.value < 0.001,"***",ifelse(p.value < 0.01, "**","*")))
-
-p <- tcga %>%
-  pivot_longer(-c(PATIENT_ID, stage)) %>%
-  mutate(stage = as.numeric(as.factor(stage))) %>%
-  group_by(name) %>%
-  filter(name %in% res$name) %>%
-  ggplot(aes(x = name, y = value,fill=as.factor(stage)))+
-  geom_boxplot()+
-  geom_text(data = res, aes(x = name,y=0.8,label = p.plot), inherit.aes = FALSE,size = 8)+
-  theme_bw()+
-  theme(axis.text.x = element_text(angle = 90, vjust =0.5,hjust = 1, size = 10),
-        axis.title.x = element_blank())+
-  scale_fill_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
-  ggtitle(label = "Deconvoluted cell types across stages in TCGA LUAD")+
-  labs(fill = "Stage")
-
-p
-
-ggsave(filename = paste0(out_folder,"S3B_Xcell_across_TCGA_stages_within_LUAD.pdf"),
-       plot = p,
-       device = "pdf",
-       width = 10,
-       height = 6)
-
-# reporting n
-tcga %>%
-  pivot_longer(-c(PATIENT_ID, stage)) %>%
-  mutate(stage = as.character(stage)) %>%
-  select(PATIENT_ID,stage) %>%
-  distinct() %>%
-  group_by(stage) %>%
-  dplyr::count(stage)
-```
-
-
-
-
-# to be deleted - deconvolution of RNAseq
-```{r, fig.width=25, fig.height=8}
-dat <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/RNAseq/xcell_results/xCell_TPM_norm_for_xCell_xCell_1129103125.txt", sep = "\t")
-dat_t <- as.data.frame(t(dat[,-1]))
-colnames(dat_t) <- dat$X
-dat_t$immucan_id <- gsub("\\.","-",rownames(dat_t))
-rownames(dat_t) <- NULL
-unique(dat_t$immucan_id)
-dat_t
-dat <- left_join(dat_t,clin_dat[,c("immucan_id","simple_stage", "simple_histology")],"immucan_id")
-
-dim(dat)
-
-sigs <- dat_t %>%
-  pivot_longer(-immucan_id) %>%
-  left_join(clin_dat[,c("immucan_id","simple_stage", "simple_histology")],by = "immucan_id") %>%
-  filter(simple_histology == "Adenocarcinoma") %>%
-  select(immucan_id,name, value,simple_stage) %>%
-  mutate(stage = ifelse(simple_stage == "I",1,NA),
-         stage = ifelse(simple_stage == "II",2,stage),
-         stage = ifelse(simple_stage == "III",3,stage),
-         stage = ifelse(simple_stage == "IV",4,stage),
-         stage = as.numeric(as.factor(stage))) %>%
-  filter(stage != 4) %>%
-  group_by(name) %>%
-  nest() %>%
-  mutate(model = map(data, ~ lm(value ~ stage, data = .x)),
-         summary = map(model, broom::tidy)) %>%
-  select(name, summary) %>%
-  unnest(c(summary)) %>%
-  filter(term == "stage") %>%
-  mutate(tech = str_split_i(name,"__",2)) %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(p = p.value,method = "BH"),
-         sig_p = ifelse(p.value < 0.05,TRUE, FALSE),
-         sig_fdr = ifelse(FDR < 0.1,TRUE, FALSE))
-
-summary_dat <- sigs %>%
-  filter(sig_p == TRUE) %>%
-  #filter(grepl("CD8_GATA3_BCL2|^CD8_density|CD8_Ki67_density|CD8_TCF7_density|Tumor_IDO1",name)) %>%
-  mutate(y_position = 1000) %>%
-  ungroup() %>%
-  as.data.frame()
-
-p2 <- dat_t %>%
-  pivot_longer(-immucan_id) %>%
-  mutate(tech = str_split_i(name,"__",2)) %>%
-  left_join(clin_dat,"immucan_id") %>%
-  filter(simple_histology == "Adenocarcinoma") %>%
-  select(immucan_id,name, value,simple_stage, tech) %>%
-  mutate(stage = ifelse(simple_stage == "I",1,NA),
-         stage = ifelse(simple_stage == "II",2,stage),
-         stage = ifelse(simple_stage == "III",3,stage),
-         stage = ifelse(simple_stage == "IV",4,stage),
-         stage = as.numeric(as.factor(stage)),
-         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
-  filter(#name %in% summary_dat$name,
-         stage != 4) %>%
-  ggplot(aes(x = name,y = log10(value+1),fill=as.factor(stage))) +
-  geom_boxplot(outliers = FALSE)+
-  geom_jitter(aes(col = as.factor(stage)),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
-  scale_fill_manual(values = alpha(c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"),alpha = 0.6))+
-  scale_color_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
-  theme_bw()+
-  theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust = 1),
-        axis.title = element_blank())+
-  guides(fill=guide_legend(title="Stage"),
-         col=guide_legend(title="Stage"))+
-  geom_text(data = summary_dat, aes(x = name,y=1,label = paste0("fdr: ",sig_fdr)), inherit.aes = FALSE)+
-  geom_text(data = summary_dat, aes(x = name,y=1,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE)+
-  ggtitle(label = "LUAD")
-  
-p2
-
-dat_t %>%
-  pivot_longer(-immucan_id) %>%
-  mutate(tech = str_split_i(name,"__",2)) %>%
-  left_join(clin_dat,"immucan_id") %>%
-  filter(simple_histology == "Adenocarcinoma") %>%
-  distinct(immucan_id)
-```
-
-
-
-
-#  to be deleted -  diff abundance stages bubble plot
-not in paper
-here we will estimate the dispersion across the whole data set and then do the linear model of count comparison only for the groups of interest.
-```{r, fig.height=8, fig.width=10}
-condition <- c("I","I","II")
-names(condition) <- c("stage_1_2","stage_1_3","stage_2_3")
-
-p.list <- list()
-for (i in c(data_type,"cello1","cello2")) {
-    
-    if(grepl("cello",i)){
-      abundances <- cello_dat %>%
-        select(contains(i))
-      abundances <- t(abundances)
-      colnames(abundances) <- cello_dat$immucan_id
-    } else {
-      abundances <- dat %>%
-        select(contains(i)) %>%
-        filter(complete.cases(.))
-      abundances <- t(abundances)
-      colnames(abundances) <- dat %>%
-        select(contains(i),immucan_id) %>%
-        filter(complete.cases(.)) %>%
-        pull(immucan_id)
-    }
-    anno <- traits
-    
-    # remove patients without TMB info from the abundance data
-    abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
-  
-  meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-  Size <- factor(meta[,"simple_stage"])
-  meta$Size <- Size
-  
-  # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
-  y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-  design <- model.matrix(~0+group,data = y.ab$samples)
-  colnames(design) <- levels(y.ab$samples$group)
-  # we do not fit a trend 
-  y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-  y.ab$common.dispersion
-  #plotBCV(y.ab,pch = 5)
-  
-  # we only compare the diff abundance for Adeno vs Sqam.
-  fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-  
-  
-  fit_1_2 <- glmLRT(glmfit = fit.ab,contrast = c(-1,1,0,0))
-  fit_1_3 <- glmLRT(glmfit = fit.ab,contrast = c(-1,0,1,0))
-  fit_2_3 <- glmLRT(glmfit = fit.ab,contrast = c(0,-1,1,0))
-  res_list <- list(fit_1_2,fit_1_3,fit_2_3)
-  
-  cur_list <- lapply(res_list,function(x){
-    sig_dat <- x$table
-    sig_dat$celltypes <- rownames(sig_dat)
-    sig_dat$comparison <- gsub("Size","",x$comparison)
-    return(sig_dat)
-  })
-  
-  p.list[[i]] <- do.call(rbind,cur_list)
-}   
-
-cur_dat <- do.call(rbind,p.list)
-cur_dat <- cur_dat %>%
-  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = ifelse(comparison == "-1*I 1*II","stage_2_over_1","stage_3_over_1"),
-         cond = ifelse(comparison == "-1*II 1*III","stage_3_over_2",cond)) %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig = ifelse(PValue < 0.05 & logFC > 0, "UP_trend",NA),
-         sig = ifelse(FDR < 0.1 & logFC > 0, "UP",sig),
-         sig = ifelse(PValue < 0.05 & logFC < 0, "DOWN_trend",sig),
-         sig = ifelse(FDR < 0.1 & logFC < 0, "DOWN",sig),
-         sig = ifelse(is.na(sig),"not sig", sig),
-         ct_name = gsub("_density","",str_split_i(celltypes,"__",1)))
-
-to_show <- cur_dat %>%
-  filter(sig %in% c("DOWN", "UP")) %>%
-  pull(ct_name)
-# add the one from the linear model of densities to the plot
-to_show <- c(to_show,"CD4","CD8","CD8_GATA3_BCL2","CD8_Ki67","tumor_B2M_HLADR","Tumor_IDO1")
-
-cur_dat <- cur_dat %>%
-  filter(ct_name %in% to_show) %>%
-  mutate(celltypes = gsub("_abundance","",celltypes))
-
-## spatial cluster renaming
-cur_dat <- cur_dat %>%
-  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
-
-# get max and min fold change values
-max_up <- max(cur_dat$logFC)+1
-min_down <- min(cur_dat$logFC)-1
-
-# plot the data
-p <- cur_dat %>%
-  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  geom_point()+
-  theme_bw()+
-  scale_colour_gradientn(colours = c("blue","white","red"), 
-                         values = rescale(c(round(min_down),0,round(max_up))),
-                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  scale_size(range = c(1,4))+
-  new_scale_colour() +
-  geom_point(data = cur_dat,shape = 1,aes(size = -log10(PValue), col = sig), stroke =1)+
-  scale_color_manual(values = c("UP" = "darkred","UP_trend" = "red","DOWN" = "darkblue","UP_trend" = "blue","not sig" = "gray"), name = "stats")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
-        axis.text.y = element_text(size = 10),
-        legend.text = element_text(size = 10),
-        legend.title = element_text(size = 10),
-        axis.title.y = element_blank(),
-        plot.margin = unit(c(.1, .5, .5, .5), "cm"),
-        legend.position = "bottom")+
-  labs(x = "Feature")
-p
-
-# ggsave(filename = paste0(out_folder,"diff_abundance_stage.pdf"),
-#        plot = p,
-#        device = "pdf",
-#        width = 7,
-#        height =4)
-```
-
-
-## stages for LUAD  only
-not in paper
-here we will estimate the dispersion across the whole data set and then do the linear model of count comparison only for the groups of interest.
-```{r, fig.height=8, fig.width=10}
-condition <- c("I","I","II")
-names(condition) <- c("stage_1_2","stage_1_3","stage_2_3")
-
-p.list <- list()
-for (i in c(data_type,"cello1","cello2")) {
-    
-    if(grepl("cello",i)){
-      abundances <- cello_dat %>%
-        select(contains(i))
-      abundances <- t(abundances)
-      colnames(abundances) <- cello_dat$immucan_id
-    } else {
-      abundances <- dat %>%
-        select(contains(i)) %>%
-        filter(complete.cases(.))
-      abundances <- t(abundances)
-      colnames(abundances) <- dat %>%
-        select(contains(i),immucan_id) %>%
-        filter(complete.cases(.)) %>%
-        pull(immucan_id)
-    }
-    anno <- traits %>%
-      filter(simple_histology == "Adenocarcinoma")
-    
-    # remove patients without TMB info from the abundance data
-    abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
-  
-  meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-  Size <- factor(meta[,"simple_stage"])
-  meta$Size <- Size
-  
-  # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
-  y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-  design <- model.matrix(~0+group,data = y.ab$samples)
-  colnames(design) <- levels(y.ab$samples$group)
-  # we do not fit a trend 
-  y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-  y.ab$common.dispersion
-  #plotBCV(y.ab,pch = 5)
-  
-  # we only compare the diff abundance for Adeno vs Sqam.
-  fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-  
-  
-  fit_1_2 <- glmLRT(glmfit = fit.ab,contrast = c(-1,1,0,0))
-  fit_1_3 <- glmLRT(glmfit = fit.ab,contrast = c(-1,0,1,0))
-  fit_2_3 <- glmLRT(glmfit = fit.ab,contrast = c(0,-1,1,0))
-  res_list <- list(fit_1_2,fit_1_3,fit_2_3)
-  
-  cur_list <- lapply(res_list,function(x){
-    sig_dat <- x$table
-    sig_dat$celltypes <- rownames(sig_dat)
-    sig_dat$comparison <- gsub("Size","",x$comparison)
-    return(sig_dat)
-  })
-  
-  p.list[[i]] <- do.call(rbind,cur_list)
-}   
-
-cur_dat <- do.call(rbind,p.list)
-cur_dat <- cur_dat %>%
-  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = ifelse(comparison == "-1*I 1*II","stage_2_over_1","stage_3_over_1"),
-         cond = ifelse(comparison == "-1*II 1*III","stage_3_over_2",cond)) %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         sig = ifelse(PValue < 0.05 ,TRUE,FALSE),
-         direction = ifelse(logFC > 0 ,"up", "down"),
-         ct_name = gsub("_abundance","",str_split_i(celltypes,"__",1)))
-
-to_show <- cur_dat %>%
-  filter(sig == TRUE) %>%
-  pull(ct_name)
-# add the one from the linear model of densities to the plot
-to_show <- c(to_show,"CD4","CD8","CD8_GATA3_BCL2","CD8_Ki67","Vasculature","Tumor_IDO1")
-
-cur_dat <- cur_dat %>%
-  filter(ct_name %in% to_show) %>%
-  mutate(celltypes = gsub("_abundance","",celltypes))
-
-## spatial cluster renaming
-cur_dat <- cur_dat %>%
-  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
-
-# get max and min fold change values
-max_up <- max(cur_dat$logFC)+1
-min_down <- min(cur_dat$logFC)-1
-
-# plot the data
-p <- cur_dat %>%
-  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  geom_point()+
-  theme_bw()+
-  scale_colour_gradientn(colours = c("blue","white","red"), 
-                         values = rescale(c(round(min_down),0,round(max_up))),
-                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  scale_size(range = c(1,4))+
-  new_scale_colour() +
-  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =1)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "p-value < 0.1")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
-        axis.text.y = element_text(size = 10),
-        legend.text = element_text(size = 10),
-        legend.title = element_text(size = 10),
-        axis.title.y = element_blank(),
-        plot.margin = unit(c(.1, .5, .5, .5), "cm"),
-        legend.position = "bottom")+
-  labs(x = "Feature")
-p
-```
-
-## stages for LUSC  only
-here we will estimate the dispersion across the whole data set and then do the linear model of count comparison only for the groups of interest.
-```{r, fig.height=8, fig.width=10}
-condition <- c("I","I","II")
-names(condition) <- c("stage_1_2","stage_1_3","stage_2_3")
-
-p.list <- list()
-for (i in c(data_type,"cello1","cello2")) {
-    
-    if(grepl("cello",i)){
-      abundances <- cello_dat %>%
-        select(contains(i))
-      abundances <- t(abundances)
-      colnames(abundances) <- cello_dat$immucan_id
-    } else {
-      abundances <- dat %>%
-        select(contains(i)) %>%
-        filter(complete.cases(.))
-      abundances <- t(abundances)
-      colnames(abundances) <- dat %>%
-        select(contains(i),immucan_id) %>%
-        filter(complete.cases(.)) %>%
-        pull(immucan_id)
-    }
-    anno <- traits %>%
-      filter(simple_histology == "Squamous cell carcinoma")
-    
-    # remove patients without TMB info from the abundance data
-    abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
-  
-  meta <- as.data.frame(anno)[match(colnames(abundances),anno$immucan_id),]
-  Size <- factor(meta[,"simple_stage"])
-  meta$Size <- Size
-  
-  # here we generate the design matrix across all histologies and then also estimate the dispersion across all histologies.
-  y.ab <- DGEList(abundances, samples=meta, group = meta$Size)
-  design <- model.matrix(~0+group,data = y.ab$samples)
-  colnames(design) <- levels(y.ab$samples$group)
-  # we do not fit a trend 
-  y.ab <- estimateDisp(y.ab, design, trend.method = "none")
-  y.ab$common.dispersion
-  #plotBCV(y.ab,pch = 5)
-  
-  # we only compare the diff abundance for Adeno vs Sqam.
-  fit.ab <- glmFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
-  
-  
-  fit_1_2 <- glmLRT(glmfit = fit.ab,contrast = c(-1,1,0,0))
-  fit_1_3 <- glmLRT(glmfit = fit.ab,contrast = c(-1,0,1,0))
-  fit_2_3 <- glmLRT(glmfit = fit.ab,contrast = c(0,-1,1,0))
-  res_list <- list(fit_1_2,fit_1_3,fit_2_3)
-  
-  cur_list <- lapply(res_list,function(x){
-    sig_dat <- x$table
-    sig_dat$celltypes <- rownames(sig_dat)
-    sig_dat$comparison <- gsub("Size","",x$comparison)
-    return(sig_dat)
-  })
-  
-  p.list[[i]] <- do.call(rbind,cur_list)
-}   
-
-cur_dat <- do.call(rbind,p.list)
-cur_dat <- cur_dat %>%
-  mutate(tech = gsub("_abundance","",str_split_i(celltypes,"__",2)),
-         cond = ifelse(comparison == "-1*I 1*II","stage_2_over_1","stage_3_over_1"),
-         cond = ifelse(comparison == "-1*II 1*III","stage_3_over_2",cond)) %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(PValue,method = "BH"),
-         sig_overall = ifelse(FDR < 0.1 ,TRUE,FALSE),
-         sig = ifelse(PValue < 0.1 ,TRUE,FALSE),
-         direction = ifelse(logFC > 0 ,"up", "down"),
-         ct_name = gsub("_abundance","",str_split_i(celltypes,"__",1)))
-
-to_show <- cur_dat %>%
-  filter(sig_overall == TRUE) %>%
-  pull(ct_name)
-# add the one from the linear model of densities to the plot
-to_show <- c(to_show,"CD4","CD8","CD8_GATA3_BCL2","CD8_Ki67","Vasculature","Tumor_IDO1")
-
-cur_dat <- cur_dat %>%
-  filter(ct_name %in% to_show) %>%
-  mutate(celltypes = gsub("_abundance","",celltypes))
-
-## spatial cluster renaming
-cur_dat <- cur_dat %>%
-  mutate(celltypes = gsub(pattern = "_cello",replacement = "IMC",x = celltypes))
-
-# get max and min fold change values
-max_up <- max(cur_dat$logFC)+1
-min_down <- min(cur_dat$logFC)-1
-
-# plot the data
-p <- cur_dat %>%
-  ggplot(aes(x=celltypes, y = cond,col = logFC, size= -log10(PValue)))+
-  geom_point()+
-  theme_bw()+
-  scale_colour_gradientn(colours = c("blue","white","red"), 
-                         values = rescale(c(round(min_down),0,round(max_up))),
-                         guide = "colorbar", limits=c(round(min_down),round(max_up)))+
-  scale_size(range = c(1,4))+
-  new_scale_colour() +
-  geom_point(data = cur_dat %>% filter(sig == TRUE),shape = 1,aes(size = -log10(PValue), col = sig), stroke =1)+
-  scale_color_manual(values = c("TRUE" = "black","FALSE" = "white"), name = "p-value < 0.1")+
-  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
-        axis.text.y = element_text(size = 10),
-        legend.text = element_text(size = 10),
-        legend.title = element_text(size = 10),
-        axis.title.y = element_blank(),
-        plot.margin = unit(c(.1, .5, .5, .5), "cm"),
-        legend.position = "bottom")+
-  labs(x = "Feature")
-p
-```
-
-
-#  to be deleted -  S3C linear regression for stage for LUSC
-
-```{r, fig.width=10}
-library(purrr)
-library(broom)
-
-sigs <- dens_dat %>%
-  pivot_longer(-immucan_id) %>%
-    left_join(clin_dat,"immucan_id") %>%
-  filter(simple_histology == "Squamous cell carcinoma") %>%
-  select(immucan_id,name, value,simple_stage) %>%
-  mutate(stage = ifelse(simple_stage == "I",1,NA),
-         stage = ifelse(simple_stage == "II",2,stage),
-         stage = ifelse(simple_stage == "III",3,stage),
-         stage = ifelse(simple_stage == "IV",4,stage),
-         stage = as.numeric(as.factor(stage))) %>%
-  filter(stage != 4) %>%
-  group_by(name) %>%
-  nest() %>%
-  mutate(model = map(data, ~ lm(value ~ stage, data = .x)),
-         summary = map(model, broom::tidy)) %>%
-  select(name, summary) %>%
-  unnest(c(summary)) %>%
-  filter(term == "stage") %>%
-  mutate(tech = str_split_i(name,"__",2)) %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(p = p.value,method = "BH"),
-         sig_p = ifelse(p.value < 0.05,TRUE, FALSE),
-         sig_fdr = ifelse(FDR < 0.1,TRUE, FALSE))
-
-summary_dat <- sigs %>%
-  filter(sig_p == TRUE) %>%
-  #filter(grepl("CD8_GATA3_BCL2|^CD8_density|CD8_Ki67_density|CD8_TCF7_density|Tumor_IDO1",name)) %>%
-  mutate(y_position = 1000,
-         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
-  ungroup() %>%
-  as.data.frame()
-
-p2 <- dens_dat %>%
-  pivot_longer(-immucan_id) %>%
-  mutate(tech = str_split_i(name,"__",2)) %>%
-  left_join(clin_dat,"immucan_id") %>%
-  filter(simple_histology == "Squamous cell carcinoma") %>%
-  select(immucan_id,name, value,simple_stage, tech) %>%
-  mutate(stage = ifelse(simple_stage == "I",1,NA),
-         stage = ifelse(simple_stage == "II",2,stage),
-         stage = ifelse(simple_stage == "III",3,stage),
-         stage = ifelse(simple_stage == "IV",4,stage),
-         stage = as.numeric(as.factor(stage)),
-         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
-  filter(name %in% summary_dat$name,
-         stage != 4) %>%
-  ggplot(aes(x = name,y = log10(value+1),fill=as.factor(stage))) +
-  geom_boxplot(outliers = FALSE)+
-  geom_jitter(aes(col = as.factor(stage)),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
-  scale_fill_manual(values = alpha(c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"),alpha = 0.6))+
-  scale_color_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
-  theme_bw()+
-  theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust = 1),
-        axis.title = element_blank())+
-  guides(fill=guide_legend(title="Stage"),
-         col=guide_legend(title="Stage"))+
-  geom_text(data = summary_dat, aes(x = name,y=4.2,label = paste0("fdr: ",sig_fdr)), inherit.aes = FALSE,size = 3)+
-  geom_text(data = summary_dat, aes(x = name,y=4.6,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE, size = 3)+
-  coord_cartesian(ylim = c(0,4.6))+
-  ggtitle(label = "LUSC")
-
-p2
-
-ggsave(filename = paste0(out_folder,"S3C_linear_model_cell_type_densitie_LUSC_for_stages.pdf"),
-       plot = last_plot(),
-       device = "pdf",
-       width = 15,
-       height = 3.75)
-
-# reporting n
-dens_dat %>%
-  pivot_longer(-immucan_id) %>%
-    left_join(clin_dat,"immucan_id") %>%
-  filter(simple_histology == "Squamous cell carcinoma") %>%
-  select(immucan_id,name, value,simple_stage) %>%
-  distinct(immucan_id)
-```
-
-## major cell types changes
-not in paper
-```{r, fig.width=10}
-library(purrr)
-library(broom)
-d1 <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/celltypes_density_dat_p1.csv"))
-d2 <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/celltypes_density_dat_p2.csv")) 
-
-colnames(d1) <- c("immucan_id",paste0(colnames(d1)[-1],"__IMC1"))
-colnames(d2) <- c("immucan_id",paste0(colnames(d2)[-1],"__IMC2"))
-d1
-d2
-
-dens_dat <- left_join(d1,d2,"immucan_id")
-
-sigs <- dens_dat %>%
-  pivot_longer(-immucan_id) %>%
-    left_join(clin_dat,"immucan_id") %>%
-  filter(simple_histology == "Squamous cell carcinoma") %>%
-  select(immucan_id,name, value,simple_stage) %>%
-  mutate(stage = ifelse(simple_stage == "I",1,NA),
-         stage = ifelse(simple_stage == "II",2,stage),
-         stage = ifelse(simple_stage == "III",3,stage),
-         stage = ifelse(simple_stage == "IV",4,stage),
-         stage = as.numeric(as.factor(stage))) %>%
-  filter(stage != 4) %>%
-  group_by(name) %>%
-  nest() %>%
-  mutate(model = map(data, ~ lm(value ~ stage, data = .x)),
-         summary = map(model, broom::tidy)) %>%
-  select(name, summary) %>%
-  unnest(c(summary)) %>%
-  filter(term == "stage") %>%
-  mutate(tech = str_split_i(name,"__",2)) %>%
-  group_by(tech) %>%
-  mutate(FDR = p.adjust(p = p.value,method = "BH"),
-         sig_p = ifelse(p.value < 0.05,TRUE, FALSE),
-         sig_fdr = ifelse(FDR < 0.1,TRUE, FALSE))
-
-summary_dat <- sigs %>%
-  filter(sig_p == TRUE) %>%
-  #filter(grepl("CD8_GATA3_BCL2|^CD8_density|CD8_Ki67_density|CD8_TCF7_density|Tumor_IDO1",name)) %>%
-  mutate(y_position = 1000,
-         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
-  ungroup() %>%
-  as.data.frame()
-
-p2 <- dens_dat %>%
-  pivot_longer(-immucan_id) %>%
-  mutate(tech = str_split_i(name,"__",2)) %>%
-  left_join(clin_dat,"immucan_id") %>%
-  filter(simple_histology == "Squamous cell carcinoma") %>%
-  select(immucan_id,name, value,simple_stage, tech) %>%
-  mutate(stage = ifelse(simple_stage == "I",1,NA),
-         stage = ifelse(simple_stage == "II",2,stage),
-         stage = ifelse(simple_stage == "III",3,stage),
-         stage = ifelse(simple_stage == "IV",4,stage),
-         stage = as.numeric(as.factor(stage)),
-         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
-  filter(name %in% summary_dat$name,
-         stage != 4) %>%
-  ggplot(aes(x = name,y = log10(value+1),fill=as.factor(stage))) +
-  geom_boxplot(outliers = FALSE)+
-  geom_jitter(aes(col = as.factor(stage)),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
-  scale_fill_manual(values = alpha(c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"),alpha = 0.6))+
-  scale_color_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
-  theme_bw()+
-  theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust = 1),
-        axis.title = element_blank())+
-  guides(fill=guide_legend(title="Stage"),
-         col=guide_legend(title="Stage"))+
-  geom_text(data = summary_dat, aes(x = name,y=4.2,label = paste0("fdr: ",sig_fdr)), inherit.aes = FALSE,size = 3)+
-  geom_text(data = summary_dat, aes(x = name,y=4.6,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE, size = 3)+
-  coord_cartesian(ylim = c(0,4.6))+
-  ggtitle(label = "LUSC")
-
-p2
-
-```
-
-# S3E Smoking
+# S4E Smoking
 ## RNA
 
 ### RNA modules never vs current
@@ -1064,17 +406,18 @@ p
 ggsave(plot = p4+
          theme(legend.position = "bottom", legend.box = "vertical")+
            guides(color = guide_legend(nrow = 2, byrow = TRUE),
-         size = guide_legend(nrow = 2, byrow = TRUE)), path = out_folder,filename = "RNA_modules_for_smoking.pdf",width = 8, height = 8,device = cairo_pdf)
+         size = guide_legend(nrow = 2, byrow = TRUE)), path = out_folder,filename = "S4E_RNA_modules_for_smoking.pdf",width = 8, height = 8,device = cairo_pdf)
 ```
 
-# S3F inflammation in smoking
+# S4F inflammation in smoking
 
 ```{r}
 library(org.Hs.eg.db)
 library(AnnotationDbi)
 library(msigdbr)
+library(singscore)
 
-rna_mat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_mat.rds")
+rna_mat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_mat_tpm.rds")
 
 
 # ── gene signatures ────────────────────────────────────────────────────
@@ -1118,7 +461,7 @@ rna_for_score <- t(rna_mat)
 
 # Filter gene sets to genes present in the RNA-seq matrix
 all_gs <- lapply(all_gs, function(g) intersect(g, rownames(rna_for_score)))
-all_gs <- all_gs[sapply(all_gs, length) >= 5]
+all_gs <- all_gs[sapply(all_gs, length) >= 4]
 
 
 
@@ -1143,7 +486,7 @@ rownames(rna_scores) <- NULL
 
 dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
   filter(LUAD_vs_LUSC == "Adenocarcinoma") %>%
-  pivot_longer(cols = 1:13)
+  pivot_longer(cols = 1:length(all_gs))
 
 result <- lollipop_plot(dat_z, "never_vs_current_smoker", "Current smoker", "Non-smoker", col_A = "blue", col_B = "cyan", zscore_data = TRUE)
 p <- result$plot+
@@ -1157,7 +500,7 @@ p <- result$plot+
   guides(color = guide_legend(nrow = 2, byrow = TRUE),
          size = guide_legend(nrow = 2, byrow = TRUE))
 
-
+p
 ```
 
 ```{r, fig.height=10, fig.width=10}
@@ -1171,11 +514,11 @@ p <- result$plot+
         legend.title = element_text(size = 18),
         title = element_text(size = 18))
 p
-ggsave(plot = p, path = out_folder,filename = "alternative_inflammation.pdf",width = 10, height = 6 ,device = cairo_pdf)
+ggsave(plot = p, path = out_folder,filename = "S4F_alternative_inflammation.pdf",width = 10, height = 6 ,device = cairo_pdf)
 
 ```
 
-# S3G tumor types for smoking
+# S4G tumor types for smoking
 
 ```{r}
 scores <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/tumor_subtype_scores.csv")
@@ -1210,13 +553,13 @@ p <- ggplot(plot_data, aes(x = smoking_status, y = value, fill = smoking_status)
   xlab("Smoking status") +
   ylab("Tumor type score")
 
-
-ggsave(plot = p, path = out_folder,filename = "tumor_types_for_smoking.pdf",width = 5, height = 3.5,device = cairo_pdf)
+p
+ggsave(plot = p, path = out_folder,filename = "S4G_tumor_types_for_smoking.pdf",width = 5, height = 3.5,device = cairo_pdf)
 
 ```
 
 
-# S3D diff abundance smoking cellohood - to be deleted
+# diff abundance smoking cellohood
 
 ```{r, fig.height=15, fig.width=25}
 condition <- c("Non-smoker","Non-smoker","Ex-smoker")
@@ -1458,17 +801,11 @@ p <- cur_dat %>%
   guides(color = guide_legend(nrow = 2),  
          shape = guide_legend(nrow = 1))
 p
-
-ggsave(filename = paste0(out_folder,"S3D_diff_abundance_smoking.pdf"),
-       plot = p,
-       device = "pdf",
-       width = 10,
-       height = 6)
 ```
 
 
 
-# S3H mutation signatures
+# S4H mutation signatures
 
 ```{r}
 # Merge with mutational signatures
@@ -1531,7 +868,7 @@ p <- ggplot(data_to_plot, aes(x = smoking_status, y = feature, fill=smoking_stat
   coord_cartesian(ylim = c(0,1800))
 
 p
-ggsave(filename = paste0(out_folder,"S3E_mutation_signatures_for_smoking.pdf"),
+ggsave(filename = paste0(out_folder,"S4H_mutation_signatures_for_smoking.pdf"),
        plot = p,
        device = "pdf",
        width = 6,
@@ -1539,7 +876,7 @@ ggsave(filename = paste0(out_folder,"S3E_mutation_signatures_for_smoking.pdf"),
 
 ```
 
-# 3I imaging modules for mutation signatures
+# S4I imaging modules for mutation signatures
 
 ```{r}
 cur_plot <- anno_WES %>%
@@ -1575,7 +912,7 @@ p <- mat %>%
         axis.title.y = element_text(size = 16),
         axis.title.x = element_text(size = 16),
         legend.title = element_text(size = 16))
-pdf(file = paste0(out_folder,"3I_imaging_modules_correlation_SBS4_SBS92.pdf"), width = 4, height = 5)
+pdf(file = paste0(out_folder,"S4I_imaging_modules_correlation_SBS4_SBS92.pdf"), width = 4, height = 5)
 p
 dev.off()
 plot(cur_plot$SBS4_SBS92, cur_plot$Medium_inflamed)

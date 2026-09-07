@@ -46,9 +46,9 @@ dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.
 clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/clinical.csv")
 traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
 
-modules <- as.data.frame(readRDS( "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/patient_imaging_meta_cluster_scores.rds"))
+modules <- as.data.frame(readRDS( "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/patient_imaging_meta_cluster_scores_tpm.rds"))
 
-rna <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_scores.rds")
+rna <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_scores_tpm.rds")
 rna$immucan_id  <- rownames(rna)
 rownames(rna) <- NULL
 
@@ -65,7 +65,6 @@ hist_col_3 = setNames(c("blue","orange", "gray40"),c("LUAD","LUSC","Other"))
 
 # calculate tissue area from IF1
 ```{r chunk-4, fig.height = 20, fig.width = 20}
-# ---- the actual per-file work, isolated so a native crash only kills this call ----
 process_one_file <- function(x) {
   suppressPackageStartupMessages({
     library(SingleCellExperiment)
@@ -165,7 +164,9 @@ IF1 <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_
 # B cell patches
 
 ## caculate B cell patch summaries
-note: the code is not evaluated automatically as the output is saved. we will keep these files also at their original location to avoid duplicated data
+NOTE: the code is not evaluated automatically as the output is saved. we will
+keep these files also at their original location to avoid duplicated data
+
 ```{r, fig.height=20, fig.width=20, eval=FALSE}
 library(BiocParallel)
 cur_files <- list.files(paste0(old_mount"IF/IF1/tsv"), 
@@ -539,7 +540,7 @@ ggsave(filename = paste0(out_folder,"S5F_patch_size.pdf"),
 
 # S5G T and B cell proportions in Patches by location
 composition of outside TLS
-```{r, fig.height=30, fig.width=10}
+```{r, fig.height=6, fig.width=6}
 p <- TLS_summary %>%
   as.data.frame() %>%
   filter(name %in% c("B","T")) %>%
@@ -590,7 +591,7 @@ imc_mat   <- cur_mod %>% dplyr::select(-immucan_id) %>% as.matrix()
 gc_mat <- cur_dat %>% ungroup() %>% dplyr::select(-immucan_id)  %>% as.matrix()
 
 imc_cols   <- colnames(imc_mat)
-gc_cols <- colnames(gc_mat)
+gc_cols <- colnames(gc_mat)[1:4]
 
 cat("IMC features: ",   length(imc_cols),   "\n")
 cat("TLS and GC: ", length(gc_cols), "\n")
@@ -665,9 +666,9 @@ print(cor_df %>%
 
 ```{r}
 plot_df <- cor_df %>%
-    mutate(label = case_when(padj_BH < 0.001 ~ "***",
-                           padj_BH < 0.01  ~ "**",
-                           padj_BH < 0.1  ~ "*",
+    mutate(label = case_when(pval < 0.001 & padj_BH < 0.1 ~ "***",
+                           pval < 0.01  & padj_BH < 0.1 ~ "**",
+                           pval < 0.05  & padj_BH < 0.1 ~ "*",
                            TRUE        ~ "")) %>%
   mutate(gc_feature = case_when(gc_feature == "outside" ~ "B patch outside tumor",
                                 gc_feature == "in_tumor" ~ "B patch inside tumor",
@@ -676,6 +677,7 @@ plot_df <- cor_df %>%
 
 
 lim <- max(abs(plot_df$rho), na.rm = TRUE)
+
 
 p <- ggplot(plot_df, aes(gc_feature, imc_feature, fill = rho)) +
   geom_tile(colour = "white", linewidth = 0.6) +
@@ -691,7 +693,8 @@ p <- ggplot(plot_df, aes(gc_feature, imc_feature, fill = rho)) +
   labs(x = NULL, y = NULL) +
   theme_minimal(base_size = 10) +
   theme(panel.grid = element_blank(),
-        axis.text.x = element_text(angle = 45, hjust = 1))
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.caption = element_text(hjust = 0, size = 8, color = "grey30"))
 
 p
 
@@ -721,7 +724,7 @@ imc_mat   <- cur_mod %>% dplyr::select(-immucan_id) %>% as.matrix()
 gc_mat <- cur_dat %>% ungroup() %>% dplyr::select(-immucan_id)  %>% as.matrix()
 
 imc_cols   <- colnames(imc_mat)
-gc_cols <- colnames(gc_mat)
+gc_cols <- colnames(gc_mat)[1:4]
 
 cat("IMC features: ",   length(imc_cols),   "\n")
 cat("TLS and GC: ", length(gc_cols), "\n")
@@ -796,9 +799,9 @@ print(cor_df %>%
 
 ```{r, fig.height=10, fig.width=5}
 plot_df <- cor_df %>%
-    mutate(label = case_when(padj_BH < 0.001 ~ "***",
-                           padj_BH < 0.01  ~ "**",
-                           padj_BH < 0.1  ~ "*",
+    mutate(label = case_when(pval < 0.001 & padj_BH < 0.1 ~ "***",
+                           pval < 0.01  & padj_BH < 0.1 ~ "**",
+                           pval < 0.05  & padj_BH < 0.1 ~ "*",
                            TRUE        ~ "")) %>%
   mutate(gc_feature = case_when(gc_feature == "outside" ~ "B patch outside tumor",
                                 gc_feature == "in_tumor" ~ "B patch inside tumor",
@@ -826,8 +829,8 @@ p <- ggplot(plot_df, aes(gc_feature, imc_feature, fill = rho)) +
         axis.text.y = element_text(size = 14),
         legend.text = element_text(size = 14),
         legend.title = element_text(size = 14))
-
-ggsave(filename = paste0(out_folder,"S5H_RNA_module_TLS_correlation.pdf"),
+p
+ggsave(filename = paste0(out_folder,"S5I_RNA_module_TLS_correlation.pdf"),
        plot = p,
        device = "pdf",
        width = 7,
@@ -840,10 +843,6 @@ ggsave(filename = paste0(out_folder,"S5H_RNA_module_TLS_correlation.pdf"),
 comparison of TMB, TPS, stage, histology, driver mutations with TLS, etc
 
 ```{r, fig.height=10, fig.width=5}
-dat
-traits
-
-
 cor_cols   <- colnames(traits)[grepl(c("TPS$|TMB$"), colnames(traits))]
 bin_cols <- c("TPS_score","TMB_score","age_dicho", "gender","stage_1_2","stage_1_3","stage_2_3","never_vs_current_smoker",
                 "never_vs_Ex_smoker","current_vs_Ex_smoker", "N0_vs_Nx","M0_vs_Mx", "long_survivors","T1_vs_Tother")
@@ -920,9 +919,9 @@ lim <- max(abs(cor_df$r_rb), na.rm = TRUE)
 
 cor_df$y_label <- y_labels[cor_df$imc_feature]
 p <- cor_df %>%
-  mutate(label = case_when(padj_BH < 0.001 ~ "***",
-                           padj_BH < 0.01  ~ "**",
-                           padj_BH < 0.1  ~ "*",
+    mutate(label = case_when(p_value < 0.001 & padj_BH < 0.1 ~ "***",
+                           p_value < 0.01  & padj_BH < 0.1 ~ "**",
+                           p_value < 0.05  & padj_BH < 0.1 ~ "*",
                            TRUE        ~ "")) %>%
   
   ggplot(aes(gc_feature, y_label, fill = r_rb)) +

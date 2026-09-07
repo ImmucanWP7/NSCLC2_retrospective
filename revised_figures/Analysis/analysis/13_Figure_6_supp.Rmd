@@ -1,5 +1,5 @@
 ---
-title: "Figure S5"
+title: "Figure S6"
 author: "Daniel Schulz"
 date: "2025-03-10"
 output: html_document
@@ -7,6 +7,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+options(bitmapType = "cairo")
 ```
 
 ```{r}
@@ -23,12 +24,15 @@ library(ggrepel)
 library(survminer)
 library(survivalAnalysis)
 library(survival)
+library(rstatix)
+
+source("../code/bplot_functions.R")
 ```
 
 
 ```{r}
 mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
-out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/Figure_5_supp/"
+out_folder <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_6_supp/"
 
 if (!dir.exists(out_folder)) {
   dir.create(out_folder)
@@ -42,10 +46,14 @@ we will load the data we generated at the beginning of figure 2
 dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/abundances_dat.rds"))
 dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
 cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
-clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
+clin_dat <- read.csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/clinical.csv")
 int_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/interaction_dat.rds"))
 traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
 
+rna <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_scores_tpm.rds")
+rna$immucan_id  <- rownames(rna)
+rownames(rna) <- NULL
+rna_module_names <- colnames(rna)[!grepl("immucan_id", colnames(rna))]
 # variables
 data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2))
 
@@ -102,7 +110,11 @@ p1 <- df1 %>%
   scale_color_manual(values = c("Adenocarcinoma" = "blue", "Squamous cell carcinoma" = "orange"))
 
 # Kaplan Meier plot for EGFR since no patients die
-surv_fit <- survfit(Surv(time_to_event, censoring) ~ EGFR, data = traits)
+COSMIC_EGFR<- c("LUNG-NSCLC2-0564", "LUNG-NSCLC2-0564", "LUNG-NSCLC2-0593", "LUNG-NSCLC2-0600", "LUNG-NSCLC2-0624" ,"LUNG-NSCLC2-0633" ,"LUNG-NSCLC2-0641" ,"LUNG-NSCLC2-0659" ,"LUNG-NSCLC2-0659","LUNG-NSCLC2-0689" ,"LUNG-NSCLC2-0690", "LUNG-NSCLC2-0704", "LUNG-NSCLC2-0712", "LUNG-NSCLC2-0736" ,"LUNG-NSCLC2-0743")
+
+cur_traits <- traits %>%
+  mutate(EGFR = ifelse(immucan_id %in% COSMIC_EGFR, TRUE, FALSE))
+surv_fit <- survfit(Surv(time_to_event, censoring) ~ EGFR, data = cur_traits)
 
 p2 <- ggsurvplot(surv_fit, data = traits %>% filter(simple_histology == "Adenocarcinoma"), risk.table = TRUE, pval = TRUE,palette = c("red","blue"))
 p2 <- p2$plot+
@@ -117,15 +129,19 @@ p
 ```
 
 
-# S5A driver mutation enrichment in histology
+# S6A driver mutation enrichment in histology
 
 ```{r, fig.height=8}
 cur_traits <- traits %>% select("LUAD_vs_LUSC")
 condition <- c("Adenocarcinoma")
 
+
+traits <- traits %>%
+  mutate(KRAS_only = KRAS & !STK11 & !KEAP1,
+         KRAS_co   = KRAS & (STK11 | KEAP1))
 names(condition) <- colnames(cur_traits)
 plots_list <- list()
-for(j in c("TP53","KRAS","EGFR","STK11","PIK3CA","NF1","KEAP1", "CDKN2A")){
+for(j in c("TP53","KRAS_co", "KRAS_only","EGFR","STK11","PIK3CA","NF1","KEAP1", "CDKN2A")){
   p.list <- list()
   l.list <- list()
   for (i in names(condition)) {
@@ -150,7 +166,7 @@ for(j in c("TP53","KRAS","EGFR","STK11","PIK3CA","NF1","KEAP1", "CDKN2A")){
   # generate annotation vector:
   anno_vec <- c("LUSC_vs_LUAD")
   out$annotation = anno_vec
-  out[,"mutation"] <- paste0(j,"mut")
+  out[,"mutation"] <- paste0(j,"_mut")
   plots_list[[j]]<- out 
 }
 
@@ -193,14 +209,14 @@ p1 <- cur_dat %>%
         legend.position = "none")
 p1
 
-ggsave(filename = paste0(out_folder,"S5A_Driver_enrichment_in_histology.pdf"),
+ggsave(filename = paste0(out_folder,"S6A_Driver_enrichment_in_histology.pdf"),
        plot = p1,
        device = "pdf",
        width = 3,
        height = 1.5)
 ```
 
-# S5A enrichment of clinical in oncogenes
+# S6A enrichment of clinical in oncogenes
 
 ## LUAD
 ```{r, fig.height=8}
@@ -211,7 +227,7 @@ condition <- c("negative", "low","low", "Female","I","I","II","Non-smoker","Non-
 names(condition) <- colnames(cur_traits)
 plots_list <- list()
 cur_traits <- traits %>% filter(simple_histology == "Adenocarcinoma")
-for(j in c("TP53","KRAS","EGFR","STK11")){
+for(j in c("TP53","KRAS_co", "KRAS_only", "KRAS", "KEAP1","EGFR","STK11")){
   p.list <- list()
   l.list <- list()
   for (i in names(condition)) {
@@ -236,7 +252,7 @@ for(j in c("TP53","KRAS","EGFR","STK11")){
   # generate annotation vector:
   anno_vec <- c("TPSpos_vs_TPSneg","TMBhigh_vs_TMBlow","HighAge_vs_lowAge","Male_vs_Female","StageII_vs_I","StageIII_vs_I","StageIII_vs_II","Smoker_vs_neverSmoker","formerSmoker_vs_neverSmoker","Smoker_vs_formerSmoker","NodePos_vs_NodeNeg","MetPos_Vs_MetNeg")
   out$annotation = anno_vec
-  out[,"mutation"] <- paste0(j,"mut")
+  out[,"mutation"] <- paste0(j,"_mut")
   plots_list[[j]]<- out 
 }
 
@@ -309,7 +325,7 @@ for(j in c("TP53","PIK3CA", "CDKN2A")){
   # generate annotation vector:
   anno_vec <- c("TPSpos_vs_TPSneg","TMBhigh_vs_TMBlow","HighAge_vs_lowAge","Male_vs_Female","StageII_vs_I","StageIII_vs_I","StageIII_vs_II","Smoker_vs_formerSmoker","NodePos_vs_NodeNeg","MetPos_Vs_MetNeg")
   out$annotation = anno_vec
-  out[,"mutation"] <- paste0(j,"mut")
+  out[,"mutation"] <- paste0(j,"_mut")
   plots_list[[j]]<- out
 }
 
@@ -391,16 +407,287 @@ p <- cur_dat %>%
         legend.location = "plot")
 
 p
-p2 <- plot_grid(p1,p,ncol = 1, rel_heights = c(1,4))
+p2 <- plot_grid(p1,p,ncol = 1, rel_heights = c(1.2,4))
 p2
-ggsave(filename = paste0(out_folder,"S5A_driver_mutation_enrichment_in_clinical.pdf"),
+ggsave(filename = paste0(out_folder,"S6A_driver_mutation_enrichment_in_clinical.pdf"),
        plot = p2,
        device = "pdf",
        width = 6,
        height = 7)
 ```
 
-# S5B mean expression of markers across cell types and driver mutations
+
+# S6B Mutations RNA
+
+```{r, fig.height=6, fig.width=12}
+# ============================================================
+# TME vs. driver mutation status analysis - stratified by histology
+#
+# Assumes:
+#   - One row per patient/tumor
+#   - 8 TME measurement columns, already z-scored (continuous)
+#   - 6 binary (0/1) mutation columns: EGFR, KRAS, STK11, KEAP1, PIK3CA, CDKN2A
+#   - A histology column with values "LUAD" / "LUSC"
+#
+# WHY STRATIFY BY HISTOLOGY:
+# Histology is a major confounder here, not just an imbalance issue. EGFR,
+# KRAS, STK11, and KEAP1 are classic LUAD-enriched drivers and are expected
+# to be rare/near-absent in LUSC. PIK3CA occurs only once in the LUAD
+# samples in this cohort - with essentially zero variance there it cannot
+# be tested in LUAD at all, but occurs at usable frequency in LUSC. Rather
+# than adding histology as a simple covariate (which would not solve the
+# "one mutant sample" problem for PIK3CA in LUAD, and would force one model
+# structure onto two biologically different populations), the cleanest
+# approach is to run separate gene panels per histology:
+#   - LUAD: EGFR, KRAS, STK11, KEAP1, CDKN2A   (PIK3CA excluded - see above)
+#   - LUSC: CDKN2A, PIK3CA                      (EGFR/KRAS/STK11/KEAP1 excluded
+#                                                 - expected too rare in LUSC)
+# CDKN2A is analysed in both strata since it's not histology-restricted here.
+#
+# Implements the tiered comparison strategy, run separately within each
+# histology stratum where applicable:
+#   Tier 1: EGFR vs KRAS vs driver-negative (mutually exclusive backbone) - LUAD only
+#   Tier 2: within KRAS-mutant tumors, STK11/KEAP1 co-mutation stratification - LUAD only
+#   Tier 3: multivariate model per TME outcome, all mutations in that stratum's
+#           panel as covariates (LUAD panel includes KRAS:STK11 / KRAS:KEAP1
+#           interaction terms; LUSC panel has no interaction terms specified)
+#   Tier 4: simple univariate mut-vs-wt t-test per mutation, per TME outcome,
+#           disregarding all other mutations' status. Compared side-by-side
+#           against Tier 3 in a combined heatmap, per stratum.
+#
+# NOTE on CDKN2A: in NSCLC this is frequently inactivated by homozygous
+# deletion rather than point mutation. If your CDKN2A column is derived only
+# from small-variant VCF calls, it likely undercounts true CDKN2A loss unless
+# you've merged in copy-number data.
+# ============================================================
+
+library(tidyverse)
+library(broom)
+
+# data
+dat_z <- left_join(rna, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
+         EGFR = ifelse(EGFR == TRUE, 1,0),
+         KRAS = ifelse(KRAS == TRUE, 1,0),
+         STK11 = ifelse(STK11 == TRUE, 1,0),
+         KEAP1 = ifelse(KEAP1 == TRUE, 1,0),
+         PIK3CA = ifelse(PIK3CA == TRUE, 1,0),
+         CDKN2A = ifelse(CDKN2A == TRUE, 1, 0))
+
+# ---- 1. Config: EDIT these to match your actual column names ----
+tme_cols  <- rna_module_names
+histology_col  <- "LUAD_vs_LUSC"                              # expects values "LUAD" / "LUSC"
+mut_cols_luad  <- c("EGFR", "KRAS", "STK11", "KEAP1", "CDKN2A", "TP53")   # PIK3CA excluded: ~1 case in LUAD
+mut_cols_lusc  <- c("CDKN2A", "PIK3CA", "TP53")                            # EGFR/KRAS/STK11/KEAP1 excluded in LUSC
+min_group_n    <- 5   # minimum mutant (or wt) count required to test a gene in a stratum
+
+df<- dat_z %>%
+  dplyr::select(all_of(c(tme_cols,mut_cols_luad, mut_cols_lusc, histology_col))) %>%
+  filter(!is.na(STK11)) # we will remove two patients that have missing genomic information
+
+# sanity checks
+stopifnot(all(tme_cols %in% names(df)))
+stopifnot(histology_col %in% names(df))
+all_mut_cols <- union(mut_cols_luad, mut_cols_lusc)
+stopifnot(all(all_mut_cols %in% names(df)))
+df[all_mut_cols] <- lapply(df[all_mut_cols], as.integer)  # ensure 0/1 numeric
+
+cat("\n--- Histology counts ---\n")
+print(table(df[[histology_col]]))
+
+df_luad <- df %>% filter(.data[[histology_col]] == "LUAD")
+df_lusc <- df %>% filter(.data[[histology_col]] == "LUSC")
+
+cat(sprintf("\nLUAD n = %d, LUSC n = %d\n", nrow(df_luad), nrow(df_lusc)))
+
+# ---- 2. Helper functions ----
+
+# Drops a mutation from testing if it has fewer than min_group_n carriers
+# (or fewer than min_group_n wt), rather than letting t.test()/lm() error out
+# or silently return an unstable estimate.
+check_group_size <- function(data, mut_var, min_n = min_group_n) {
+  tab <- table(data[[mut_var]])
+  if (length(tab) < 2 || min(tab) < min_n) {
+    message(sprintf(
+      "  -> dropping %s: insufficient variation/group size (counts: %s)",
+      mut_var, paste(names(tab), tab, sep = "=", collapse = ", ")
+    ))
+    return(FALSE)
+  }
+  TRUE
+}
+
+
+run_tier4 <- function(data, tme_cols, mut_cols) {
+  valid_muts <- mut_cols[sapply(mut_cols, function(m) check_group_size(data, m))]
+  expand_grid(tme_var = tme_cols, mut_var = valid_muts) %>%
+    pmap_dfr(function(tme_var, mut_var) {
+      grp <- factor(data[[mut_var]], levels = c(0, 1), labels = c("wt", "mut"))
+      tt  <- t.test(data[[tme_var]] ~ grp)
+      diff_mut_minus_wt <- unname(tt$estimate["mean in group mut"] - tt$estimate["mean in group wt"])
+      tibble(tme_var = tme_var, mut_var = mut_var, estimate = diff_mut_minus_wt, p_value = tt$p.value)
+    }) %>%
+    group_by(mut_var) %>%
+    mutate(p_fdr = p.adjust(p_value, method = "BH")) %>%
+    ungroup() %>%
+    arrange(p_fdr)
+}
+
+# ---- 4. Tier 2 (LUAD only): within KRAS-mutant tumors, STK11/KEAP1 co-mutation ----
+kras_df_luad <- df_luad %>%
+  filter(KRAS == 1) %>%
+  mutate(co_mut = if_else(STK11 == 1 | KEAP1 == 1,
+                           "STK11_or_KEAP1_altered", "KRAS_only"))
+
+cat("\n--- [LUAD] Tier 2 group sizes (within KRAS-mutant tumors) ---\n")
+print(table(kras_df_luad$co_mut))
+
+tier2_results_luad <- map_dfr(tme_cols, function(tme) {
+  wt <- t.test(kras_df_luad[[tme]] ~ kras_df_luad$co_mut)
+  tibble(tme_var = tme, ttest_p = wt$p.value)
+})
+tier2_results_luad$fdr <- p.adjust(tier2_results_luad$ttest_p, method = "BH")
+cat("\n--- [LUAD] Tier 2: STK11/KEAP1 co-mutation effect within KRAS-mutant tumors ---\n")
+print(tier2_results_luad)
+
+# ---- 4b. Tier 2 visualization: KRAS-only vs STK11/KEAP1-altered, per TME score ----
+# Panels ordered by FDR (strongest hits first, e.g. Cold/Neutrophils) so the
+# STK11/KEAP1 "immune-cold" signature is easy to spot at a glance.
+kras_long_luad <- kras_df_luad %>%
+  dplyr::select(all_of(tme_cols), co_mut) %>%
+  pivot_longer(cols = all_of(tme_cols), names_to = "tme_var", values_to = "z_score")
+
+tme_order_tier2 <- tier2_results_luad %>% arrange(fdr) %>% pull(tme_var)
+kras_long_luad$tme_var <- factor(kras_long_luad$tme_var, levels = tme_order_tier2)
+
+tier2_sig_labels <- tier2_results_luad %>%
+  mutate(
+    tme_var = factor(tme_var, levels = tme_order_tier2),
+    label = case_when(
+      ttest_p < 0.001 & fdr < 0.1 ~ "***",
+      ttest_p < 0.01 & fdr < 0.1 ~ "**",
+      ttest_p < 0.05 & fdr < 0.1 ~ "*",
+      TRUE        ~ ""
+    )
+  )
+
+tier2_plot <- ggplot(kras_long_luad, aes(x = co_mut, y = z_score, fill = co_mut)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.6) +
+  geom_jitter(width = 0.15, size = 1, alpha = 0.5) +
+  facet_wrap(~tme_var, nrow = 2) +
+  geom_text(data = tier2_sig_labels, aes(x = 1.5, y = Inf, label = label),
+            inherit.aes = FALSE, vjust = 1.5, size = 3.5) +
+  scale_fill_manual(values = c("KRAS_only" = "grey70", "STK11_or_KEAP1_altered" = "firebrick")) +
+  theme_minimal() +
+  labs(
+    title = "KRAS-mutant LUAD: STK11/KEAP1 co-mutation vs. KRAS-only",
+    subtitle = "Labels show FDR stars where significant, else raw Wilcoxon p",
+    x = NULL, y = "TME z-score", fill = "Group"
+  ) +
+  theme(legend.position = "bottom")
+
+print(tier2_plot)
+#ggsave("tme_kras_costk11keap1_boxplot.png", tier2_plot, width = 9, height = 6, dpi = 300)
+
+# ---- 4c. Encode KRAS+STK11/KEAP1 co-mutation as its own predictor ----
+# split KRAS-mutant tumors into two
+# mutually exclusive, directly-plottable predictors:
+#   - KRAS_only:          KRAS-mutant, no STK11/KEAP1 alteration
+#   - KRAS_STK11KEAP1_co: KRAS-mutant WITH STK11 and/or KEAP1 alteration
+# STK11 and KEAP1 are left as-is (they still capture any STK11/KEAP1
+# mutation regardless of KRAS status).
+#
+
+df_luad <- df_luad %>%
+  mutate(
+    KRAS_only          = as.integer(KRAS == 1 & STK11 == 0 & KEAP1 == 0),
+    KRAS_co = as.integer(KRAS == 1 & (STK11 == 1 | KEAP1 == 1))
+  )
+
+# Check whether STK11/KEAP1 mutations occur meaningfully outside the KRAS-
+# mutant group. Tested this on synthetic data: if STK11/KEAP1 occur almost
+# exclusively within KRAS-mutant tumors (as expected from the literature),
+# keeping them as standalone predictors alongside KRAS_STK11KEAP1_co makes
+# them strongly collinear with it (VIF ~6-10 in the test), which *dilutes*
+# the co-mutation signal across three correlated terms instead of clarifying
+# it - the opposite of what we want. In that case, drop the standalone
+# STK11/KEAP1 terms and let the composite carry that signal on its own.
+stk11_keap1_outside_kras <- sum((df_luad$STK11 == 1 | df_luad$KEAP1 == 1) & df_luad$KRAS == 0)
+cat(sprintf("\n[LUAD] STK11/KEAP1-mutant tumors outside the KRAS-mutant group: %d\n",
+            stk11_keap1_outside_kras))
+
+if (stk11_keap1_outside_kras < min_group_n) {
+  message("  -> STK11/KEAP1 occur almost exclusively within KRAS-mutant tumors here; ",
+          "dropping standalone STK11/KEAP1 terms to avoid collinearity with KRAS_STK11KEAP1_co.")
+  mut_cols_luad_v2 <- c("EGFR", "KRAS_only", "CDKN2A", "KRAS_STK11KEAP1_co")
+} else {
+  mut_cols_luad_v2 <- c("EGFR", "KRAS_only", "STK11", "KEAP1", "CDKN2A", "KRAS_co", "TP53")
+}
+
+# ---- 5. Tier 3 + Tier 4 (LUAD): expanded panel including the co-mutation predictor ----
+
+tier4_luad <- run_tier4(df_luad, tme_cols, mut_cols_luad_v2)
+
+pluad <- tier4_luad %>%
+    mutate(
+    label = case_when(p_value < 0.001 & p_fdr < 0.1 ~ "***",
+      p_value < 0.01   & p_fdr < 0.1~ "**",
+      p_value < 0.05  & p_fdr < 0.1 ~ "*",
+      TRUE        ~  "")
+    ) %>%
+ ggplot(aes(x = mut_var, y = tme_var, fill = estimate)) +
+    geom_tile() +
+    geom_text(aes(label = label), color = "black") +
+    scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B", midpoint = 0) +
+    #facet_wrap(~method) +
+    theme_minimal() +
+    labs(
+      title = "Drivers LUAD",
+      x = "Mutation", y = "RNA module", fill = paste0("Δ enrichment \n score")
+    )+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+pluad
+
+# ============================================================
+# LUSC stratum: CDKN2A, PIK3CA
+# ============================================================
+
+tier4_lusc <- run_tier4(df_lusc, tme_cols, mut_cols_lusc)
+
+plusc <- tier4_lusc %>%
+  mutate(
+    label = case_when(
+      p_value < 0.001 & p_fdr < 0.1 ~ "***",
+      p_value < 0.01  & p_fdr < 0.1 ~ "**",
+      p_value < 0.05  & p_fdr < 0.1 ~ "*",
+      TRUE                          ~ ""
+    )
+  ) %>%
+  ggplot(aes(x = mut_var, y = tme_var, fill = estimate)) +
+  geom_tile() +
+  geom_text(aes(label = label), color = "black") +
+  scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B", midpoint = 0) +
+  #facet_wrap(~method) +
+  theme_minimal() +
+ labs(
+  title = "Drivers LUSC",
+  x = "Mutation", y = "RNA module",
+  fill = "Δ enrichment \n score"
+)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+plusc
+
+p <- plot_grid(pluad+theme(legend.position = "bottom"), plusc+theme(axis.text.y = element_blank(), legend.position = "bottom"),nrow = 1, rel_widths = c(2.25,1))
+p
+
+ggsave(filename = paste0(out_folder,"S6B_RNA_modules_for_mutations.pdf"),
+       plot = p,
+       device = cairo_pdf,
+       width = 8,
+       height = 6)
+
+```
+# S6C mean expression of markers across cell types and driver mutations
 ```{r}
 mean_exp1 <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/mean_marker_expr_per_celltype_p1.csv"))
 mean_exp2 <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/mean_marker_expr_per_celltype_p2.csv"))
@@ -509,7 +796,7 @@ markers_1[["Tumor"]] <- mean_exp1 %>%
   unique()
 ```
 
-## panel 2 markers of interest - to be removed
+## panel 2 markers of interest
 
 ```{r}
 mean_exp2 <- mean_exp %>%
@@ -614,7 +901,9 @@ markers_2[["Tumor"]] <- mean_exp2 %>%
 
 ```
 
-```{r, fig.height=15, fig.width=15}
+to do log2 foldchange comparison we will run the statistics on the arcsinh expression spase. to calculate log2 FC we will backtransform the mean and calculate the log2FC.
+
+```{r, fig.height=25, fig.width=25}
 cur_files_1 <- lapply(names(markers_1), function(x){
   cur_dat <- mean_exp %>%
     filter(celltypes == x,
@@ -649,25 +938,41 @@ p.list[["LUAD_EGFR"]] <- mean_data %>%
   group_by(celltypes, name) %>%
   summarise(
     wilcox_test = list(wilcox_test(value ~ EGFR, data = cur_data(), detailed = TRUE)),
-    logFC = log2(mean(value[EGFR == TRUE], na.rm = TRUE) / mean(value[EGFR == FALSE], na.rm = TRUE)),
+    logFC = log2(sinh(mean(value[EGFR == TRUE], na.rm = TRUE)) / sinh(mean(value[EGFR == FALSE], na.rm = TRUE))),
     .groups = "drop"
   ) %>%
   unnest(wilcox_test) %>%
   mutate(condition = "LUAD_EGFR")
 
-# LUAD KRAS
-p.list[["LUAD_KRAS"]] <- mean_data %>%
+# LUAD KRAS only
+p.list[["LUAD_KRAS_only"]] <- mean_data %>%
   left_join(traits,"immucan_id") %>%
-  filter(!is.na(KRAS),
+  mutate(KRAS_only = ifelse(KRAS == TRUE & STK11 == FALSE & KEAP1 == FALSE, TRUE, FALSE)) %>%
+  filter(!is.na(KRAS_only),
          simple_histology == "Adenocarcinoma") %>%
   group_by(celltypes, name) %>%
   summarise(
-    wilcox_test = list(wilcox_test(value ~ KRAS, data = cur_data(), detailed = TRUE)),
-    logFC = log2(mean(value[KRAS == TRUE], na.rm = TRUE) / mean(value[KRAS == FALSE], na.rm = TRUE)),
+    wilcox_test = list(wilcox_test(value ~ KRAS_only, data = cur_data(), detailed = TRUE)),
+    logFC = log2(sinh(mean(value[KRAS_only == TRUE], na.rm = TRUE)) / sinh(mean(value[KRAS_only == FALSE], na.rm = TRUE))),
     .groups = "drop"
   ) %>%
   unnest(wilcox_test) %>%
-  mutate(condition = "LUAD_KRAS")
+  mutate(condition = "LUAD_KRAS_only")
+
+# LUAD KRAS_co
+p.list[["LUAD_KRAS_co"]] <- mean_data %>%
+  left_join(traits,"immucan_id") %>%
+  filter(!is.na(KRAS_co),
+         simple_histology == "Adenocarcinoma") %>%
+  group_by(celltypes, name) %>%
+  summarise(
+    wilcox_test = list(wilcox_test(value ~ KRAS_co, data = cur_data(), detailed = TRUE)),
+    logFC = log2(sinh(mean(value[KRAS_co == TRUE], na.rm = TRUE)) / sinh(mean(value[KRAS_co == FALSE], na.rm = TRUE))),
+    .groups = "drop"
+  ) %>%
+  unnest(wilcox_test) %>%
+  mutate(condition = "LUAD_KRAS_co")
+
 
 #LUAD STK11
 p.list[["LUAD_STK11"]] <- mean_data %>%
@@ -677,11 +982,25 @@ p.list[["LUAD_STK11"]] <- mean_data %>%
   group_by(celltypes, name) %>%
   summarise(
     wilcox_test = list(wilcox_test(value ~ STK11, data = cur_data(), detailed = TRUE)),
-    logFC = log2(mean(value[STK11 == TRUE], na.rm = TRUE) / mean(value[STK11 == FALSE], na.rm = TRUE)),
+    logFC = log2(sinh(mean(value[STK11 == TRUE], na.rm = TRUE)) / sinh(mean(value[STK11 == FALSE], na.rm = TRUE))),
     .groups = "drop"
   ) %>%
   unnest(wilcox_test) %>%
   mutate(condition = "LUAD_STK11")
+
+# LUAD KEAP1
+p.list[["LUAD_KEAP1"]] <- mean_data %>%
+  left_join(traits,"immucan_id") %>%
+  filter(!is.na(KEAP1),
+         simple_histology == "Adenocarcinoma") %>%
+  group_by(celltypes, name) %>%
+  summarise(
+    wilcox_test = list(wilcox_test(value ~ KEAP1, data = cur_data(), detailed = TRUE)),
+    logFC = log2(sinh(mean(value[KEAP1 == TRUE], na.rm = TRUE)) / sinh(mean(value[KEAP1 == FALSE], na.rm = TRUE))),
+    .groups = "drop"
+  ) %>%
+  unnest(wilcox_test) %>%
+  mutate(condition = "LUAD_KEAP1")
 
 # LUAD TP53
 p.list[["LUAD_p53"]] <- mean_data %>%
@@ -691,7 +1010,7 @@ p.list[["LUAD_p53"]] <- mean_data %>%
   group_by(celltypes, name) %>%
   summarise(
     wilcox_test = list(wilcox_test(value ~ TP53, data = cur_data(), detailed = TRUE)),
-    logFC = log2(mean(value[TP53 == TRUE], na.rm = TRUE) / mean(value[TP53 == FALSE], na.rm = TRUE)),
+    logFC = log2(sinh(mean(value[TP53 == TRUE], na.rm = TRUE)) / sinh(mean(value[TP53 == FALSE], na.rm = TRUE))),
     .groups = "drop"
   ) %>%
   unnest(wilcox_test) %>%
@@ -705,7 +1024,7 @@ p.list[["LUSC_PIK3CA"]] <- mean_data %>%
   group_by(celltypes, name) %>%
   summarise(
     wilcox_test = list(wilcox_test(value ~ PIK3CA, data = cur_data(), detailed = TRUE)),
-    logFC = log2(mean(value[PIK3CA == TRUE], na.rm = TRUE) / mean(value[PIK3CA == FALSE], na.rm = TRUE)),
+    logFC = log2(sinh(mean(value[PIK3CA == TRUE], na.rm = TRUE)) / sinh(mean(value[PIK3CA == FALSE], na.rm = TRUE))),
     .groups = "drop"
   ) %>%
   unnest(wilcox_test) %>%
@@ -719,7 +1038,7 @@ p.list[["LUSC_TP53"]] <- mean_data %>%
   group_by(celltypes, name) %>%
   summarise(
     wilcox_test = list(wilcox_test(value ~ TP53, data = cur_data(), detailed = TRUE)),
-    logFC = log2(mean(value[TP53 == TRUE], na.rm = TRUE) / mean(value[TP53 == FALSE], na.rm = TRUE)),
+    logFC = log2(sinh(mean(value[TP53 == TRUE], na.rm = TRUE)) / sinh(mean(value[TP53 == FALSE], na.rm = TRUE))),
     .groups = "drop"
   ) %>%
   unnest(wilcox_test) %>%
@@ -737,19 +1056,13 @@ dat %>%
          condition == "LUSC_PIK3CA")
 
 library(ggrepel)
-sce1 <- readRDS(paste0(mount_path,"data/IMC/Panel_1/Rout/sce.rds"))
-sce2 <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/sce.rds"))
-
-col_vec <- c(metadata(sce1)$colour_vectors$celltypes,metadata(sce2)$colour_vectors$cell_types)
-col_vec <- col_vec[!duplicated(names(col_vec))]
-
-
 
 p <- dat %>%
-  ggplot(aes(x = logFC,y = -log10(p), col= celltypes, shape = factor(condition)))+
+  ggplot(aes(x = logFC,y = -log10(p), col=condition))+
   geom_point(size = 4)+
   geom_text_repel(data = dat %>% filter(show == TRUE),aes(x = logFC,y = -log10(p),label= paste(name, celltypes,sep = "-")), col = "black",size = 5,box.padding = 0.5,max.overlaps = 20)+
-  scale_color_manual(values = col_vec)+
+  scale_color_manual(values = c("LUAD_EGFR" = "green", "LUAD_KRAS" = "orange", "LUAD_KRAS_co" = "darkorange4", "LUAD_KRAS_only" = "red", "LUAD_KEAP1" = "gold", "LUAD_STK11" = "magenta", 
+                                "LUAD_TP53" = "cyan", "LUSC_TP53" = "blue", "LUSC_PIK3CA" = "darkorchid"))+
   theme_bw()+
   theme(legend.position = "bottom",
         legend.text = element_text(size = 12),
@@ -760,20 +1073,21 @@ p <- dat %>%
 
 p
 
-ggsave(filename = paste0(out_folder,"S5B_marker_exp_fold_changes_all_celltypes.pdf"),
+ggsave(filename = paste0(out_folder,"S6C_marker_exp_fold_changes_all_celltypes.pdf"),
        plot = p,
        device = "pdf",
-       width = 15,
-       height = 10)
+       width = 16,
+       height = 12)
 
 dat %>%
   filter(condition == "LUAD_EGFR",
          celltypes == "Tumor")
 ```
 
-# S5C number HLADR positive tumor cells in EGFR
+# S6D number HLADR positive tumor cells in EGFR
 
 ```{r, fig.width=4, fig.height=8}
+sce1 <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/IMC/Panel_1/Rout/sce.rds")
 sce1 <- sce1[,sce1$ROI != 4]
 
 counts <- as.data.frame(t(assay(sce1,"exprs")))
@@ -811,8 +1125,7 @@ idx <- which.min(abs(post - 0.5))
 cut_point_HLADR <- counts_EGFRneg$HLADR[idx]
 cut_point_HLADR
 
-Cairo::CairoPNG(filename = paste0(out_folder,"S5C_HLADR_tumor_cell_EGFRmutated.png"),width = 1000, height = 500,units = "px")
-Cairo::CairoPNG(filename = paste0(out_folder,"S5C_HLADR_tumor_cell_EGFRmutated.png"),width = 1000, height = 500,units = "px")
+Cairo::CairoPNG(filename = paste0(out_folder,"S6C_HLADR_tumor_cell_EGFRmutated.png"),width = 1000, height = 500,units = "px")
 par(mfrow = c(1,2))
 LSD::heatscatter(x = counts_EGFR$Ecad, y = counts_EGFR$HLADR,main = "EGFR mutated")
 abline(h = cut_point_HLADR, lty = 2, lwd = 5)
@@ -821,42 +1134,60 @@ abline(h = cut_point_HLADR, lty = 2, lwd = 5)
 dev.off()
 ```
 
-# S5D Ki67 and p53 on tumor cells in LUSC
+# S6E CD8 T cells CXC13 in EGFR
 
-```{r}
-p_Tumor_Ki67_P53_TP53_LUSC <- mean_exp %>%
-  filter(celltypes == "Tumor",
-         name %in% c("p53_p2","Ki67_p1","Ki67_p2")) %>%
-  left_join(traits, by = "immucan_id") %>%
-  filter(simple_histology == "Squamous cell carcinoma", 
-         !is.na(TP53)) %>%
-  ggplot(aes(x = TP53, y = value,fill= TP53))+
-  geom_boxplot(outliers = FALSE)+
-  geom_jitter(aes(color = TP53),position = position_jitterdodge(jitter.width = 0.2), size= 1)+
-  scale_fill_manual(values = alpha(c("red", "blue"),alpha = 0.6))+
-  scale_color_manual(values = c("red", "blue"))+
-  facet_wrap(.~name, scales= "free")+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
-  stat_compare_means(size = 2.5)+
-    theme_bw()+
-  theme(axis.text.y = element_text(size = 6),
-        axis.text.x = element_text(size = 6),
-        legend.text = element_text(size = 6),
-        legend.title = element_text(size = 6),
-        strip.text = element_text(size = 7))+
-  theme(legend.position = "none")
-p_Tumor_Ki67_P53_TP53_LUSC
+```{r, fig.height=5, fig.width=5}
+p_CD8_CXCL13_EGFR <- bplot_cor("CD8",markers =  c("CXCL13_p2", "PD1_p2","PD1_p1","LAG3_p1", "Tim3_p2"),mutation = "EGFR", rownum = 1, histology = "Adenocarcinoma")
 
-ggsave(filename = paste0(out_folder,"S5D_Ki67_p53_tumor_cells_LUSC.pdf"),
-       plot = p_Tumor_Ki67_P53_TP53_LUSC,
+p_CD8_CXCL13_EGFR
+
+ggsave(filename = paste0(out_folder,"S6E_exhaustion_on_CD8_Tcells.pdf"),
+       plot = p_CD8_CXCL13_EGFR,
        device = "pdf",
-       width = 5,
-       height = 3)
+       width = 4,
+       height = 1.8)
 ```
 
-# S5E GITR on Tregs
+# S6F Ki67 and p53 on tumor cells in LUSC
 
 ```{r}
+p_Tumor_Ki67_P53_TP53_LUSC <- bplot_cor(ct = "Tumor",markers =  c("p53_p2","Ki67_p1","Ki67_p2"), mutation = "TP53",histology = "Squamous cell carcinoma",headroom = 0.1)
+
+ggsave(filename = paste0(out_folder,"S6F_Ki67_p53_tumor_cells_LUSC.pdf"),
+       plot = p_Tumor_Ki67_P53_TP53_LUSC,
+       device = "pdf",
+       width = 2.5,
+       height = 1.8)
+```
+
+# S6G Tumor cells EGFR HLADR in STK11
+```{r, fig.height=5, fig.width=5}
+p_Tumor_HLADR_STK11 <- bplot_cor(ct = "Tumor", c("EGFR_p2","HLADR_p1"), mutation = "STK11", rownum = 1, histology = c("Adenocarcinoma"),stat_size = 2)
+
+ggsave(filename = paste0(out_folder,"S6G_HLADR_and_EGFR_on_tumor_cells_STK11.pdf"),
+       plot = p_Tumor_HLADR_STK11,
+       device = "pdf",
+       width = 1.8,
+       height = 1.8)
+```
+
+# S6H Tumor cells EGFR HLADR in KEAP1 
+```{r, fig.height=5, fig.width=5}
+p_Tumor_HLADR_KEAP1 <- bplot_cor(ct = "Tumor", c("EGFR_p2","HLADR_p1"), mutation = "KEAP1", rownum = 1, histology = c("Adenocarcinoma"),stat_size = 2)
+p_Tumor_HLADR_KEAP1
+ggsave(filename = paste0(out_folder,"S6H_HLADR_and_EGFR_on_tumor_cells_KEAP1.pdf"),
+       plot = p_Tumor_HLADR_KEAP1,
+       device = "pdf",
+       width = 1.8,
+       height = 1.8)
+
+table(traits$KRAS, traits$STK11)
+```
+
+# S6I GITR on Tregs
+
+```{r, fig.width=10, fig.height=10}
+sce2 <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/IMC/Panel_2/Rout/sce.rds")
 counts2 <- as.data.frame(t(assay(sce2,"exprs")))
 head(counts2)
 dim(counts2)
@@ -931,6 +1262,9 @@ plot_sce <- cur_sce[,cur_sce$celltypes == "Treg"]
 
 test_images <- endoapply(cur_images, gblur, sigma = 1)
 
+# make sure png device is avaialable
+options(bitmapType = "cairo")
+
 # generate images
 plotPixels(image = test_images,
            mask = cur_masks,
@@ -944,7 +1278,10 @@ plotPixels(image = test_images,
            bcg = list(CD137  = c(0,1.5,1),
                       GITR = c(0,1.5,1),
                       FOXP3  = c(0,3,1)),
-            image_title = NULL,save_plot = list(filename = paste0(out_folder,"S5E_GITR_Tregs_blurred.png")))
+           image_title = NULL,
+           save_plot = list(filename = paste0(out_folder,"S6I_GITR_Tregs_blurred.png")))
+
+
 
 plotPixels(image = cur_images,
            mask = cur_masks,
@@ -958,7 +1295,7 @@ plotPixels(image = cur_images,
            bcg = list(CD137  = c(0,1.5,1),
                       GITR = c(0,1.5,1),
                       FOXP3  = c(0,3,1)),
-            image_title = NULL,save_plot = list(filename = paste0(out_folder,"S5E_GITR_Tregs.png")))
+            image_title = NULL,save_plot = list(filename = paste0(out_folder,"S6I_GITR_Tregs.png")))
 
 ```
 
