@@ -78,11 +78,78 @@ p
 ggsave(p,filename = paste0(out_folder,"S4A_Kaplan_Meier_CPS_score.pdf"),device = "pdf",width = 6, height = 5)
 ```
 
-# S4B
-code here: to be included in this script: [tumor subtyping](../../../RNA/tumor_subtypes/tumor_subtypes_oncotypes.Rmd)
+
+# S4B Imaging modules for stage 
+```{r}
+dat_z <- left_join(modules, traits, "immucan_id") %>%
+  filter(!is.na(simple_stage),
+         simple_histology == "Adenocarcinoma") %>%
+  pivot_longer(cols = 1:7) %>%
+  ungroup()
+
+sigs <- dat_z %>%
+  select(immucan_id,name, value,simple_stage) %>%
+  mutate(stage = ifelse(simple_stage == "I",1,NA),
+         stage = ifelse(simple_stage == "II",2,stage),
+         stage = ifelse(simple_stage == "III",3,stage),
+         stage = ifelse(simple_stage == "IV",4,stage),
+         stage = as.numeric(as.factor(stage))) %>%
+  filter(stage != 4) %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(model = map(data, ~ lm(value ~ stage, data = .x)),
+         summary = map(model, broom::tidy)) %>%
+  select(name, summary) %>%
+  unnest(c(summary)) %>%
+  filter(term == "stage") %>%
+  mutate(tech = str_split_i(name,"__",2)) %>%
+  group_by(tech) %>%
+  mutate(FDR = p.adjust(p = p.value,method = "BH"),
+         sig_p = ifelse(p.value < 0.05,TRUE, FALSE),
+         sig_fdr = ifelse(FDR < 0.1,"T", "F"))
 
 
-# S4C_D RNA modules for stage 
+summary_dat <- sigs %>%
+  #filter(sig_p == TRUE) %>%
+  #filter(grepl("CD8_GATA3_BCL2|^CD8_density|CD8_Ki67_density|CD8_TCF7_density|Tumor_IDO1",name)) %>%
+  mutate(y_position = 1000,
+         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
+  ungroup() %>%
+  as.data.frame()
+
+p_im <- dat_z %>%
+  select(immucan_id,name, value,simple_stage) %>%
+  mutate(stage = ifelse(simple_stage == "I",1,NA),
+         stage = ifelse(simple_stage == "II",2,stage),
+         stage = ifelse(simple_stage == "III",3,stage),
+         stage = ifelse(simple_stage == "IV",4,stage),
+         stage = as.numeric(as.factor(stage)),
+         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
+  filter(name %in% summary_dat$name,
+         stage != 4) %>%
+  ggplot(aes(x = name,y = value,fill=as.factor(stage))) +
+  geom_boxplot(outliers = FALSE)+
+  geom_jitter(aes(col = as.factor(stage)),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
+  scale_fill_manual(values = alpha(c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"),alpha = 0.6))+
+  scale_color_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust = 1),
+        axis.title.x = element_blank())+
+  guides(fill=guide_legend(title="Stage"),
+         col=guide_legend(title="Stage"))+
+  geom_text(data = summary_dat, aes(x = name,y=2.3,label = paste0("fdr: ",sig_fdr)), inherit.aes = FALSE, size =3)+
+  geom_text(data = summary_dat, aes(x = name,y=2.8,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE, size = 3)+
+  #coord_cartesian(ylim = c(-0.35, 0.5))+
+  ggtitle(label = "RNA module differences in LUAD")+
+  labs(y = "RNA module score")
+  
+p_im
+ggsave(plot = p_im, path = out_folder,filename = "S4B_imaging_modules_for_stage.pdf",width = 6, height = 3,device = cairo_pdf)
+# plotting in chunk below
+```
+
+
+# S4C RNA modules for stage 
 ```{r}
 dat_z <- left_join(rna, traits, "immucan_id") %>%
   filter(!is.na(simple_stage),
@@ -122,7 +189,7 @@ summary_dat <- sigs %>%
   ungroup() %>%
   as.data.frame()
 
-p2 <- dat_z %>%
+p_rna <- dat_z %>%
   select(immucan_id,name, value,simple_stage) %>%
   mutate(stage = ifelse(simple_stage == "I",1,NA),
          stage = ifelse(simple_stage == "II",2,stage),
@@ -148,7 +215,7 @@ p2 <- dat_z %>%
   ggtitle(label = "RNA module differences in LUAD")+
   labs(y = "RNA module score")
   
-p2
+p_rna
 
 # plotting in chunk below
 ```
@@ -282,7 +349,7 @@ p1 <- dat_z %>%
   coord_cartesian(ylim = c(-4, 3.5))+
   ggtitle(label = "RNA modules across stages in LUAD - TCGA exploratory")+
   theme(title = element_text(size = 10))
-p1  
+
 p_val <- dat_z %>%
   select(patient,name, value,ajcc_pathologic_stage) %>%
   mutate(stage = ifelse(grepl("I",ajcc_pathologic_stage),1,NA),
@@ -309,16 +376,28 @@ p_val <- dat_z %>%
   ggtitle(label = "RNA modules across stages in LUAD - TCGA validation")+
   theme(title = element_text(size = 10))+
   labs(y = "RNA module score")
-
+p1
+p_val
 
 p <- plot_grid(p2 + theme(axis.text.x = element_blank()), p_val, ncol = 1, rel_heights = c(1.2,2))
 p
 ggsave(plot = p, path = out_folder,filename = "S4C_RNA_modules_for_stage_and_TCGA_validation.pdf",width = 6, height = 5,device = cairo_pdf)
 
 
-p1
-ggsave(plot = p1, path = out_folder,filename = "S4D_RNA_modules_for_stage_and_TCGA_exploratory.pdf",width = 6, height = 3,device = cairo_pdf)
+#p1
+#ggsave(plot = p1, path = out_folder,filename = "S4D_RNA_modules_for_stage_and_TCGA_exploratory.pdf",width = 6, height = 3,device = cairo_pdf)
+
+dens_dat %>%
+  select(immucan_id, B_density__IMC2) %>%
+  left_join(traits, "immucan_id") %>%
+  filter(simple_stage != "IV") %>%
+  ggplot(aes(x = simple_stage,y = B_density__IMC2))+
+  geom_boxplot()+
+  stat_compare_means()
 ```
+
+# S4D
+code here: to be included in this script: [tumor subtyping](../../../RNA/tumor_subtypes/tumor_subtypes_oncotypes.Rmd)
 
 
 ```{r, fig.height=7, fig.width=20}
@@ -525,6 +604,10 @@ scores <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/sco
 
 scores <- left_join(scores, traits,"immucan_id")
 
+scores <- scores %>%
+  rename(magnoid = "PP",
+         squamoid = "PI",
+         bronchioid = "TRU")
 
 plot_data <- scores %>%
   pivot_longer(cols = 1:3) %>%

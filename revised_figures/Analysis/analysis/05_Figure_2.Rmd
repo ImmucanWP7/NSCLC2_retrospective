@@ -417,6 +417,14 @@ ttypes <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/sco
 dat_z <- ttypes %>% left_join(modules, "immucan_id")
 
 dat_z$immucan_id <- NULL
+luad_dat <- dat_z %>%
+  filter(subtype %in% c("TRU","PI","PP")) %>%
+  mutate(across(.cols = -subtype,scale)) %>%
+  group_by(subtype) %>%
+  summarise(across(.fns = mean))
+  
+luad_mat <- as.matrix(luad_dat[,-1])
+rownames(luad_mat) <- luad_dat$subtype
 
 compute_subtype_sig <- function(data, subtypes) {
   df <- data %>% filter(subtype %in% subtypes)
@@ -435,14 +443,14 @@ compute_subtype_sig <- function(data, subtypes) {
 
 to_padj_matrix <- function(sig_df, ref_mat) {
   sig_df %>%
-    select(subtype, module, padj) %>%
+    dplyr::select(subtype, module, padj) %>%
     tidyr::pivot_wider(names_from = module, values_from = padj) %>%
     tibble::column_to_rownames("subtype") %>%
     as.matrix() %>%
     .[rownames(ref_mat), colnames(ref_mat)]
 }
 
-luad_sig      <- compute_subtype_sig(dat_z, c("bronchioid", "squamoid", "magnoid"))
+luad_sig      <- compute_subtype_sig(dat_z, c("TRU", "PI", "PP"))
 
 luad_padj_mat <- t(to_padj_matrix(luad_sig, luad_mat))   # transpose to match t(luad_mat): modules x subtypes
 
@@ -478,31 +486,74 @@ dev.off()
 scores <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/tumor_subtype_scores.csv")
 
 scores <- left_join(scores, traits,"immucan_id")
+scores <- scores %>%
+  rename(magnoid = "PP",
+         squamoid = "PI",
+         bronchioid = "TRU")
 
-p <- scores %>%
+dat_z <-  scores %>%
   pivot_longer(cols = 1:3) %>% 
   filter(simple_stage != "IV",
          !is.na(simple_stage), 
-         LUAD_vs_LUSC == "Adenocarcinoma") %>%
-  ggplot(aes(x = simple_stage, y = value, fill = simple_stage))+
-  geom_boxplot()+
-  geom_jitter(aes(col = simple_stage),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
-  scale_fill_manual(values = alpha(c("I" = "palevioletred3", "II" = "darkseagreen3", "III" = "dodgerblue"),alpha = 0.6))+
-  scale_color_manual(values = c("I" = "palevioletred3", "II" = "darkseagreen3", "III" = "dodgerblue"))+
-  facet_wrap(~name)+
-  stat_compare_means(aes(group = simple_stage),
-                     comparisons = list(c("I", "II"), c("I","III"), c("II", "III")),
-                     method = "t.test")+
+         LUAD_vs_LUSC == "Adenocarcinoma")
+
+sigs <- dat_z %>%
+  select(immucan_id,name, value,simple_stage) %>%
+  mutate(stage = ifelse(simple_stage == "I",1,NA),
+         stage = ifelse(simple_stage == "II",2,stage),
+         stage = ifelse(simple_stage == "III",3,stage),
+         stage = ifelse(simple_stage == "IV",4,stage),
+         stage = as.numeric(as.factor(stage))) %>%
+  filter(stage != 4) %>%
+  group_by(name) %>%
+  nest() %>%
+  mutate(model = map(data, ~ lm(value ~ stage, data = .x)),
+         summary = map(model, broom::tidy)) %>%
+  select(name, summary) %>%
+  unnest(c(summary)) %>%
+  filter(term == "stage") %>%
+  mutate(tech = str_split_i(name,"__",2)) %>%
+  group_by(tech) %>%
+  mutate(FDR = p.adjust(p = p.value,method = "BH"),
+         sig_p = ifelse(p.value < 0.05,TRUE, FALSE),
+         sig_fdr = ifelse(FDR < 0.1,"T", "F"))
+
+
+summary_dat <- sigs %>%
+  #filter(sig_p == TRUE) %>%
+  #filter(grepl("CD8_GATA3_BCL2|^CD8_density|CD8_Ki67_density|CD8_TCF7_density|Tumor_IDO1",name)) %>%
+  mutate(y_position = 1000,
+         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
+  ungroup() %>%
+  as.data.frame()
+
+p <- dat_z %>%
+  select(immucan_id,name, value,simple_stage) %>%
+  mutate(stage = ifelse(simple_stage == "I",1,NA),
+         stage = ifelse(simple_stage == "II",2,stage),
+         stage = ifelse(simple_stage == "III",3,stage),
+         stage = ifelse(simple_stage == "IV",4,stage),
+         stage = as.numeric(as.factor(stage)),
+         name = gsub(pattern = "density_",replacement = "",x = name)) %>%
+  filter(name %in% summary_dat$name,
+         stage != 4) %>%
+  ggplot(aes(x = name,y = value,fill=as.factor(stage))) +
+  geom_boxplot(outliers = FALSE)+
+  geom_jitter(aes(col = as.factor(stage)),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
+  scale_fill_manual(values = alpha(c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"),alpha = 0.6))+
+  scale_color_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
   theme_bw()+
-  coord_cartesian(ylim = c(-0.7, 1.5))+
-  xlab("Stage")+
-  ylab("Tumor type score")+
+  theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust = 1),
+        axis.title.x = element_blank())+
   guides(fill=guide_legend(title="Stage"),
-         color=guide_legend(title="Stage"))
-
-p
+         col=guide_legend(title="Stage"))+
+  geom_text(data = summary_dat, aes(x = name,y=1,label = paste0("fdr: ",sig_fdr)), inherit.aes = FALSE, size =3)+
+  geom_text(data = summary_dat, aes(x = name,y=1.12,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE, size = 3)+
+  #coord_cartesian(ylim = c(-0.35, 0.5))+
+  ggtitle(label = "RNA module differences in LUAD")+
+  labs(y = "Tumor subtype score")
+p  
 ggsave(plot = p, path = out_folder,filename = "2G_tumor_types_for_stages_LUAD.pdf",width = 3.5, height = 3.5,device = cairo_pdf)
-
 ```
 
 
@@ -589,7 +640,7 @@ dat_z <- left_join(modules, traits, "immucan_id") %>%
 
 result <- lollipop_plot(dat_z, "never_vs_current_smoker", "Current smoker", "Non-smoker", col_A = "blue", col_B = "cyan3")
 p1 <- result$plot+
-  ggtitle("Current smokers vs Non-smokers")+
+  ggtitle("Current smokers vs Non-smokers in LUAD")+
   ylab("Imaging modules")+
   theme(axis.title.y = element_text(size= 14))+
   coord_cartesian(xlim = c(-0.4,0.4))

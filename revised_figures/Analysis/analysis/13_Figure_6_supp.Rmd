@@ -621,7 +621,7 @@ if (stk11_keap1_outside_kras < min_group_n) {
           "dropping standalone STK11/KEAP1 terms to avoid collinearity with KRAS_STK11KEAP1_co.")
   mut_cols_luad_v2 <- c("EGFR", "KRAS_only", "CDKN2A", "KRAS_STK11KEAP1_co")
 } else {
-  mut_cols_luad_v2 <- c("EGFR", "KRAS_only", "STK11", "KEAP1", "CDKN2A", "KRAS_co", "TP53")
+  mut_cols_luad_v2 <- c("EGFR", "KRAS","KRAS_only", "STK11", "KEAP1", "CDKN2A", "KRAS_co", "TP53")
 }
 
 # ---- 5. Tier 3 + Tier 4 (LUAD): expanded panel including the co-mutation predictor ----
@@ -635,7 +635,7 @@ pluad <- tier4_luad %>%
       p_value < 0.05  & p_fdr < 0.1 ~ "*",
       TRUE        ~  "")
     ) %>%
- ggplot(aes(x = mut_var, y = tme_var, fill = estimate)) +
+ ggplot(aes(x =factor(mut_var, levels = c("EGFR","KRAS", "KRAS_only","KRAS_co", "STK11", "KEAP1", "CDKN2A", "TP53")), y = tme_var, fill = estimate)) +
     geom_tile() +
     geom_text(aes(label = label), color = "black") +
     scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B", midpoint = 0) +
@@ -1148,6 +1148,18 @@ ggsave(filename = paste0(out_folder,"S6E_exhaustion_on_CD8_Tcells.pdf"),
        height = 1.8)
 ```
 
+# CD4 T cells CXC13 in EGFR
+
+```{r, fig.height=5, fig.width=15}
+p1 <- bplot_cor("CD4",markers =  c(markers_2$CD4,markers_1$CD4),mutation = "EGFR", rownum = 1, histology = "Adenocarcinoma")
+
+p1
+
+p2 <- bplot_cor("CD8",markers =  c(markers_2$CD8,markers_1$CD8),mutation = "EGFR", rownum = 1, histology = "Adenocarcinoma")
+
+p2
+```
+
 # S6F Ki67 and p53 on tumor cells in LUSC
 
 ```{r}
@@ -1162,24 +1174,24 @@ ggsave(filename = paste0(out_folder,"S6F_Ki67_p53_tumor_cells_LUSC.pdf"),
 
 # S6G Tumor cells EGFR HLADR in STK11
 ```{r, fig.height=5, fig.width=5}
-p_Tumor_HLADR_STK11 <- bplot_cor(ct = "Tumor", c("EGFR_p2","HLADR_p1"), mutation = "STK11", rownum = 1, histology = c("Adenocarcinoma"),stat_size = 2)
+p_Tumor_HLADR_STK11 <- bplot_cor(ct = "Tumor", c("EGFR_p2","HLADR_p1", "CD155_p2", "CD73_p2", "Arg1_p2"), mutation = "STK11", rownum = 1, histology = c("Adenocarcinoma"),stat_size = 3, sig_format = TRUE)
 
 ggsave(filename = paste0(out_folder,"S6G_HLADR_and_EGFR_on_tumor_cells_STK11.pdf"),
        plot = p_Tumor_HLADR_STK11,
        device = "pdf",
-       width = 1.8,
-       height = 1.8)
+       width = 4,
+       height = 2.5)
 ```
 
 # S6H Tumor cells EGFR HLADR in KEAP1 
 ```{r, fig.height=5, fig.width=5}
-p_Tumor_HLADR_KEAP1 <- bplot_cor(ct = "Tumor", c("EGFR_p2","HLADR_p1"), mutation = "KEAP1", rownum = 1, histology = c("Adenocarcinoma"),stat_size = 2)
+p_Tumor_HLADR_KEAP1 <- bplot_cor(ct = "Tumor", c("EGFR_p2","HLADR_p1", "CD155_p2", "CD73_p2", "Arg1_p2"), mutation = "KEAP1", rownum = 1, histology = c("Adenocarcinoma"),stat_size = 3,sig_format = TRUE)
 p_Tumor_HLADR_KEAP1
 ggsave(filename = paste0(out_folder,"S6H_HLADR_and_EGFR_on_tumor_cells_KEAP1.pdf"),
        plot = p_Tumor_HLADR_KEAP1,
        device = "pdf",
-       width = 1.8,
-       height = 1.8)
+       width = 4,
+       height = 2.5)
 
 table(traits$KRAS, traits$STK11)
 ```

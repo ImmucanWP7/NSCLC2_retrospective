@@ -73,6 +73,30 @@ rna_module_names <- colnames(rna)[1:29]
 data_type <- unique(str_split_i(string = colnames(dat[,-1]),pattern = "__",i = 2))
 ```
 
+# stats
+```{r}
+table(traits$TP53)/nrow(traits)
+table(traits$KRAS)/nrow(traits)
+table(traits$EGFR)/nrow(traits)
+
+# in LUAD
+cur_traits <- traits %>% 
+  filter(simple_histology == "Adenocarcinoma")
+table(cur_traits$TP53)/nrow(cur_traits)
+table(cur_traits$KRAS)/nrow(cur_traits)
+table(cur_traits$KEAP1)/nrow(cur_traits)
+table(cur_traits$STK11)/nrow(cur_traits)
+table(cur_traits$EGFR)/nrow(cur_traits)
+
+# in LUSC
+cur_traits <- traits %>% 
+  filter(simple_histology == "Squamous cell carcinoma")
+table(cur_traits$TP53)/nrow(cur_traits)
+table(cur_traits$CDKN2A)/nrow(cur_traits)
+table(cur_traits$PIK3CA)/nrow(cur_traits)
+```
+
+
 # 4A Waterfall plot
 
 The code for this plot is here: [here](../../WES/analysis/oncoplot.Rmd)
@@ -129,15 +153,17 @@ dat_z <- left_join(modules, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"),
          EGFR = ifelse(EGFR == TRUE, 1,0),
          KRAS = ifelse(KRAS == TRUE, 1,0),
-         STK11 = ifelse(STK11 == TRUE, 1,0),
-         KEAP1 = ifelse(KEAP1 == TRUE, 1,0),
+         #STK11_only = ifelse(STK11 == TRUE & !KRAS , 1,0),
+         #KEAP1_only = ifelse(KEAP1 == TRUE & !KRAS, 1,0),
+         STK11 = ifelse(STK11 == TRUE , 1,0),
+         KEAP1 = ifelse(KEAP1 == TRUE , 1,0),
          PIK3CA = ifelse(PIK3CA == TRUE, 1,0),
          CDKN2A = ifelse(CDKN2A == TRUE, 1, 0))
 
 # ---- 1. Config: EDIT these to match your actual column names ----
 tme_cols  <- modules_names
 histology_col  <- "LUAD_vs_LUSC"                              # expects values "LUAD" / "LUSC"
-mut_cols_luad  <- c("EGFR", "KRAS", "STK11", "KEAP1", "CDKN2A", "TP53")   # PIK3CA excluded: ~1 case in LUAD
+mut_cols_luad  <- c("EGFR", "KRAS","STK11","KEAP1", "CDKN2A", "TP53")   # PIK3CA excluded: ~1 case in LUAD
 mut_cols_lusc  <- c("CDKN2A", "PIK3CA", "TP53")                            # EGFR/KRAS/STK11/KEAP1 excluded in LUSC
 min_group_n    <- 5   # minimum mutant (or wt) count required to test a gene in a stratum
 
@@ -281,7 +307,7 @@ if (stk11_keap1_outside_kras < min_group_n) {
           "dropping standalone STK11/KEAP1 terms to avoid collinearity with KRAS_STK11KEAP1_co.")
   mut_cols_luad_v2 <- c("EGFR", "KRAS_only", "CDKN2A", "KRAS_STK11KEAP1_co")
 } else {
-  mut_cols_luad_v2 <- c("EGFR", "KRAS_only", "STK11", "KEAP1", "CDKN2A", "KRAS_co", "TP53")
+  mut_cols_luad_v2 <- c("EGFR", "KRAS_only", "STK11", "KEAP1","CDKN2A", "KRAS_co", "TP53", "KRAS")
 }
 
 # ---- 5. Tier 3 + Tier 4 (LUAD): expanded panel including the co-mutation predictor ----
@@ -297,7 +323,7 @@ pluad <- tier4_luad %>%
       TRUE        ~ ""
     )
   ) %>%
- ggplot(aes(x = mut_var, y = tme_var, fill = estimate)) +
+ ggplot(aes(x = factor(mut_var, levels = c("EGFR","KRAS", "KRAS_only","KRAS_co", "STK11", "KEAP1", "CDKN2A", "TP53")), y = tme_var, fill = estimate)) +
     geom_tile() +
     geom_text(aes(label =label), color = "black") +
     scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B", midpoint = 0) +

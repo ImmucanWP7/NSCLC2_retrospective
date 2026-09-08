@@ -75,6 +75,11 @@ top_genes <- c(top_genes_LUAD, top_genes_LUSC)
 # ── Build subtype vector (patient ID → subtype label) ─────────────────────────
 # @subtypes may or may not be named; use input colnames to be safe
 luad_sub    <- setNames(as.character(output_luad@subtypes), colnames(rna_LUAD))
+# rename to more recent, TCGA subtypes:
+luad_sub <- gsub("squamoid", "PI", luad_sub)
+luad_sub <- gsub("bronchioid", "TRU", luad_sub)
+luad_sub <- gsub("magnoid", "PP", luad_sub)
+
 lusc_sub    <- setNames(as.character(output_lusc@subtypes), colnames(rna_LUSC))
 subtype_all <- c(luad_sub, lusc_sub)
 
@@ -108,7 +113,7 @@ ann_df <- data.frame(
 )
 
 # Order columns: LUAD subtypes first, then LUSC, NA last
-subtype_order <- c("bronchioid", "magnoid", "squamoid",
+subtype_order <- c("TRU", "PP", "PI",
                    "basal", "classical", "secretory", "primitive")
 col_order <- order(
   match(ann_df$subtype, subtype_order, nomatch = length(subtype_order) + 1),
@@ -155,7 +160,7 @@ ann_df <- ann_df[all_pts, ]
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 subtype_pal <- c(
-  bronchioid = "#4DBBD5", magnoid   = "#00A087", squamoid  = "#3C5488",
+  TRU = "#4DBBD5", PP   = "#00A087", PI  = "#3C5488",
   basal      = "#E64B35", classical = "#F39B7F", secretory = "#8491B4",
   primitive  = "#B09C85"
 )
@@ -209,7 +214,7 @@ ht2 <- Heatmap(
   row_names_gp = gpar(fontsize = 3)
 )
 
-pdf(file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/S4B_Figure_4_supp/tumor_subtypes.pdf",width = 8,height = 8)
+pdf(file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_4_supp/S4D_tumor_subtypes.pdf",width = 8,height = 8)
 draw(ht2)
 dev.off()
 ```

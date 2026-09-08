@@ -20,7 +20,7 @@ library(ggforce)
 library(cowplot)
 
 OUT <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing"
-FIGURES <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_2_supp"
+FIGURES <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_3_supp"
 if (!dir.exists(FIGURES)) {
   dir.create(FIGURES)
 }
@@ -72,6 +72,11 @@ panel_pal <- setNames(
 # Preserve biological meta-cluster order from the scores matrix
 plot_df$meta_cluster <- factor(plot_df$meta_cluster, levels = colnames(ms))
 
+# mutate names
+plot_df <- plot_df %>%
+  mutate(feature = gsub("SP1_CN", "CN1", feature),
+         feature = gsub("SP2_CN", "CN2", feature))
+
 # ── Plot ──────────────────────────────────────────────────────────────────────
 p <- ggplot(plot_df, aes(label = feature, size = abs_r, color = panel)) +
   geom_text_wordcloud(area_corr = TRUE, seed = 42, rm_outside = TRUE) +
@@ -94,7 +99,7 @@ p <- ggplot(plot_df, aes(label = feature, size = abs_r, color = panel)) +
   labs(title = paste0("Top ", TOP_N, " features correlated with each imaging meta-cluster"),
        subtitle = "Feature name size proportional to |r| with meta-cluster score; color = imaging panel")
 
-
+p
 ggsave(file.path(FIGURES, "05_meta_cluster_feature_wordcloud.pdf"),device = cairo_pdf,
        p, width = 16, height = 10)
 ```
@@ -194,6 +199,18 @@ WC_SIZE <- NODE_R * 2
 wc_plots <- lapply(mc_names, function(mc) {
   sub_df <- plot_df[as.character(plot_df$meta_cluster) == mc, ]
   ggplot(sub_df, aes(label = feature, size = abs_r, color = panel)) +
+    geom_text_wordcloud(area_corr = TRUE, seed = 42, rm_outside = TRUE) +
+    scale_size_area(max_size = 8) +
+    scale_color_manual(values = panel_pal) +
+    theme_void() +
+    theme(plot.margin    = margin(0,0,0,0),
+          plot.background = element_rect(fill = NA, color = NA))
+})
+wc_plots <- lapply(mc_names, function(mc) {
+  sub_df <- plot_df[as.character(plot_df$meta_cluster) == mc, ]
+  sub_df$label <- ifelse(sub_df$r < 0, paste0("-", sub_df$feature), sub_df$feature)
+
+  ggplot(sub_df, aes(label = label, size = abs_r, color = panel)) +
     geom_text_wordcloud(area_corr = TRUE, seed = 42, rm_outside = TRUE) +
     scale_size_area(max_size = 8) +
     scale_color_manual(values = panel_pal) +

@@ -17,7 +17,7 @@ lollipop_plot <- function(data, condition, var_A, var_B, order = TRUE, order_vec
       padj        = p.adjust(pvalue, method = "BH"),
       neg_log10_p = -log10(pvalue),
       direction   = ifelse(delta_z > 0, paste("Up in", var_A), paste("Up in", var_B)),
-      sig         = ifelse(padj < 0.1, "FDR < 0.1", ifelse(pvalue < 0.05, "P < 0.05", "Non"))
+      sig         = ifelse(pvalue < 0.05 & padj < 0.1, "FDR < 0.1", ifelse(pvalue < 0.05 & padj > 0.1, "P < 0.05", "Non"))
     ) %>%
     arrange(delta_z)
 
@@ -61,7 +61,7 @@ lollipop_plot <- function(data, condition, var_A, var_B, order = TRUE, order_vec
                        values = c("FDR < 0.1" = "black", "P < 0.05" = "grey60")) +
     scale_size_continuous(name = "-log10(p-value)", breaks = size_breaks) +
     geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
-    labs(x = paste0("Δ z-score (", var_A, " - ", var_B, ")"), y = NULL) +
+    labs(x = paste0("Δ z-score"), y = NULL) +
     theme_minimal() +
     theme(
       axis.title.x = element_text(size = 14),
