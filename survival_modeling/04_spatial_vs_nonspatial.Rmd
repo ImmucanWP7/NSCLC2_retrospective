@@ -1,0 +1,660 @@
+---
+title: "Spatial vs non-spatial"
+author: "Daniel Schulz"
+date: "2026-09-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+05_spatial_vs_nonspatial.R
+The reviewer's actual ask: is there more survival signal among SPATIAL
+features (interaction, cellohood) than among NON-spatial features
+(density, RNA_gene, RNA_module, mutation, biomarker)?
+image_module is deliberately excluded from this strict binary test (see
+decisions log -- it is spatially-derived but expressed as a per-patient
+summary index, so a binary spatial/non-spatial call is debatable).
+
+*** ROUND 2 -- BLOCKING REVIEWER CAVEAT, READ BEFORE TRUSTING THE KS/WILCOXON
+P-VALUES BELOW ***
+The parametric KS/Wilcoxon test in section 1 (kept for continuity with round
+1) treats every feature's p-value as an *independent* draw. That assumption
+is false here: interaction features are pairwise combinations of a small set
+of cell types (e.g. DC.Neutrophil, T.Neutrophil, MacCD163.Neutrophil,
+Neutrophil.Tumor, Neutrophil.Neutrophil, Tumor.Neutrophil all repeat the same
+'Neutrophil' signal against different partners), cellohood CN fractions are
+compositional (sum-to-one, mutually anti-correlated by construction), and
+RNA_gene features are co-expressed in modules. We verified this directly in
+LUAD: 7 of the top-8 spatial hits are Neutrophil-partner interaction terms,
+and their Spearman correlation with the single non-spatial feature
+'Neutrophil_density__IF1' (itself the top density-category hit, p=0.0003)
+ranges from rho=0.83 to rho=0.97 (n=115) -- i.e. much of the apparent
+spatial-category signal is the same cell-type-abundance effect leaking into
+the interaction category via shared partner cell types, not necessarily a
+genuinely spatial/arrangement effect. This makes the parametric KS/Wilcoxon
+p-values in section 1 ANTI-CONSERVATIVE (pseudo-replication inflates
+apparent significance). Section 1a below quantifies this confounding
+directly; section 2 (NEW) implements the remedy: a patient-label permutation
+test that shuffles outcome (time, status) across patients while leaving the
+feature matrix -- and hence its real correlation/redundancy structure --
+completely untouched. Under that null, correlated features stay correlated,
+so the resulting reference distribution of the enrichment statistic already
+has the real pseudo-replication baked in, and the resulting empirical
+p-value is the trustworthy one. See docs/decisions_round2.md section on
+"Independence-assumption caveat" for the full writeup.
+
+```{r}
+suppressWarnings(suppressMessages(library(survival)))
+
+RESULTS_DIR <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/survival/Rout/"
+PLOTS_DIR   <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/survival/plots/"
+if (!dir.exists(PLOTS_DIR)) dir.create(PLOTS_DIR, recursive = TRUE)
+
+log_msg <- function(...) cat(format(Sys.time(), "%H:%M:%S"), "-", ..., "\n")
+
+set.seed(20260911)  # reproducible bootstrap
+
+full_wide <- readRDS(file.path(RESULTS_DIR, "full_wide.rds"))
+cox_luad  <- readRDS(file.path(RESULTS_DIR, "cox_luad.rds"))
+cox_lusc  <- readRDS(file.path(RESULTS_DIR, "cox_lusc.rds"))
+
+SPATIAL_CATS     <- c("interaction", "cellohood")
+NONSPATIAL_CATS  <- c("density", "RNA_gene", "RNA_module", "mutation", "biomarker")
+```
+
+
+# 1. Enrichment test: p-value distribution, spatial vs non-spatial
+```{r}
+enrichment_test <- function(res, histology_label) {
+  sub <- res[res$scale == "rank_INT" & res$category %in% c(SPATIAL_CATS, NONSPATIAL_CATS) &
+               !is.na(res$p_lr), ]
+  sub$is_spatial <- sub$category %in% SPATIAL_CATS
+
+  p_spatial    <- sub$p_lr[sub$is_spatial]
+  p_nonspatial <- sub$p_lr[!sub$is_spatial]
+
+  ks  <- try(ks.test(p_spatial, p_nonspatial), silent = TRUE)
+  wt  <- try(wilcox.test(-log10(p_spatial), -log10(p_nonspatial)), silent = TRUE)
+
+  data.frame(
+    histology = histology_label,
+    n_spatial = length(p_spatial), n_nonspatial = length(p_nonspatial),
+    median_p_spatial = median(p_spatial), median_p_nonspatial = median(p_nonspatial),
+    ks_D = if (inherits(ks, "try-error")) NA_real_ else unname(ks$statistic),
+    ks_p = if (inherits(ks, "try-error")) NA_real_ else ks$p.value,
+    wilcox_W = if (inherits(wt, "try-error")) NA_real_ else unname(wt$statistic),
+    wilcox_p = if (inherits(wt, "try-error")) NA_real_ else wt$p.value,
+    stringsAsFactors = FALSE
+  )
+}
+
+enr_luad <- enrichment_test(cox_luad, "LUAD")
+enr_lusc <- enrichment_test(cox_lusc, "LUSC")
+enr_all  <- rbind(enr_luad, enr_lusc)
+enr_all$independence_caveat <- paste(
+  "ANTI-CONSERVATIVE: this KS/Wilcoxon p assumes independent feature draws;",
+  "the feature pool is heavily non-independent (interaction terms share partner",
+  "cell types, e.g. Neutrophil-partner terms correlate rho=0.83-0.97 with",
+  "Neutrophil_density__IF1; cellohood CN fractions are compositional). See",
+  "results/spatial_enrichment_permutation.csv for a permutation-calibrated",
+  "p-value and docs/decisions_round2.md for the full writeup."
+)
+log_msg("Spatial vs non-spatial enrichment test (p-value distribution, rank_INT scale):")
+print(enr_all)
+log_msg("*** CAVEAT (see docs/decisions_round2.md): the KS/Wilcoxon p-values above assume",
+        "independent feature draws, which is FALSE for this feature pool (see header comment",
+        "of this script). Treat them as an anti-conservative first look; the",
+        "permutation-calibrated result computed below is the trustworthy one. ***")
+write.csv(enr_all, file.path(RESULTS_DIR, "spatial_enrichment_test.csv"), row.names = FALSE)
+saveRDS(enr_all, file.path(RESULTS_DIR, "spatial_enrichment_test.rds"))
+
+if (!is.na(enr_luad$ks_p) && enr_luad$ks_p < 0.05) {
+  log_msg("LUAD: KS test IS significant (p=", signif(enr_luad$ks_p, 3),
+          ") -- spatial and non-spatial p-value distributions differ. (Parametric; see caveat above.)")
+} else {
+  log_msg("LUAD: KS test is NOT significant (p=", signif(enr_luad$ks_p, 3),
+          ") -- no strong evidence the spatial p-value distribution differs from non-spatial. Reporting honestly.")
+}
+if (!is.na(enr_lusc$ks_p) && enr_lusc$ks_p < 0.05) {
+  log_msg("LUSC (EXPLORATORY): KS test IS nominally significant (p=", signif(enr_lusc$ks_p, 3),
+          "). (Parametric; see caveat above.)")
+} else {
+  log_msg("LUSC (EXPLORATORY): KS test is NOT significant (p=", signif(enr_lusc$ks_p, 3), ").")
+}
+
+```
+
+
+1a. Quantify the density/interaction confounding directly (round 2).
+For each histology's top-8 spatial hits, find any non-spatial density
+feature that shares a cell-type name with the interaction term's two
+partners, and report the Spearman correlation. This turns the reviewer's
+qualitative observation into a concrete, reproducible number.
+
+```{r}
+quantify_density_confounding <- function(cox_res, full_wide, histology_str, histology_label, n_top = 8) {
+  d <- full_wide[full_wide$simple_histology == histology_str, ]
+  sub <- cox_res[cox_res$scale == "rank_INT" & cox_res$category == "interaction" & !is.na(cox_res$p_lr), ]
+  sub <- sub[order(sub$p_lr), ]
+  top <- head(sub, n_top)
+  density_names <- grep("_density__", colnames(d), value = TRUE)
+  density_celltypes <- sub("_density__.*$", "", density_names)
+
+  out <- vector("list", nrow(top))
+  for (i in seq_len(nrow(top))) {
+    nm <- top$name[i]
+    partners <- strsplit(sub("__.*$", "", nm), "\\.")[[1]]
+    hit_idx <- which(density_celltypes %in% partners)
+    if (length(hit_idx) == 0) {
+      out[[i]] <- data.frame(histology = histology_label, interaction_feature = nm,
+                              partner_density_feature = NA_character_,
+                              rho = NA_real_, p = NA_real_, n = NA_integer_,
+                              stringsAsFactors = FALSE)
+      next
+    }
+    rows <- lapply(hit_idx, function(j) {
+      dens_nm <- density_names[j]
+      ok <- !is.na(d[[nm]]) & !is.na(d[[dens_nm]])
+      if (sum(ok) < 10) {
+        return(data.frame(histology = histology_label, interaction_feature = nm,
+                           partner_density_feature = dens_nm, rho = NA_real_, p = NA_real_,
+                           n = sum(ok), stringsAsFactors = FALSE))
+      }
+      ct <- suppressWarnings(try(cor.test(d[[nm]][ok], d[[dens_nm]][ok], method = "spearman"), silent = TRUE))
+      data.frame(histology = histology_label, interaction_feature = nm,
+                 partner_density_feature = dens_nm,
+                 rho = if (inherits(ct, "try-error")) NA_real_ else unname(ct$estimate),
+                 p = if (inherits(ct, "try-error")) NA_real_ else ct$p.value,
+                 n = sum(ok), stringsAsFactors = FALSE)
+    })
+    out[[i]] <- do.call(rbind, rows)
+  }
+  do.call(rbind, out)
+}
+
+confound_luad <- quantify_density_confounding(cox_luad, full_wide, "Adenocarcinoma", "LUAD", n_top = 8)
+confound_lusc <- quantify_density_confounding(cox_lusc, full_wide, "Squamous cell carcinoma", "LUSC", n_top = 8)
+confound_all  <- rbind(confound_luad, confound_lusc)
+log_msg("Density/interaction confounding check (top-8 spatial hits per histology vs. same-cell-type density features):")
+print(confound_all)
+write.csv(confound_all, file.path(RESULTS_DIR, "spatial_density_confounding_check.csv"), row.names = FALSE)
+saveRDS(confound_all, file.path(RESULTS_DIR, "spatial_density_confounding_check.rds"))
+max_rho_luad <- suppressWarnings(max(abs(confound_luad$rho), na.rm = TRUE))
+log_msg("LUAD: ", sum(!is.na(confound_luad$rho)), "/", nrow(confound_luad),
+        " top-8 spatial hits have a matching same-cell-type density feature; max |rho|=",
+        signif(max_rho_luad, 3), " -- confirms these are NOT independent signals.")
+
+```
+
+
+# 2. Null estimation
+
+2. REMEDY (round 2): patient-label permutation test.
+Shuffle (time_to_event, status) across patients within a histology, leaving
+the feature matrix -- and therefore its true correlation/redundancy
+structure -- completely untouched. Recompute a fast per-feature p-value
+(Cox score test, control(iter.max=0) so it needs no Newton iterations and is
+~1000x faster than the full LR-test screen in 04, while remaining a valid,
+monotonically-related significance measure) for every spatial and
+non-spatial feature under each permutation, and rebuild the KS-D and a
+directional (mean -log10 p difference) statistic each time. Because
+correlated features are shuffled together as a block (same permutation
+vector applied to the whole feature matrix), any feature is permuted
+jointly with all other features for a given permutation, so the null
+distribution already reflects the real non-independence -- unlike the
+parametric KS null in section 1, which assumes iid p-values.
+
+```{r}
+inv_norm2 <- function(x) {
+  n <- sum(!is.na(x)); if (n < 3) return(rep(NA_real_, length(x)))
+  qnorm((rank(x, na.last = "keep", ties.method = "average") - 0.5) / n)
+}
+
+score_p_fast <- function(x_raw, time, status, is_binary) {
+  ok <- !is.na(x_raw)
+  if (sum(ok) < 10) return(NA_real_)
+  xv <- x_raw[ok]; tt <- time[ok]; ss <- status[ok]
+  if (is_binary) {
+    if (length(unique(xv)) < 2) return(NA_real_)
+    x <- xv
+  } else {
+    if (length(unique(xv)) < 3) return(NA_real_)
+    x <- inv_norm2(xv)
+  }
+  fit <- try(coxph(Surv(tt, ss) ~ x, control = coxph.control(iter.max = 0)), silent = TRUE)
+  if (inherits(fit, "try-error")) return(NA_real_)
+  unname(summary(fit)$sctest["pvalue"])
+}
+
+enrichment_stats <- function(p_spatial, p_nonspatial) {
+  ks <- try(ks.test(p_spatial, p_nonspatial), silent = TRUE)
+  D  <- if (inherits(ks, "try-error")) NA_real_ else unname(ks$statistic)
+  diff_stat <- mean(-log10(p_spatial), na.rm = TRUE) - mean(-log10(p_nonspatial), na.rm = TRUE)
+  c(D = D, diff = diff_stat)
+}
+
+permutation_enrichment_test <- function(cox_res, full_wide, histology_str, histology_label, B = 200, seed = 20260911) {
+  d_base <- full_wide[full_wide$simple_histology == histology_str, ]
+  d_base <- d_base[!is.na(d_base$time_to_event) & d_base$time_to_event > 0 & !is.na(d_base$status), ]
+
+  ## same feature pool as the parametric test in section 1
+  pool <- cox_res[cox_res$scale == "rank_INT" & cox_res$category %in% c(SPATIAL_CATS, NONSPATIAL_CATS) &
+                     !is.na(cox_res$p_lr), c("name", "category")]
+  pool <- pool[!duplicated(pool$name), ]
+  pool$is_spatial <- pool$category %in% SPATIAL_CATS
+  pool$is_binary  <- pool$category == "mutation"
+
+  compute_pool_p <- function(time, status) {
+    vapply(seq_len(nrow(pool)), function(k) {
+      score_p_fast(d_base[[pool$name[k]]], time, status, pool$is_binary[k])
+    }, numeric(1))
+  }
+
+  ## observed statistic, using the SAME fast score-test p (not the LR p from
+  ## 04) so the observed value and the permutation null are on the same scale
+  t0 <- Sys.time()
+  p_obs <- compute_pool_p(d_base$time_to_event, d_base$status)
+  obs <- enrichment_stats(p_obs[pool$is_spatial], p_obs[!pool$is_spatial])
+  log_msg(histology_label, ": permutation test -- observed (score-test p) D=", signif(obs["D"], 3),
+          " diff(mean -log10 p, spatial-nonspatial)=", signif(obs["diff"], 3),
+          "; one pass took ", round(as.numeric(difftime(Sys.time(), t0, units = "secs")), 2), "s, running B=", B, " permutations ...")
+
+  set.seed(seed)
+  D_null    <- numeric(B)
+  diff_null <- numeric(B)
+  tstart <- Sys.time()
+  for (b in seq_len(B)) {
+    perm_idx <- sample(nrow(d_base))
+    p_perm <- compute_pool_p(d_base$time_to_event[perm_idx], d_base$status[perm_idx])
+    st <- enrichment_stats(p_perm[pool$is_spatial], p_perm[!pool$is_spatial])
+    D_null[b] <- st["D"]; diff_null[b] <- st["diff"]
+    if (b %% 50 == 0) log_msg(histology_label, ": permutation ", b, "/", B, " done (",
+                               round(as.numeric(difftime(Sys.time(), tstart, units = "secs")), 1), "s elapsed)")
+  }
+
+  emp_p_ks   <- (1 + sum(D_null    >= obs["D"],    na.rm = TRUE)) / (1 + sum(!is.na(D_null)))
+  emp_p_diff_greater <- (1 + sum(diff_null >= obs["diff"], na.rm = TRUE)) / (1 + sum(!is.na(diff_null)))
+  emp_p_diff_twoside <- (1 + sum(abs(diff_null) >= abs(obs["diff"]), na.rm = TRUE)) / (1 + sum(!is.na(diff_null)))
+
+  list(
+    summary = data.frame(
+      histology = histology_label, B = B,
+      n_spatial = sum(pool$is_spatial), n_nonspatial = sum(!pool$is_spatial),
+      D_obs = unname(obs["D"]), emp_p_ks = emp_p_ks,
+      diff_obs = unname(obs["diff"]),
+      emp_p_diff_one_sided_spatial_gt = emp_p_diff_greater,
+      emp_p_diff_two_sided = emp_p_diff_twoside,
+      stringsAsFactors = FALSE
+    ),
+    D_null = D_null, diff_null = diff_null, D_obs = unname(obs["D"]), diff_obs = unname(obs["diff"])
+  )
+}
+
+if(!file.exists( file.path(RESULTS_DIR, "spatial_enrichment_permutation.rds"))){
+  log_msg("Running permutation-calibrated enrichment test for LUAD (B=200, patient-label permutation, fast score-test p) ...")
+  perm_luad <- permutation_enrichment_test(cox_luad, full_wide, "Adenocarcinoma", "LUAD", B = 200)
+  log_msg("Running permutation-calibrated enrichment test for LUSC (EXPLORATORY; B=200) ...")
+  perm_lusc <- permutation_enrichment_test(cox_lusc, full_wide, "Squamous cell carcinoma", "LUSC", B = 200)
+  
+  perm_summary <- rbind(perm_luad$summary, perm_lusc$summary)
+  log_msg("Permutation-calibrated enrichment test results (this is the trustworthy p-value; corrects for feature non-independence):")
+  print(perm_summary)
+  write.csv(perm_summary, file.path(RESULTS_DIR, "spatial_enrichment_permutation.csv"), row.names = FALSE)
+  saveRDS(list(summary = perm_summary, D_null_luad = perm_luad$D_null, diff_null_luad = perm_luad$diff_null,
+               D_null_lusc = perm_lusc$D_null, diff_null_lusc = perm_lusc$diff_null),
+          file.path(RESULTS_DIR, "spatial_enrichment_permutation.rds"))
+  
+  log_msg("LUAD: parametric KS p=", signif(enr_luad$ks_p, 3), " vs. permutation-calibrated KS p=",
+          signif(perm_luad$summary$emp_p_ks, 3), "; permutation-calibrated directional p (spatial > non-spatial)=",
+          signif(perm_luad$summary$emp_p_diff_one_sided_spatial_gt, 3))
+  log_msg("LUSC (EXPLORATORY): parametric KS p=", signif(enr_lusc$ks_p, 3), " vs. permutation-calibrated KS p=",
+          signif(perm_lusc$summary$emp_p_ks, 3), "; permutation-calibrated directional p (spatial > non-spatial)=",
+          signif(perm_lusc$summary$emp_p_diff_one_sided_spatial_gt, 3)) 
+} else {
+  perm_summary <- readRDS(file.path(RESULTS_DIR, "spatial_enrichment_permutation.rds"))
+}
+
+
+```
+
+
+## enrichment plot
+
+Bonus visual for the enrichment claim: ECDF of p-values, spatial vs
+non-spatial, per histology (not in the mandatory list but cheap and
+directly supports the KS-test claim above), PLUS a mandatory caveat title
+page and permutation-null histogram page added in round 2.
+
+```{r}
+perm_luad <- perm_summary$summary[1,]
+perm_lusc <- perm_summary$summary[2,]
+pdf(file.path(PLOTS_DIR, "enrichment_pvalue_ecdf_luad_lusc.pdf"), width = 10, height = 7)
+
+## --- Page 1 (round 2, NEW): prominent independence-assumption caveat ---
+op <- par(mar = c(1, 1, 3, 1))
+plot.new()
+title("CAVEAT: feature non-independence and the spatial-enrichment test", cex.main = 1.1)
+caveat_txt <- c(
+  "The parametric KS/Wilcoxon test on the next page assumes each feature's",
+  "p-value is an INDEPENDENT draw. That assumption is false for this feature pool:",
+  "",
+  paste0("  - Interaction features are pairwise combos of a small cell-type set: in LUAD, 7 of the top-8"),
+  paste0("    spatial hits are Neutrophil-partner interaction terms (DC.Neutrophil, T.Neutrophil,"),
+  paste0("    MacCD163.Neutrophil, Neutrophil.Tumor, Neutrophil.Neutrophil, Tumor.Neutrophil, ..."),
+  paste0("    other.Neutrophil), correlating rho=0.83-0.97 (Spearman, n=115) with the single non-spatial"),
+  paste0("    feature Neutrophil_density__IF1 (itself the top density hit, p=0.0003). See"),
+  paste0("    results/spatial_density_confounding_check.csv for the full numbers."),
+  "  - Cellohood CN fractions are compositional (sum-to-one, mutually anti-correlated by construction).",
+  "  - RNA_gene features are co-expressed in modules, not independent.",
+  "",
+  "=> The parametric KS p-values (this page's legend, and results/spatial_enrichment_test.csv) are",
+  "   ANTI-CONSERVATIVE and should not be read at face value.",
+  "",
+  "REMEDY: page 3 shows a patient-label permutation test (results/spatial_enrichment_permutation.csv).",
+  "Outcome labels are shuffled across patients while the feature matrix -- and hence its real",
+  "correlation structure -- is left untouched, so correlated features are permuted together and the",
+  "resulting null distribution already reflects this non-independence. That empirical p-value is the",
+  "one to trust; see docs/decisions_round2.md for full detail."
+)
+text(0.02, seq(0.95, 0.95 - 0.045 * (length(caveat_txt) - 1), length.out = length(caveat_txt)),
+     labels = caveat_txt, adj = c(0, 1), cex = 0.72, family = "mono")
+par(op)
+
+## --- Page 2: original ECDF panels, legend now also carries the caveat flag ---
+op <- par(mfrow = c(1, 2), mar = c(5, 5, 4, 2))
+ecdf_panel <- function(res, enr_row, perm_row, title_lab) {
+  sub <- res[res$scale == "rank_INT" & res$category %in% c(SPATIAL_CATS, NONSPATIAL_CATS) &
+               !is.na(res$p_lr), ]
+  sub$is_spatial <- sub$category %in% SPATIAL_CATS
+  plot(ecdf(sub$p_lr[sub$is_spatial]), col = "#7570b3", lwd = 2, main = title_lab,
+       xlab = "p (LR test, rank_INT scale)", ylab = "Cumulative fraction of features", do.points = FALSE)
+  plot(ecdf(sub$p_lr[!sub$is_spatial]), col = "#666666", lwd = 2, add = TRUE, do.points = FALSE)
+  abline(0, 1, lty = 3, col = "grey80")
+  legend("bottomright",
+         legend = c(paste0("Spatial (n=", enr_row$n_spatial, ")"),
+                    paste0("Non-spatial (n=", enr_row$n_nonspatial, ")"),
+                    paste0("Parametric KS p=", signif(enr_row$ks_p, 3), " [ANTI-CONSERVATIVE, see page 1]"),
+                    paste0("Permutation-calibrated KS p=", signif(perm_row$emp_p_ks, 3), " (trustworthy)")),
+         col = c("#7570b3", "#666666", NA, NA), lwd = c(2, 2, NA, NA), bty = "n", cex = 0.68)
+}
+ecdf_panel(cox_luad, enr_luad,perm_luad, "LUAD")
+ecdf_panel(cox_lusc, enr_lusc, perm_lusc, "LUSC -- EXPLORATORY (12 events cohort-wide)")
+par(op)
+
+
+## --- Page 3 (round 2, NEW): permutation-null histograms with observed stat ---
+op <- par(mfrow = c(2, 2), mar = c(5, 5, 4, 2))
+perm_hist <- function(null_vec, obs_val, emp_p, xlab_lab, title_lab) {
+  hist(null_vec, breaks = 25, col = "grey85", border = "white",
+       main = title_lab, xlab = xlab_lab,
+       xlim = range(c(null_vec, obs_val), na.rm = TRUE))
+  abline(v = obs_val, col = "blue", lwd = 2)
+  legend("topright", legend = c("Permutation null (B=200)", paste0("Observed"),
+                                 paste0("Empirical p=", signif(emp_p, 3))),
+         col = c("grey85", "blue", NA), lwd = c(6, 2, NA), bty = "n", cex = 0.75)
+}
+perm_hist(perm_summary$D_null_luad, perm_luad$D_obs,perm_luad$emp_p_ks,
+          "KS D (spatial vs non-spatial score-test p)", "LUAD: permutation null of KS D")
+perm_hist(perm_summary$D_null_lusc, perm_lusc$D_obs, perm_lusc$emp_p_ks,
+          "KS D (spatial vs non-spatial score-test p)", "LUSC -- EXPLORATORY: permutation null of KS D")
+perm_hist(perm_summary$diff_null_luad, perm_luad$diff_obs,perm_luad$emp_p_diff_one_sided_spatial_gt,
+          "mean(-log10 p) spatial - non-spatial", "LUAD: permutation null of directional shift")
+perm_hist(perm_summary$diff_null_lusc, perm_lusc$diff_obs, perm_lusc$emp_p_diff_one_sided_spatial_gt,
+          "mean(-log10 p) spatial - non-spatial", "LUSC -- EXPLORATORY: permutation null of directional shift")
+par(op)
+
+dev.off()
+```
+
+
+
+
+
+# 3. Forest plot: top spatial features by LR-test significance, per histology
+CAVEAT (round 2): these "top" features are frequently near-duplicates of
+each other (e.g. LUAD top spatial hits are dominated by Neutrophil-partner
+interaction terms that pairwise correlate rho up to 0.97, and are themselves
+strongly correlated with the non-spatial Neutrophil_density feature -- see
+results/spatial_density_confounding_check.csv and docs/decisions_round2.md).
+Read this panel as "the most significant redundant cluster of features",
+NOT as 8-15 independent findings; the plot annotates this directly below.
+
+```{r}
+
+top_spatial <- function(res, n_top = 15) {
+  sub <- res[res$scale == "rank_INT" & res$category %in% SPATIAL_CATS & !is.na(res$p_lr), ]
+  sub <- sub[order(sub$p_lr), ]
+  head(sub, n_top)
+}
+top_luad <- top_spatial(cox_luad, 30)
+top_lusc <- top_spatial(cox_lusc, 30)
+log_msg("Top spatial features LUAD (n=", nrow(top_luad), "), LUSC (n=", nrow(top_lusc), ")")
+
+forest_panel <- function(top_df, title_lab) {
+  n <- nrow(top_df)
+  if (n == 0) { plot.new(); title(title_lab); text(0.5, 0.5, "No spatial features passed filters"); return(invisible(NULL)) }
+  ## work on log(HR) scale; cap infinite/extreme CI bounds for display, flag capped ones
+  log_hr <- log(top_df$hr)
+  log_lo <- log(top_df$lo)
+  log_hi <- log(top_df$hi)
+  cap <- 4  # cap displayed |log HR| bound at this value (about 55-fold), flag with arrow
+  capped_lo <- log_lo < -cap
+  capped_hi <- log_hi > cap
+  log_lo[capped_lo] <- -cap
+  log_hi[capped_hi] <- cap
+
+  ord <- rev(seq_len(n))  # most significant at top
+  ylim <- c(0.5, n + 0.5)
+  xlim <- range(c(log_lo, log_hi, log_hr), na.rm = TRUE)
+  xlim <- xlim + c(-0.3, 0.3)
+
+  plot(NA, xlim = xlim, ylim = ylim, yaxt = "n", ylab = "",
+       xlab = "log(HR) per 1 SD (rank-based inverse-normal scale)", main = title_lab)
+  axis(2, at = ord, labels = top_df$name, las = 2, cex.axis = 0.55)
+  abline(v = 0, lty = 2, col = "grey60")
+  segments(log_lo, ord, log_hi, ord, col = "grey30")
+  points(log_hr, ord, pch = 16, col = ifelse(log_hr > 0, "red", "blue"), cex = 0.9)
+  if (any(capped_lo)) arrows(log_lo[capped_lo] + 0.05, ord[capped_lo], log_lo[capped_lo], ord[capped_lo],
+                              length = 0.05, col = "grey30")
+  if (any(capped_hi)) arrows(log_hi[capped_hi] - 0.05, ord[capped_hi], log_hi[capped_hi], ord[capped_hi],
+                              length = 0.05, col = "grey30")
+  text(xlim[2] - 0.1, ord, labels = paste0("p=", signif(top_df$p_lr, 2)), cex = 0.55, pos = 4, xpd = NA)
+}
+
+pdf(file.path(PLOTS_DIR, "forest_top_spatial_features.pdf"), width = 12, height = 8.5)
+op <- par(mfrow = c(1, 2), mar = c(5, 12, 4, 6), oma = c(3, 0, 0, 0))
+forest_panel(top_luad, paste0("LUAD: top spatial features by LR p-value\n(n=", nrow(top_luad),
+                               " shown, HR per 1 SD on rank-based scale)"))
+forest_panel(top_lusc, paste0("LUSC -- EXPLORATORY (12 events cohort-wide)\ntop spatial features by LR p-value (n=",
+                               nrow(top_lusc), ")"))
+mtext(paste0("CAVEAT: these features are highly inter-correlated (not independent findings) -- e.g. LUAD Neutrophil-partner ",
+             "interaction terms correlate rho=0.83-0.97 with each other and with Neutrophil_density__IF1. ",
+             "See results/spatial_density_confounding_check.csv and docs/decisions_round2.md."),
+      side = 1, outer = TRUE, line = 1, cex = 0.7, col = "grey30")
+par(op)
+dev.off()
+```
+# Top features overall
+## LUAD
+```{r}
+# colors
+col_vec <- c(pals::alphabet(n = 8))
+names(col_vec) <- c("IMC1", "IMC2", "IF1", "IF2", "IF3", "RNA", "cello1", "cello2")
+library(tidyverse)
+cur_luad <- cox_luad %>%
+  filter(scale == "rank_INT") %>%
+   arrange(p_lr) %>%
+  #filter(p_lr < 0.05) %>%
+  slice_head(n = 30) %>%
+  mutate(modality = str_split_i(string = name, pattern = "__", 2),
+         modality = str_split_i(string = modality, pattern = "_", 1),
+         feature = str_split_i(string = name, pattern = "__", 1))
+
+cur_ord <- cur_luad %>%
+  group_by(category) %>%
+  arrange(desc(hr), .by_group = TRUE) %>%
+  pull(feature)
+
+p_luad <- cur_luad %>%
+  ggplot(aes(x = hr, y = factor(feature, cur_ord), col = modality)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(xmin = lo, xmax = hi), lwd = 1, width = 0.3) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust = 1)) +
+  scale_x_log10(limits = c(-0.2, 6.5))+
+  theme_bw() +
+  scale_color_manual(values = col_vec)+
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  geom_text(aes(label = paste0("p = ", round(p_lr, 3))),
+            x = Inf, hjust = 1.05, col = "black", size = 3)+
+  facet_wrap(.~category, scales = "free_y", space = "free_y",strip.position = "top") +
+
+  theme(
+    strip.text       = element_text(size = 10, face = "bold", margin = margin(3, 3, 3, 3)),
+    strip.background = element_rect(fill = "grey90", color = NA),
+    panel.spacing    = unit(0.8, "lines"))+
+  labs(y = "Feature", x = "HR")
+
+p_luad
+```
+
+## LUSC
+```{r}
+library(tidyverse)
+cur_lusc <- cox_lusc %>%
+  filter(scale == "rank_INT") %>%
+   arrange(p_lr) %>%
+  #filter(p_lr < 0.05) %>%
+  slice_head(n = 30) %>%
+  mutate(modality = str_split_i(string = name, pattern = "__", 2),
+         modality = str_split_i(string = modality, pattern = "_", 1),
+         feature = str_split_i(string = name, pattern = "__", 1))
+
+cur_ord <- cur_lusc %>%
+  group_by(category) %>%
+  arrange(desc(hr), .by_group = TRUE) %>%
+  pull(feature)
+
+p_lusc <- cur_lusc %>%
+  ggplot(aes(x = hr, y = factor(feature, cur_ord), col = modality)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(xmin = lo, xmax = hi), lwd = 1, width = 0.3) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust = 1)) +
+  scale_x_log10(limits = c(-0.2, 28))+
+  scale_color_manual(values = col_vec)+
+  theme_bw() +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  geom_text(aes(label = paste0("p = ", round(p_lr, 3))),
+            x = Inf, hjust = 1.05, col = "black", size = 3)+
+  facet_wrap(.~category, scales = "free_y", space = "free_y",strip.position = "top") +
+
+  theme(
+    strip.text       = element_text(size = 10, face = "bold", margin = margin(3, 3, 3, 3)),
+    strip.background = element_rect(fill = "grey90", color = NA),
+    panel.spacing    = unit(0.8, "lines"))+
+  labs(y = "Feature", x = "HR")
+
+p_lusc
+```
+
+# 5. Bootstrap stability of top spatial features
+Stratified bootstrap (by event status) with replacement; refit rank-INT
+transform + coxph each replicate; track nominal significance (Wald p<0.05)
+and same direction of effect vs the original fit.
+CAVEAT (round 2): the "top 8" features bootstrapped per histology are drawn
+from the same redundant/correlated set flagged above -- high stability here
+reflects that a shared underlying signal (e.g. Neutrophil abundance) is
+stable, not that 8 independent spatial associations are each individually
+confirmed. See docs/decisions_round2.md.
+
+```{r}
+
+inv_norm <- function(x) {
+  n <- sum(!is.na(x)); if (n < 3) return(rep(NA_real_, length(x)))
+  qnorm((rank(x, na.last = "keep", ties.method = "average") - 0.5) / n)
+}
+
+stratified_boot_idx <- function(status) {
+  idx <- seq_along(status)
+  idx0 <- idx[status == 0]; idx1 <- idx[status == 1]
+  c(sample(idx0, length(idx0), replace = TRUE), sample(idx1, length(idx1), replace = TRUE))
+}
+
+bootstrap_feature <- function(nm, d_base, orig_coef, B = 200) {
+  d <- d_base[!is.na(d_base[[nm]]), c("time_to_event", "status", nm)]
+  colnames(d)[3] <- "x_raw"
+  n_sig <- 0L; n_same_dir <- 0L; n_estimable <- 0L
+  for (b in seq_len(B)) {
+    idx <- stratified_boot_idx(d$status)
+    db <- d[idx, ]
+    if (length(unique(db$x_raw)) < 3) next
+    db$x_rank <- inv_norm(db$x_raw)
+    fit <- try(coxph(Surv(time_to_event, status) ~ x_rank, data = db, ties = "efron"), silent = TRUE)
+    if (inherits(fit, "try-error") || !is.finite(stats::coef(fit))) next
+    n_estimable <- n_estimable + 1L
+    cf <- summary(fit)$coefficients
+    pw <- cf["x_rank", "Pr(>|z|)"]
+    co <- cf["x_rank", "coef"]
+    if (!is.na(pw) && pw < 0.05) n_sig <- n_sig + 1L
+    if (sign(co) == sign(orig_coef)) n_same_dir <- n_same_dir + 1L
+  }
+  data.frame(name = nm, B = B, n_estimable = n_estimable,
+             pct_significant = 100 * n_sig / B,
+             pct_same_direction = 100 * n_same_dir / n_estimable,
+             stringsAsFactors = FALSE)
+}
+
+run_bootstrap <- function(top_df, full_wide, histology_str, n_features = 8, B = 200) {
+  d_base <- full_wide[full_wide$simple_histology == histology_str, ]
+  d_base <- d_base[!is.na(d_base$time_to_event) & d_base$time_to_event > 0 & !is.na(d_base$status), ]
+  feats <- head(top_df$name, n_features)
+  orig_coefs <- top_df$coef[match(feats, top_df$name)]
+  res <- do.call(rbind, Map(function(nm, cf) bootstrap_feature(nm, d_base, cf, B = B), feats, orig_coefs))
+  res
+}
+
+log_msg("Running bootstrap stability for top LUAD spatial features ...")
+boot_luad <- run_bootstrap(top_luad, full_wide, "Adenocarcinoma", n_features = 8, B = 200)
+log_msg("Running bootstrap stability for top LUSC spatial features (EXPLORATORY) ...")
+boot_lusc <- run_bootstrap(top_lusc, full_wide, "Squamous cell carcinoma", n_features = 8, B = 200)
+
+boot_luad$histology <- "LUAD"; boot_lusc$histology <- "LUSC"
+boot_all <- rbind(boot_luad, boot_lusc)
+saveRDS(boot_all, file.path(RESULTS_DIR, "bootstrap_stability_top_spatial.rds"))
+write.csv(boot_all, file.path(RESULTS_DIR, "bootstrap_stability_top_spatial.csv"), row.names = FALSE)
+log_msg("Bootstrap stability results:")
+print(boot_all)
+
+pdf(file.path(PLOTS_DIR, "bootstrap_stability_top_spatial.pdf"), width = 12, height = 8.5)
+op <- par(mfrow = c(1, 2), mar = c(10, 5, 4, 2), oma = c(3, 0, 0, 0))
+stability_panel <- function(boot_df, title_lab) {
+  if (nrow(boot_df) == 0) { plot.new(); title(title_lab); return(invisible(NULL)) }
+  ord <- order(-boot_df$pct_significant)
+  bd <- boot_df[ord, ]
+  m <- rbind(bd$pct_significant, bd$pct_same_direction)
+  colnames(m) <- bd$name
+  bp <- barplot(m, beside = TRUE, las = 2, col = c("#1b9e77", "#7570b3"),
+                ylim = c(0, 100), ylab = "% of bootstrap replicates",
+                main = title_lab, cex.names = 0.6)
+  legend("topright", legend = c("% nominally significant (p<0.05)", "% same direction as original"),
+         fill = c("#1b9e77", "#7570b3"), bty = "n", cex = 0.7)
+  abline(h = 50, lty = 3, col = "grey60")
+}
+stability_panel(boot_luad, paste0("LUAD: bootstrap stability of top spatial features\n(B=200, stratified resampling, n=",
+                                    sum(full_wide$simple_histology == "Adenocarcinoma", na.rm = TRUE), " patients, 22 events)"))
+stability_panel(boot_lusc, paste0("LUSC -- EXPLORATORY: bootstrap stability of top spatial features\n(B=200, only 12 events cohort-wide -- expect low stability)"))
+mtext(paste0("CAVEAT: top features are highly inter-correlated (e.g. share the same partner cell type / underlying abundance signal) -- ",
+             "high stability here reflects a shared signal being stable, not 8 independent confirmations. See docs/decisions_round2.md."),
+      side = 1, outer = TRUE, line = 1, cex = 0.7, col = "grey30")
+par(op)
+dev.off()
+
+log_msg("Saved plots: enrichment_pvalue_ecdf_luad_lusc.pdf, forest_top_spatial_features.pdf, bootstrap_stability_top_spatial.pdf")
+log_msg("Round 2 new/updated outputs: results/spatial_density_confounding_check.{csv,rds}, ",
+        "results/spatial_enrichment_permutation.{csv,rds}, plus caveat pages/annotations added to all three plots above.")
+log_msg("DONE 05_spatial_vs_nonspatial.R")
+
+```
+
+

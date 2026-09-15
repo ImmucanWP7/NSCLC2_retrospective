@@ -36,103 +36,1394 @@ library(broom)
 library(survminer)
 library(ggplot2)
 library(scater)
+
+mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
 ```
 
 data
 ```{r}
-mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/"
-
 dens_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/densities_dat.rds"))
 cello_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/cello_dat.rds"))
-IMC1 <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/cell-pair_interactions_celltypes_minor_directional_P1.csv"))
-IMC2 <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/cell-pair_interactions_celltypes_minor_directional_P2.csv"))
-IF1 <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/cell-cell-pair_interactions_directional_IF1.csv")) 
-IF2 <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/cell-cell-pair_interactions_directional_IF2.csv"))
-IF3 <- read.csv(paste0(mount_path,"Figures/scores_for_sharing/cell-cell-pair_interactions_directional_IF3.csv"))
+int_dat <- readRDS(paste0(mount_path,"Figures/scores_for_sharing/interaction_dat.rds"))
+traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
+
+traits <- traits %>%
+  mutate(STK11_no_KRAS = STK11 & !KRAS, 
+         KEAP1_no_KRAS = KEAP1 & !KRAS,
+         KRAS_only = KRAS & !STK11 & !KEAP1,
+         KRAS_co   = KRAS & (STK11 | KEAP1),
+         KRAS_new = ifelse(KRAS_only, "KRAS_only", ifelse(KRAS_co, "KRAS_co", "Other")))
+
+modules <- as.data.frame(readRDS( "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/patient_imaging_meta_cluster_scores_tpm.rds"))
+
+modules <- modules  %>%
+  mutate(immucan_id = rownames(modules))
+rownames(modules) <- NULL
+
+rna <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_scores_tpm.rds")
+rna <- as.data.frame(rna)
+rna$immucan_id <- rownames(rna)
+rownames(rna) <- NULL
+colnames(rna) <- gsub(" ", "_", colnames(rna))
+colnames(rna) <- gsub("-", "_", colnames(rna))
 
 # select the 1000 most variable genes - also the ones used for mofa
 RNA <- read.csv(paste0(mount_path, "Figures/scores_for_sharing/MOFA/RNA_named.csv"))
+RNA <- RNA %>%
+  mutate(Immucan_id = gsub("_","-",Immucan_id)) %>%
+  rename(immucan_id = Immucan_id)
+```
 
-traits <- read_csv(paste0(mount_path,"Figures/scores_for_sharing/all_traits.csv"))
+```{r}
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(msigdbr)
+library(singscore)
+
+rna_mat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_mat_tpm.rds")
+
+
+# ── gene signatures ────────────────────────────────────────────────────
+hallmark_sets <- msigdbr(species = "Homo sapiens", collection = "H") %>%
+  dplyr::select(gs_name, gene_symbol) %>%
+  split(.$gs_name) %>%
+  lapply(function(x) x$gene_symbol)
+
+# Targeted Hallmark gene sets of interest
+target_sets <- c(
+  "HALLMARK_INFLAMMATORY_RESPONSE",
+  "HALLMARK_INTERFERON_GAMMA_RESPONSE",
+  "HALLMARK_INTERFERON_ALPHA_RESPONSE",
+  "HALLMARK_TNFA_SIGNALING_VIA_NFKB",
+  "HALLMARK_IL6_JAK_STAT3_SIGNALING",
+  "HALLMARK_IL2_STAT5_SIGNALING"
+)
+gs_list_hallmark <- hallmark_sets[intersect(target_sets, names(hallmark_sets))]
+
+# ── 2. Custom gene sets ────────────────────────────────────────────────────────
+# CXCL9/10/11 chemokine axis (T cell recruitment)
+gs_list_custom <- list(
+  CXCL9_10_11_axis = c("CXCL9", "CXCL10", "CXCL11", "CXCR3",
+                       "CXCL13", "CXCR5"),
+  T_cell_activation = c("CD8A", "CD8B", "GZMB", "PRF1", "IFNG",
+                        "TNF", "IL2", "PDCD1", "HAVCR2", "LAG3"),
+  type_I_IFN = c("IFNB1", "IRF7", "MX1", "OAS1", "OAS2", "OAS3",
+                 "ISG15", "IFIT1", "IFIT2", "IFIT3", "RSAD2", "HERC5"),
+  NF_kB_target  = c("NFKB1", "RELA", "RELB", "NFKB2", "REL",
+                    "BCL2L1", "IL1B", "IL6", "CXCL8", "TNF", "ICAM1"),
+  TCR_signaling = c("CD3D", "CD3E", "CD3G", "ZAP70", "LCK", "LAT",
+                    "ITK", "PLCG1", "NFATC1", "NFATC2"),
+  cytotoxic = c("GZMB", "GZMA", "GZMK", "PRF1", "NKG7", "IFNG", "KLRG1"),
+  exhaustion = c("PDCD1","LAG3","HAVCR2","TX","CTLA4", "IDO1")
+  )
+
+all_gs <- c(gs_list_hallmark, gs_list_custom)
+
+# compute score
+rna_for_score <- t(rna_mat)
+
+# Filter gene sets to genes present in the RNA-seq matrix
+all_gs <- lapply(all_gs, function(g) intersect(g, rownames(rna_for_score)))
+all_gs <- all_gs[sapply(all_gs, length) >= 4]
+
+
+
+overlap <- sapply(all_gs, function(g) sum(g %in% rownames(rna_for_score)))
+total   <- sapply(all_gs, length)
+print(data.frame(found = overlap, total = total, pct = round(100 * overlap / total)))
+
+# ── Score with singscore ──────────────────────────────────────────────────────
+ranked <- rankGenes(rna_for_score)
+
+scores_list <- lapply(names(all_gs), function(nm) {
+  sc <- simpleScore(ranked, upSet = all_gs[[nm]], centerScore = TRUE)
+  setNames(sc$TotalScore, rownames(sc))
+})
+
+
+inf_scores <- as.data.frame(do.call(cbind, scores_list))
+colnames(inf_scores) <- names(all_gs)
+rownames(inf_scores) <- colnames(rna_for_score)
+inf_scores$immucan_id <- rownames(inf_scores)
+rownames(inf_scores) <- NULL
 ```
 
 # merge data
 
 Note, we lost 13 patients do to one of the modalities missing
 ```{r}
-colnames(IMC1) <- c("immucan_id",paste0(colnames(IMC1[,-1]),"_IMC1"))
-colnames(IMC2) <- c("immucan_id",paste0(colnames(IMC2[,-1]),"_IMC2"))
-colnames(IF1) <- c("immucan_id",paste0(colnames(IF1[,-1]),"_IF1"))
-colnames(IF2) <- c("immucan_id",paste0(colnames(IF2[,-1]),"_IF2"))
-colnames(IF3) <- c("immucan_id",paste0(colnames(IF3[,-1]),"_IF3"))
-
-dat <- plyr::join_all(list(IMC1, IMC2, IF1, IF2, IF3, dens_dat,cello_dat), by='immucan_id', type='left')
+dat <- plyr::join_all(list(dens_dat, int_dat,cello_dat, RNA, rna, inf_scores, modules), by='immucan_id', type='left')
 dim(dat)
+sum(colnames(dat) %in% colnames(RNA))
 ```
 
-# Filtering
 
+
+# investigate completeness
 ```{r}
-# we will remove columns with more than 25% of NAs
-filt_dat <- apply(dat[,-1],2,function(x) sum(is.na(x)))
-rm_cols <- names(filt_dat[filt_dat > 190/4])
+raw <- dat  # pre-imputation, pre-filter
 
-dat <- dat %>%
-  select(!all_of(rm_cols))
+feat_qc <- tibble(name = setdiff(colnames(raw), "immucan_id")) %>%
+  rowwise() %>%
+  mutate(
+    x        = list(raw[[name]]),
+    n_obs    = sum(!is.na(x)),
+    frac_na  = 1 - n_obs / nrow(raw),
+    n_unique = dplyr::n_distinct(na.omit(x))
+  ) %>%
+  ungroup() %>% dplyr::select(-x) %>%
+  mutate(
+    drop_na        = frac_na > 0.5,
+    drop_degenerate = n_unique < 2,      # constant where observed; breaks coxph
+    keep = !(drop_na | drop_degenerate)
+  )
 
-#we will now remove all columns with more thnan 50% of 0 after setting NAs to 0
-dat <- dat %>%
-  mutate(across(.cols = -immucan_id, ~ ifelse(is.na(.), 0,.)))
-filt_dat <- apply(dat[,-1],2,function(x) sum(x == 0))
+feat_qc %>%
+  filter(frac_na > 0.5)
 
-rm_cols <- names(filt_dat[filt_dat > 190/2])
-dat <- dat %>%
-  select(!all_of(rm_cols))
+feat_qc %>% count(drop_na, drop_degenerate)
 
-
-dim(dat)
+dat_filt <- raw %>% dplyr::select(immucan_id, all_of(feat_qc$name[feat_qc$keep]))
+dim(dat_filt)
 ```
+
+
 
 # Univariate COX for continuous features - overall
+
 we will use:
 - imaging features
 - binary scores
 - 1000 most variable genes as used for MOFA
+- img modules
+- rna modules
+- infl signatures
 
 calculate HR for continuous values
 then binarize the features that survived FDR correction
 plot the HR for those features
 ```{r, fig.height=10}
 cur_traits <-traits %>%
-  select(immucan_id,TPS, CPS, TMB,TP53,EGFR, KRAS,STK11,CDKN2A,PIK3CA, censoring,time_to_event)
+  dplyr::select(immucan_id,TPS, CPS, TMB,TP53,EGFR, KRAS, KEAP1, KRAS_only, KRAS_co,STK11,CDKN2A,PIK3CA, censoring,time_to_event)
 cur_traits <- cur_traits %>%
-  mutate(across(.cols = c(TP53,EGFR, KRAS, STK11,CDKN2A,PIK3CA),.fns = ~ ifelse(. == TRUE,1,0)))
-res <- left_join(dat,cur_traits,by = "immucan_id")
+  mutate(across(.cols = c(TP53,EGFR, KRAS, KRAS_co, KRAS_only, KEAP1, STK11,CDKN2A,PIK3CA),.fns = ~ ifelse(. == TRUE,1,0)))
+cur_traits <- cur_traits %>%
+  rename(gCDKN2A = CDKN2A)
+res <- left_join(dat_filt,cur_traits,by = "immucan_id")
+
+res_long<- res %>%
+  pivot_longer(cols = -c(immucan_id, censoring, time_to_event)) %>%
+  mutate(type = case_when(grepl("density", name) ~ "numeric",
+                          name %in% colnames(int_dat) ~ "numeric",
+                          grepl("cello", name) ~ "numeric",
+                          name %in% colnames(rna) ~ "enrichment_score",
+                          name %in% colnames(modules) ~ "z_score",
+                          name %in% colnames(inf_scores) ~ "enrichment_score",
+                          name %in% c("TP53","EGFR", "KRAS", "KRAS_co", "KRAS_only", "KEAP1",
+                                      "STK11","gCDKN2A","PIK3CA") ~ "binary",
+                          name %in% c("TPS", "CPS", "TMB") ~ "numeric",
+                          name %in% colnames(RNA) ~ "numeric"))
 
 
+stopifnot(!any(is.na(res_long$type)))
+dim(res)
+```
+
+## all data LUAD 
+```{r}
+EVENT_VALUE <- 1
+pats <- traits %>%
+  filter(simple_histology == "Adenocarcinoma") %>%
+  pull(immucan_id)
+
+luad <- res_long%>%
+  filter(immucan_id %in% pats)
+# one row per patient
+surv_base <- luad %>%
+  dplyr::distinct(immucan_id, time_to_event, censoring) %>%
+  dplyr::mutate(status = as.integer(censoring == EVENT_VALUE)) %>%
+  dplyr::filter(!is.na(time_to_event), time_to_event > 0, !is.na(status))
+
+stopifnot(nrow(surv_base) == dplyr::n_distinct(surv_base$immucan_id))
+
+# name -> type lookup, carried over from the long format
+feat_type <- luad %>% dplyr::distinct(name, type)
+stopifnot(nrow(feat_type) == dplyr::n_distinct(feat_type$name))  # no name in 2 blocks
+
+# values as a patient x feature matrix, aligned to surv_base
+wide <- luad %>%
+  dplyr::select(immucan_id, name, value) %>%
+  tidyr::pivot_wider(names_from = name, values_from = value)
+
+stopifnot(!any(vapply(wide, is.list, logical(1))))  # list-cols = duplicated IDs
+
+keep_ids  <- intersect(surv_base$immucan_id, wide$immucan_id)
+surv_base <- surv_base %>% dplyr::filter(immucan_id %in% keep_ids) %>% dplyr::arrange(immucan_id)
+wide      <- wide      %>% dplyr::filter(immucan_id %in% keep_ids) %>% dplyr::arrange(immucan_id)
+stopifnot(identical(surv_base$immucan_id, wide$immucan_id))
+
+feat_names <- setdiff(colnames(wide), "immucan_id")
+c(patients = nrow(wide), features = length(feat_names), events = sum(surv_base$status))
+```
+
+### survival modeling
+```{r}
+library(survival)
+
+MIN_EVENTS  <- 10          # events among patients with the feature observed
+MIN_PREV    <- 10          # binary: smaller group size
+covar_terms <- character(0)  # e.g. c("age","sex","stage","strata(centre)")
+
+inv_norm <- function(x) {
+  n <- sum(!is.na(x)); if (n < 3) return(rep(NA_real_, length(x)))
+  qnorm((rank(x, na.last = "keep", ties.method = "average") - 0.5) / n)
+}
+tie_fraction <- function(x) { x <- x[!is.na(x)]; if (!length(x)) NA_real_ else max(table(x))/length(x) }
+
+fit_one <- function(d, xcol, lab) {
+  na_row <- tibble::tibble(scale = lab, hr = NA_real_, lo = NA_real_, hi = NA_real_,
+                           coef = NA_real_, se = NA_real_, p_wald = NA_real_,
+                           lr_chisq = NA_real_, p_lr = NA_real_,
+                           cindex = NA_real_, p_ph = NA_real_)
+  if (length(unique(stats::na.omit(d[[xcol]]))) < 2) return(na_row)
+
+  f <- stats::as.formula(paste("Surv(time_to_event, status) ~",
+                               paste(c(xcol, covar_terms), collapse = " + ")))
+  fit <- try(coxph(f, data = d, ties = "efron"), silent = TRUE)
+  if (inherits(fit, "try-error") || !all(is.finite(stats::coef(fit)))) return(na_row)
+
+  s  <- summary(fit)
+  cf <- s$coefficients[xcol, ]; ci <- s$conf.int[xcol, ]
+
+  if (length(covar_terms)) {
+    f0 <- stats::as.formula(paste("Surv(time_to_event, status) ~",
+                                  paste(covar_terms, collapse = " + ")))
+    fit0 <- try(coxph(f0, data = d, ties = "efron"), silent = TRUE)
+    lr <- if (inherits(fit0, "try-error")) NA_real_ else 2*(fit$loglik[2] - fit0$loglik[2])
+  } else {
+    lr <- 2*(fit$loglik[2] - fit$loglik[1])
+  }
+
+  zph  <- try(cox.zph(fit), silent = TRUE)
+  p_ph <- if (inherits(zph, "try-error") || !xcol %in% rownames(zph$table)) NA_real_
+          else unname(zph$table[xcol, "p"])
+
+  tibble::tibble(scale = lab,
+                 hr = unname(ci["exp(coef)"]), lo = unname(ci["lower .95"]),
+                 hi = unname(ci["upper .95"]), coef = unname(cf["coef"]),
+                 se = unname(cf["se(coef)"]), p_wald = unname(cf["Pr(>|z|)"]),
+                 lr_chisq = lr,
+                 p_lr = if (is.na(lr)) NA_real_ else stats::pchisq(lr, 1, lower.tail = FALSE),
+                 cindex = unname(concordance(fit)$concordance),
+                 p_ph = p_ph)
+}
+
+fit_feature <- function(nm) {
+  ty <- feat_type$type[match(nm, feat_type$name)]
+  d  <- surv_base
+  d$value <- wide[[nm]]
+  d  <- d[!is.na(d$value), , drop = FALSE]
+
+  n_obs <- nrow(d); n_ev <- sum(d$status)
+  if (n_ev < MIN_EVENTS) return(NULL)
+
+  if (ty == "binary") {
+    tb <- table(d$value)
+    if (length(tb) < 2 || min(tb) < MIN_PREV) return(NULL)
+    d$x_rank <- d$value; d$x_sd <- d$value
+    prev <- mean(d$value == 1); tf <- NA_real_; unit <- "present vs absent"
+  } else {
+    if (length(unique(d$value)) < 3) return(NULL)
+    d$x_rank <- inv_norm(d$value)
+    sdv <- stats::sd(d$value)
+    d$x_sd <- if (sdv > 0) (d$value - mean(d$value))/sdv else NA_real_
+    prev <- NA_real_; tf <- tie_fraction(d$value); unit <- "per 1 SD normal scores"
+  }
+
+  dplyr::bind_rows(fit_one(d, "x_rank", "rank_INT"),
+                   fit_one(d, "x_sd",   "per_SD")) %>%
+    dplyr::mutate(name = nm, type = ty, n = n_obs, n_events = n_ev,
+                  prevalence = prev, tie_frac = tf, scale_unit = unit, .before = 1)
+}
+
+cox_res <- purrr::map_dfr(feat_names, fit_feature)
+
+cox_res <- cox_res %>%
+  dplyr::group_by(scale, type) %>%
+  dplyr::mutate(fdr_within_type = stats::p.adjust(p_lr, method = "BH")) %>%
+  dplyr::group_by(scale) %>%
+  dplyr::mutate(fdr_global = stats::p.adjust(p_lr, method = "BH")) %>%
+  dplyr::ungroup()
+
+primary <- cox_res %>%
+  dplyr::filter(scale == "rank_INT") %>%
+  dplyr::arrange(dplyr::desc(abs(log(hr))))
+
+cox_res %>% dplyr::filter(scale == "rank_INT") %>%
+  dplyr::group_by(type) %>%
+  dplyr::summarise(tested = dplyr::n(),
+                   n_med = stats::median(n), ev_med = stats::median(n_events),
+                   fdr = sum(fdr_within_type < 0.1, na.rm = TRUE),
+                   raw05 = sum(p_lr < 0.05, na.rm = TRUE), .groups = "drop")
+
+cox_res %>%
+  arrange(p_lr) %>%
+  filter(name == "Neutrophil_density__IF1")
+cox_res %>%
+  arrange(p_lr) %>%
+  filter(name == "EGFR")
+val_dat <- dat_filt %>% left_join(traits, "immucan_id")
+coxph(Surv(time_to_event, censoring) ~ TP53, data = val_dat %>% filter(simple_histology == "Adenocarcinoma"))
+coxph(Surv(time_to_event, censoring) ~ Cold_fibrotic, data = val_dat %>% filter(simple_histology == "Adenocarcinoma"))
+cox_res %>%
+  filter(name == "Cold_fibrotic")
+colnames(cox_res)
+```
+
+
+## all data
+```{r}
+# one row per patient
+surv_base <- res_long %>%
+  dplyr::distinct(immucan_id, time_to_event, censoring) %>%
+  dplyr::mutate(status = as.integer(censoring == EVENT_VALUE)) %>%
+  dplyr::filter(!is.na(time_to_event), time_to_event > 0, !is.na(status))
+
+stopifnot(nrow(surv_base) == dplyr::n_distinct(surv_base$immucan_id))
+
+# name -> type lookup, carried over from the long format
+feat_type <- res_long%>% dplyr::distinct(name, type)
+stopifnot(nrow(feat_type) == dplyr::n_distinct(feat_type$name))  # no name in 2 blocks
+
+# values as a patient x feature matrix, aligned to surv_base
+wide <- res_long%>%
+  dplyr::select(immucan_id, name, value) %>%
+  tidyr::pivot_wider(names_from = name, values_from = value)
+
+stopifnot(!any(vapply(wide, is.list, logical(1))))  # list-cols = duplicated IDs
+
+keep_ids  <- intersect(surv_base$immucan_id, wide$immucan_id)
+surv_base <- surv_base %>% dplyr::filter(immucan_id %in% keep_ids) %>% dplyr::arrange(immucan_id)
+wide      <- wide      %>% dplyr::filter(immucan_id %in% keep_ids) %>% dplyr::arrange(immucan_id)
+stopifnot(identical(surv_base$immucan_id, wide$immucan_id))
+
+feat_names <- setdiff(colnames(wide), "immucan_id")
+c(patients = nrow(wide), features = length(feat_names), events = sum(surv_base$status))
+```
+
+## survival modeling
+```{r}
+library(survival)
+
+MIN_EVENTS  <- 10          # events among patients with the feature observed
+MIN_PREV    <- 10          # binary: smaller group size
+covar_terms <- character(0)  # e.g. c("age","sex","stage","strata(centre)")
+
+inv_norm <- function(x) {
+  n <- sum(!is.na(x)); if (n < 3) return(rep(NA_real_, length(x)))
+  qnorm((rank(x, na.last = "keep", ties.method = "average") - 0.5) / n)
+}
+tie_fraction <- function(x) { x <- x[!is.na(x)]; if (!length(x)) NA_real_ else max(table(x))/length(x) }
+
+fit_one <- function(d, xcol, lab) {
+  na_row <- tibble::tibble(scale = lab, hr = NA_real_, lo = NA_real_, hi = NA_real_,
+                           coef = NA_real_, se = NA_real_, p_wald = NA_real_,
+                           lr_chisq = NA_real_, p_lr = NA_real_,
+                           cindex = NA_real_, p_ph = NA_real_)
+  if (length(unique(stats::na.omit(d[[xcol]]))) < 2) return(na_row)
+
+  f <- stats::as.formula(paste("Surv(time_to_event, status) ~",
+                               paste(c(xcol, covar_terms), collapse = " + ")))
+  fit <- try(coxph(f, data = d, ties = "efron"), silent = TRUE)
+  if (inherits(fit, "try-error") || !all(is.finite(stats::coef(fit)))) return(na_row)
+
+  s  <- summary(fit)
+  cf <- s$coefficients[xcol, ]; ci <- s$conf.int[xcol, ]
+
+  if (length(covar_terms)) {
+    f0 <- stats::as.formula(paste("Surv(time_to_event, status) ~",
+                                  paste(covar_terms, collapse = " + ")))
+    fit0 <- try(coxph(f0, data = d, ties = "efron"), silent = TRUE)
+    lr <- if (inherits(fit0, "try-error")) NA_real_ else 2*(fit$loglik[2] - fit0$loglik[2])
+  } else {
+    lr <- 2*(fit$loglik[2] - fit$loglik[1])
+  }
+
+  zph  <- try(cox.zph(fit), silent = TRUE)
+  p_ph <- if (inherits(zph, "try-error") || !xcol %in% rownames(zph$table)) NA_real_
+          else unname(zph$table[xcol, "p"])
+
+  tibble::tibble(scale = lab,
+                 hr = unname(ci["exp(coef)"]), lo = unname(ci["lower .95"]),
+                 hi = unname(ci["upper .95"]), coef = unname(cf["coef"]),
+                 se = unname(cf["se(coef)"]), p_wald = unname(cf["Pr(>|z|)"]),
+                 lr_chisq = lr,
+                 p_lr = if (is.na(lr)) NA_real_ else stats::pchisq(lr, 1, lower.tail = FALSE),
+                 cindex = unname(concordance(fit)$concordance),
+                 p_ph = p_ph)
+}
+
+fit_feature <- function(nm) {
+  ty <- feat_type$type[match(nm, feat_type$name)]
+  d  <- surv_base
+  d$value <- wide[[nm]]
+  d  <- d[!is.na(d$value), , drop = FALSE]
+
+  n_obs <- nrow(d); n_ev <- sum(d$status)
+  if (n_ev < MIN_EVENTS) return(NULL)
+
+  if (ty == "binary") {
+    tb <- table(d$value)
+    if (length(tb) < 2 || min(tb) < MIN_PREV) return(NULL)
+    d$x_rank <- d$value; d$x_sd <- d$value
+    prev <- mean(d$value == 1); tf <- NA_real_; unit <- "present vs absent"
+  } else {
+    if (length(unique(d$value)) < 3) return(NULL)
+    d$x_rank <- inv_norm(d$value)
+    sdv <- stats::sd(d$value)
+    d$x_sd <- if (sdv > 0) (d$value - mean(d$value))/sdv else NA_real_
+    prev <- NA_real_; tf <- tie_fraction(d$value); unit <- "per 1 SD normal scores"
+  }
+
+  dplyr::bind_rows(fit_one(d, "x_rank", "rank_INT"),
+                   fit_one(d, "x_sd",   "per_SD")) %>%
+    dplyr::mutate(name = nm, type = ty, n = n_obs, n_events = n_ev,
+                  prevalence = prev, tie_frac = tf, scale_unit = unit, .before = 1)
+}
+
+cox_res <- purrr::map_dfr(feat_names, fit_feature)
+
+cox_res <- cox_res %>%
+  dplyr::group_by(scale, type) %>%
+  dplyr::mutate(fdr_within_type = stats::p.adjust(p_lr, method = "BH")) %>%
+  dplyr::group_by(scale) %>%
+  dplyr::mutate(fdr_global = stats::p.adjust(p_lr, method = "BH")) %>%
+  dplyr::ungroup()
+
+primary <- cox_res %>%
+  dplyr::filter(scale == "rank_INT") %>%
+  dplyr::arrange(dplyr::desc(abs(log(hr))))
+
+cox_res %>% dplyr::filter(scale == "rank_INT") %>%
+  dplyr::group_by(type) %>%
+  dplyr::summarise(tested = dplyr::n(),
+                   n_med = stats::median(n), ev_med = stats::median(n_events),
+                   fdr = sum(fdr_within_type < 0.1, na.rm = TRUE),
+                   raw05 = sum(p_lr < 0.05, na.rm = TRUE), .groups = "drop")
+
+cox_res %>%
+  filter(name %in% colnames(modules))
+```
+
+
+# screen
+```{r}
+# ============================================================================
+# QC / diagnostic plots for the univariate Cox screen
+#
+# Expects in the environment:
+#   cox_res     - screen output (long over `scale`)
+#   surv_base   - immucan_id, time_to_event, censoring, status  (1 row/patient)
+#   wide        - immucan_id + one column per feature           (1 row/patient)
+#   feat_type   - name, type
+#   feat_names  - character vector of feature columns
+#   fit_feature(), fit_one(), inv_norm(), tie_fraction()  from the screen chunk
+#
+# Message of this figure set: the screen is power-limited, not signal-free,
+# and that is the argument for MOFA / module-level feature reduction.
+# ============================================================================
+
+suppressPackageStartupMessages({
+  library(dplyr); library(tidyr); library(ggplot2); library(purrr); library(survival)
+})
+
+traits <- traits %>%
+  mutate(simple_histology = ifelse(simple_histology == "Adenocarcinoma" ,"LUAD", simple_histology),
+         simple_histology = ifelse(simple_histology == "Squamous cell carcinoma" ,"LUSC", simple_histology))
+
+SUBTYPE_COL <- "simple_histology"   # column in `traits` holding LUAD / LUSC
+N_PERM      <- 20            # permutation null for the subtype overlap (slow)
+TOP_N       <- 20
+
+theme_set(theme_bw(base_size = 10))
+blk_cols <- c(numeric = "#4C72B0", enrichment_score = "#DD8452",
+              z_score = "#55A868", binary = "#C44E52")
+
+prim <- cox_res %>% filter(scale == "rank_INT")
+
+# ===========================================================================
+# 1. IS THERE ANY SIGNAL AT ALL?  p-value histogram per block
+#    Flat = indistinguishable from null. This is the headline QC panel.
+# ===========================================================================
+
+p_hist <- ggplot(prim, aes(p_lr)) +
+  geom_histogram(aes(fill = type), breaks = seq(0, 1, 0.05),
+                 colour = "white", linewidth = 0.2, show.legend = FALSE) +
+  geom_hline(data = prim %>% count(type) %>% mutate(exp = n * 0.05),
+             aes(yintercept = exp), linetype = 2, colour = "grey30") +
+  facet_wrap(~ type, scales = "free_y") +
+  scale_fill_manual(values = blk_cols) +
+  labs(x = "Likelihood-ratio p-value", y = "features",
+       title = "P-value distribution per feature block",
+       subtitle = "Dashed line = count expected under the global null")
+p_hist
+# ---- observed vs expected nominal hits ------------------------------------
+enrich_tbl <- prim %>%
+  group_by(type) %>%
+  summarise(tested = n(),
+            obs05  = sum(p_lr < 0.05, na.rm = TRUE),
+            exp05  = 0.05 * tested,
+            ratio  = obs05 / exp05,
+            # one-sided binomial test: more nominal hits than chance?
+            p_bin  = binom.test(obs05, tested, 0.05, alternative = "greater")$p.value,
+            .groups = "drop")
+
+p_enrich <- enrich_tbl %>%
+  pivot_longer(c(obs05, exp05), names_to = "which", values_to = "count") %>%
+  ggplot(aes(type, count, fill = which)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c(obs05 = "#4C72B0", exp05 = "grey70"),
+                    labels = c(obs05 = "observed", exp05 = "expected"), name = NULL) +
+  labs(x = NULL, y = "features with p < 0.05",
+       title = "Nominal hits vs chance expectation, by block")
+p_enrich
+# ===========================================================================
+# 2. QQ PLOT -- deviation from uniform, with an inflation summary
+# ===========================================================================
+
+qq_dat <- prim %>%
+  filter(!is.na(p_lr)) %>%
+  group_by(type) %>%
+  arrange(p_lr, .by_group = TRUE) %>%
+  mutate(expected = -log10(ppoints(n())),
+         observed = -log10(p_lr)) %>%
+  ungroup()
+
+lambda_tbl <- prim %>%
+  filter(!is.na(lr_chisq)) %>%
+  group_by(type) %>%
+  summarise(lambda = median(lr_chisq, na.rm = TRUE) / qchisq(0.5, 1), .groups = "drop")
+
+p_qq <- ggplot(qq_dat, aes(expected, observed, colour = type)) +
+  geom_abline(slope = 1, intercept = 0, colour = "grey50", linetype = 2) +
+  geom_point(size = 0.6, alpha = 0.6) +
+  geom_text(data = lambda_tbl, inherit.aes = FALSE,
+            aes(x = 0, y = Inf, label = sprintf("lambda = %.2f", lambda)),
+            hjust = 0, vjust = 1.5, size = 3) +
+  facet_wrap(~ type) +
+  scale_colour_manual(values = blk_cols, guide = "none") +
+  labs(x = expression(Expected~-log[10](p)), y = expression(Observed~-log[10](p)),
+       title = "QQ plot against the uniform null",
+       subtitle = "lambda > 1 indicates more signal (or confounding) than chance")
+p_qq
+# ===========================================================================
+# 3. POWER -- what this design could have detected
+#    This is the panel that turns "we found nothing" into a quantitative claim.
+# ===========================================================================
+
+n_ev    <- sum(surv_base$status)
+n_tests <- nrow(prim)
+
+detectable_hr <- function(d, alpha, power = 0.8) {
+  exp((qnorm(1 - alpha / 2) + qnorm(power)) / sqrt(d))
+}
+
+pow_grid <- expand_grid(
+  events = seq(10, 300, by = 5),
+  thresh = c("nominal 0.05", sprintf("Bonferroni (%d tests)", n_tests))
+) %>%
+  mutate(alpha = ifelse(thresh == "nominal 0.05", 0.05, 0.05 / n_tests),
+         hr    = detectable_hr(events, alpha))
+
+p_power <- ggplot(pow_grid, aes(events, hr, colour = thresh)) +
+  geom_line(linewidth = 0.8) +
+  geom_vline(xintercept = n_ev, linetype = 2) +
+  annotate("text", x = n_ev, y = Inf, label = sprintf("  this study: %d events", n_ev),
+           hjust = 0, vjust = 1.5, size = 3) +
+  scale_y_log10(breaks = c(1.2, 1.5, 2, 3, 5, 10)) +
+  scale_colour_manual(values = c("#4C72B0", "#C44E52"), name = NULL) +
+  labs(x = "number of events", y = "smallest detectable HR per SD (80% power)",
+       title = "Detection limit of the screen",
+       subtitle = "Effects below these curves cannot be recovered at this event count")
+p_power
+# observed effect sizes against the same limit
+lim_nom  <- detectable_hr(n_ev, 0.05)
+lim_bonf <- detectable_hr(n_ev, 0.05 / n_tests)
+
+p_effect_dist <- ggplot(prim, aes(hr, fill = type)) +
+  geom_histogram(bins = 60, colour = "white", linewidth = 0.15) +
+  geom_vline(xintercept = c(1/lim_bonf, lim_bonf), colour = "#C44E52", linetype = 2) +
+  geom_vline(xintercept = c(1/lim_nom, lim_nom), colour = "#4C72B0", linetype = 3) +
+  scale_x_log10() +
+  scale_fill_manual(values = blk_cols, name = NULL) +
+  labs(x = "HR per SD (rank scale, log axis)", y = "features",
+       title = "Observed effect sizes vs the detection limit",
+       subtitle = "Dashed: Bonferroni limit. Dotted: nominal limit. Most of the distribution sits inside.")
+p_effect_dist
+# ===========================================================================
+# 4. TECHNICAL DIAGNOSTICS -- are effect estimates being driven by artefacts?
+# ===========================================================================
+
+# 4a. SE is governed by events, not patients
+p_se <- ggplot(prim, aes(n_events, se, colour = type)) +
+  geom_point(size = 0.7, alpha = 0.6) +
+  stat_function(fun = function(d) 1/sqrt(d), colour = "black", linetype = 2) +
+  scale_colour_manual(values = blk_cols, name = NULL) +
+  labs(x = "events among patients with the feature observed", y = "SE(log HR)",
+       title = "Precision is set by event count",
+       subtitle = "Dashed: theoretical 1/sqrt(events) for a standardised covariate")
+p_se
+# 4b. tie fraction -- features where the normal-score transform has a point mass
+p_ties <- prim %>%
+  filter(!is.na(tie_frac)) %>%
+  ggplot(aes(tie_frac, abs(log(hr)), colour = type)) +
+  geom_vline(xintercept = 0.3, linetype = 2, colour = "grey40") +
+  geom_point(size = 0.7, alpha = 0.6) +
+  scale_colour_manual(values = blk_cols, name = NULL) +
+  labs(x = "fraction of observations in the largest tied block", y = "|log HR|",
+       title = "Zero-inflation and effect size",
+       subtitle = "Right of the line the rank transform is a point mass, not a continuum")
+p_ties
+# 4c. rank vs SD scale -- disagreement flags outlier-driven estimates
+scale_cmp <- cox_res %>%
+  filter(type != "binary") %>%
+  dplyr::select(name, type, scale, coef) %>%
+  pivot_wider(names_from = scale, values_from = coef) %>%
+  filter(!is.na(rank_INT), !is.na(per_SD)) %>%
+  mutate(discordant = sign(rank_INT) != sign(per_SD) |
+           abs(rank_INT - per_SD) > 0.5 * pmax(abs(rank_INT), abs(per_SD)))
+
+p_scale <- ggplot(scale_cmp, aes(per_SD, rank_INT, colour = discordant)) +
+  geom_abline(slope = 1, intercept = 0, linetype = 2, colour = "grey50") +
+  geom_hline(yintercept = 0, colour = "grey85") +
+  geom_vline(xintercept = 0, colour = "grey85") +
+  geom_point(size = 0.7, alpha = 0.6) +
+  scale_colour_manual(values = c(`FALSE` = "grey55", `TRUE` = "#C44E52"),
+                      labels = c("consistent", "discordant"), name = NULL) +
+  labs(x = "log HR, per SD on native scale", y = "log HR, rank-based normal scores",
+       title = "Effect estimates across transformations",
+       subtitle = sprintf("%d/%d features discordant -- outlier-driven on the native scale",
+                          sum(scale_cmp$discordant), nrow(scale_cmp)))
+p_scale
+# 4d. PH assumption
+p_ph_hist <- prim %>%
+  filter(!is.na(p_ph)) %>%
+  ggplot(aes(p_ph)) +
+  geom_histogram(breaks = seq(0, 1, 0.05), fill = "#8172B3", colour = "white",
+                 linewidth = 0.2) +
+  labs(x = "cox.zph p-value", y = "features",
+       title = "Proportional hazards check",
+       subtitle = "Underpowered at this event count; a flat distribution is weak reassurance")
+p_ph_hist
+# ===========================================================================
+# 5. TOP-N FORESTS
+# ===========================================================================
+
+forest_of <- function(df, ttl, n = TOP_N) {
+  d <- df %>%
+    filter(!is.na(hr), is.finite(lo), is.finite(hi)) %>%
+    slice_max(abs(log(hr)), n = n) %>%
+    mutate(name = factor(name, levels = name[order(log(hr))]))
+  ggplot(d, aes(hr, name, colour = type)) +
+    geom_vline(xintercept = 1, linetype = 2, colour = "grey50") +
+    geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0, linewidth = 0.4) +
+    geom_point(size = 1.8) +
+    geom_text(aes(x = hi, label = sprintf("  n=%d/%d ev", n, n_events)),
+              hjust = 0, size = 2.4, colour = "grey35") +
+    scale_x_log10() +
+    scale_colour_manual(values = blk_cols, name = NULL) +
+    coord_cartesian(clip = "off") +
+    labs(x = "HR per SD (rank scale)", y = NULL, title = ttl,
+         subtitle = "Ranked by |log HR|. No feature survives FDR; shown as hypothesis-generating only.") +
+    theme(plot.margin = margin(5, 60, 5, 5))
+}
+
+p_top_all <- forest_of(prim, sprintf("Top %d features, full cohort", TOP_N))
+
+p_top_all
+```
+
+```{r}
+# ===========================================================================
+# 6. SUBTYPE SPLIT -- with the null it has to be read against
+# ===========================================================================
+
+subtypes <- traits %>%
+  dplyr::select(immucan_id, all_of(SUBTYPE_COL)) %>%
+  rename(subtype = all_of(SUBTYPE_COL)) %>%
+  filter(subtype %in% c("LUAD", "LUSC"))
+
+sb_full <- surv_base   # keep a copy; run_screen rebinds the globals
+
+#' Re-run the rank-scale screen on a subset of patients.
+run_screen <- function(ids, features = feat_names) {
+  keep <- surv_base$immucan_id %in% ids
+  sb   <- surv_base[keep, , drop = FALSE]
+  wd   <- wide[keep, , drop = FALSE]
+  if (sum(sb$status) < 10) return(tibble())
+
+  map_dfr(features, function(nm) {
+    d <- sb; d$value <- wd[[nm]]
+    d <- d[!is.na(d$value), , drop = FALSE]
+    if (sum(d$status) < 8 || length(unique(d$value)) < 3) return(NULL)
+    d$x <- if (length(unique(d$value)) == 2) d$value else inv_norm(d$value)
+    fit <- try(coxph(Surv(time_to_event, status) ~ x, data = d, ties = "efron"),
+               silent = TRUE)
+    if (inherits(fit, "try-error") || !all(is.finite(coef(fit)))) return(NULL)
+    s <- summary(fit)
+    tibble(name = nm, coef = unname(s$coefficients["x", "coef"]),
+           hr = unname(s$conf.int["x", "exp(coef)"]),
+           lo = unname(s$conf.int["x", "lower .95"]),
+           hi = unname(s$conf.int["x", "upper .95"]),
+           p  = unname(s$coefficients["x", "Pr(>|z|)"]),
+           n = nrow(d), n_events = sum(d$status))
+  })
+}
+
+id_luad <- subtypes$immucan_id[subtypes$subtype == "LUAD"]
+id_lusc <- subtypes$immucan_id[subtypes$subtype == "LUSC"]
+
+message(sprintf("LUAD: %d patients / %d events | LUSC: %d patients / %d events",
+                sum(surv_base$immucan_id %in% id_luad),
+                sum(surv_base$status[surv_base$immucan_id %in% id_luad]),
+                sum(surv_base$immucan_id %in% id_lusc),
+                sum(surv_base$status[surv_base$immucan_id %in% id_lusc])))
+
+res_luad <- run_screen(id_luad) %>% mutate(type = feat_type$type[match(name, feat_type$name)])
+res_lusc <- run_screen(id_lusc) %>% mutate(type = feat_type$type[match(name, feat_type$name)])
+
+p_top_luad <- forest_of(res_luad, sprintf("Top %d features, LUAD", TOP_N))
+p_top_lusc <- forest_of(res_lusc, sprintf("Top %d features, LUSC", TOP_N))
+
+# ---- 6a. rank-rank concordance --------------------------------------------
+rr <- inner_join(select(res_luad, name, type, coef_luad = coef),
+                 select(res_lusc, name, coef_lusc = coef), by = "name")
+
+rho <- cor(rr$coef_luad, rr$coef_lusc, method = "spearman", use = "complete.obs")
+
+p_rankrank <- ggplot(rr, aes(coef_luad, coef_lusc, colour = type)) +
+  geom_hline(yintercept = 0, colour = "grey85") +
+  geom_vline(xintercept = 0, colour = "grey85") +
+  geom_abline(slope = 1, intercept = 0, linetype = 2, colour = "grey50") +
+  geom_point(size = 0.6, alpha = 0.5) +
+  scale_colour_manual(values = blk_cols, name = NULL) +
+  labs(x = "log HR, LUAD", y = "log HR, LUSC",
+       title = "Per-feature effects, LUAD vs LUSC",
+       subtitle = sprintf("Spearman rho = %.3f. Scatter of this width is expected at these event counts.", rho))
+
+# ---- 6b. formal interaction test -- the actual question --------------------
+sub_map <- setNames(subtypes$subtype, subtypes$immucan_id)
+
+interaction_test <- function(nm) {
+  d <- surv_base
+  d$value   <- wide[[nm]]
+  d$subtype <- factor(sub_map[d$immucan_id], levels = c("LUAD", "LUSC"))
+  d <- d[!is.na(d$value) & !is.na(d$subtype), , drop = FALSE]
+  if (sum(d$status) < 15 || length(unique(d$value)) < 3) return(NULL)
+  if (min(table(d$subtype)) < 15) return(NULL)
+  d$x <- if (length(unique(d$value)) == 2) d$value else inv_norm(d$value)
+
+  f_main <- try(coxph(Surv(time_to_event, status) ~ x + subtype, d, ties = "efron"), silent = TRUE)
+  f_int  <- try(coxph(Surv(time_to_event, status) ~ x * subtype, d, ties = "efron"), silent = TRUE)
+  if (inherits(f_main, "try-error") || inherits(f_int, "try-error")) return(NULL)
+  if (!all(is.finite(coef(f_int)))) return(NULL)
+
+  lr <- 2 * (f_int$loglik[2] - f_main$loglik[2])
+  tibble(name = nm, lr_int = lr,
+         p_int = pchisq(lr, df = 1, lower.tail = FALSE))
+}
+
+res_int <- map_dfr(feat_names, interaction_test) %>%
+  mutate(type = feat_type$type[match(name, feat_type$name)],
+         fdr_int = p.adjust(p_int, method = "BH"))
+
+message(sprintf("\nFeature x subtype interactions: %d tested, %d nominal p<0.05 (%.0f expected), %d pass FDR",
+                nrow(res_int), sum(res_int$p_int < 0.05, na.rm = TRUE),
+                0.05 * nrow(res_int), sum(res_int$fdr_int < 0.05, na.rm = TRUE)))
+
+p_int_hist <- ggplot(res_int, aes(p_int)) +
+  geom_histogram(breaks = seq(0, 1, 0.05), fill = "#937860", colour = "white",
+                 linewidth = 0.2) +
+  geom_hline(yintercept = nrow(res_int) * 0.05, linetype = 2) +
+  labs(x = "interaction p-value (feature x subtype)", y = "features",
+       title = "Formal test of subtype-specific effects",
+       subtitle = "Dashed = chance expectation. This is the test that supports or refutes a LUAD/LUSC difference.")
+
+# ---- 6c. permutation null for top-list overlap -----------------------------
+# How much overlap would two subgroups of these sizes share if subtype were
+# irrelevant? If the real split matches the null, the non-overlap is a power
+# artefact and cannot be cited as evidence of biological difference.
+
+top_overlap <- function(a, b, n = TOP_N) {
+  ta <- a %>% slice_max(abs(coef), n = n) %>% pull(name)
+  tb <- b %>% slice_max(abs(coef), n = n) %>% pull(name)
+  length(intersect(ta, tb))
+}
+
+obs_overlap <- top_overlap(res_luad, res_lusc)
+
+perm_feats <- if (length(feat_names) > 400) sample(feat_names, 400) else feat_names
+message(sprintf("\nPermutation null on %d features x %d replicates -- this is slow.",
+                length(perm_feats), N_PERM))
+
+obs_overlap_sub <- top_overlap(filter(res_luad, name %in% perm_feats),
+                               filter(res_lusc, name %in% perm_feats))
+
+n_a <- length(intersect(id_luad, surv_base$immucan_id))
+perm_overlap <- map_dbl(seq_len(N_PERM), function(i) {
+  ids <- sample(surv_base$immucan_id)
+  a <- run_screen(ids[seq_len(n_a)],              perm_feats)
+  b <- run_screen(ids[(n_a + 1):length(ids)],     perm_feats)
+  if (!nrow(a) || !nrow(b)) return(NA_real_)
+  top_overlap(a, b)
+})
+
+p_perm <- tibble(overlap = perm_overlap) %>%
+  ggplot(aes(overlap)) +
+  geom_histogram(binwidth = 1, fill = "grey70", colour = "white", linewidth = 0.2) +
+  geom_vline(xintercept = obs_overlap_sub, colour = "#C44E52", linewidth = 0.9) +
+  labs(x = sprintf("features shared between the two top-%d lists", TOP_N), y = "random splits",
+       title = "Top-list overlap: real LUAD/LUSC split vs random splits",
+       subtitle = sprintf("Red = observed (%d). Random splits of the same sizes: median %.0f. Overlapping distributions mean the split carries no information.",
+                          obs_overlap_sub, median(perm_overlap, na.rm = TRUE)))
+
+# ===========================================================================
+# 7. ASSEMBLE
+# ===========================================================================
+
+qc_plots <- list(
+  pval_hist     = p_hist,
+  enrichment    = p_enrich,
+  qq            = p_qq,
+  power         = p_power,
+  effect_dist   = p_effect_dist,
+  se_vs_events  = p_se,
+  ties          = p_ties,
+  scale_cmp     = p_scale,
+  ph            = p_ph_hist,
+  top_all       = p_top_all,
+  top_luad      = p_top_luad,
+  top_lusc      = p_top_lusc,
+  rankrank      = p_rankrank,
+  interaction   = p_int_hist,
+  perm_overlap  = p_perm
+)
+
+qc_tables <- list(
+  enrichment  = enrich_tbl,
+  lambda      = lambda_tbl,
+  discordant  = filter(scale_cmp, discordant),
+  luad        = res_luad,
+  lusc        = res_lusc,
+  interaction = res_int,
+  limits      = tibble(events = n_ev, tests = n_tests,
+                       hr_nominal = lim_nom, hr_bonferroni = lim_bonf)
+)
+
+print(enrich_tbl)
+print(qc_tables$limits)
+# invisible(lapply(qc_plots, print))
+```
+
+# older code
+
+```{r}
+select <- dplyr::select
+filter <- dplyr::filter   # frequently masked by the same packages
+rename <- dplyr::rename
+# ============================================================================
+# Univariate Cox screening across heterogeneous feature blocks
+#
+# Primary readout : rank-based inverse-normal transform (INT)  -> comparable HRs
+# Sensitivity     : per-SD and per-IQR on the native (optionally logged) scale
+# Diagnostics     : PH test, nonlinearity test, bootstrap rank stability,
+#                   correlation clustering of hits
+#
+# Input: `res` in long format with columns
+#        immucan_id, time_to_event, censoring, name, value, type
+#        type in {numeric, enrichment_score, z_score, binary}
+# ============================================================================
+
+suppressPackageStartupMessages({
+  library(survival)
+  library(dplyr)
+  library(tidyr)
+  library(purrr)
+  library(tibble)
+  library(ggplot2)
+  library(splines)
+})
+
+# ---------------------------------------------------------------------------
+# 0. CONFIG -- set these deliberately
+# ---------------------------------------------------------------------------
+
+EVENT_VALUE  <- 1        # value of `censoring` that codes an EVENT. VERIFY THIS.
+LOG_NUMERIC  <- TRUE     # log1p densities/intensities before the SD/IQR scales
+                         # (no effect on the rank scale, which is monotone-invariant)
+MIN_EVENTS   <- 10       # skip features with fewer usable events
+MIN_PREV     <- 10       # for binary features: min patients in the smaller group
+N_BOOT       <- 500      # bootstrap replicates for stability (0 to skip)
+FDR_WITHIN_TYPE <- TRUE  # also compute BH within feature block
+
+# Adjustment set. Leave NULL/empty for unadjusted screening.
+# covar_df must contain immucan_id + the covariate columns.
+covar_df    <- NULL
+covar_terms <- character(0)   # e.g. c("age", "sex", "stage", "strata(centre)")
+
+set.seed(1)
+
+# ---------------------------------------------------------------------------
+# 1. PRE-FLIGHT CHECKS
+# ---------------------------------------------------------------------------
+
+message("Unmatched features (type == NA):")
+print(res %>% filter(is.na(type)) %>% distinct(name) %>% pull(name))
+
+message("\ncensoring coding:")
+print(table(res$censoring, useNA = "ifany"))
+
+message("\nfeatures per type:")
+print(res %>% filter(!is.na(type)) %>% distinct(name, type) %>% count(type))
+
+# ---------------------------------------------------------------------------
+# 2. TRANSFORMS
+# ---------------------------------------------------------------------------
+
+#' Blom / rankit inverse-normal transform. Ties averaged.
+inv_norm <- function(x) {
+  n <- sum(!is.na(x))
+  if (n < 3) return(rep(NA_real_, length(x)))
+  r <- rank(x, na.last = "keep", ties.method = "average")
+  qnorm((r - 0.5) / n)
+}
+
+#' Fraction of observations sitting in the largest tied block.
+tie_fraction <- function(x) {
+  x <- x[!is.na(x)]
+  if (!length(x)) return(NA_real_)
+  max(table(x)) / length(x)
+}
+
+safe_sd_scale <- function(x) {
+  s <- stats::sd(x, na.rm = TRUE)
+  if (!is.finite(s) || s == 0) return(rep(NA_real_, length(x)))
+  (x - mean(x, na.rm = TRUE)) / s
+}
+
+safe_iqr_scale <- function(x) {
+  s <- stats::IQR(x, na.rm = TRUE)
+  if (!is.finite(s) || s == 0) return(rep(NA_real_, length(x)))
+  (x - stats::median(x, na.rm = TRUE)) / s
+}
+
+# ---------------------------------------------------------------------------
+# 3. SURVIVAL BACKBONE
+# ---------------------------------------------------------------------------
+
+surv_base <- res %>%
+  distinct(immucan_id, time_to_event, censoring) %>%
+  mutate(status = as.integer(censoring == EVENT_VALUE)) %>%
+  filter(!is.na(time_to_event), time_to_event > 0, !is.na(status))
+
+stopifnot(nrow(surv_base) == n_distinct(surv_base$immucan_id))
+
+message(sprintf("\n%d patients, %d events (%.1f%%)",
+                nrow(surv_base), sum(surv_base$status),
+                100 * mean(surv_base$status)))
+
+if (!is.null(covar_df)) {
+  surv_base <- left_join(surv_base, covar_df, by = "immucan_id")
+}
+
+feat_long <- res %>%
+  filter(!is.na(type), !is.na(value)) %>%
+  dplyr::select(immucan_id, name, type, value)
+
+feat_split <- split(feat_long, feat_long$name)
+
+# ---------------------------------------------------------------------------
+# 4. CORE FITTER
+# ---------------------------------------------------------------------------
+
+#' Fit one Cox model on one scale and return a one-row tibble of statistics.
+fit_one_scale <- function(d, xcol, scale_label) {
+
+  na_row <- tibble(scale = scale_label, hr = NA_real_, lo = NA_real_, hi = NA_real_,
+                   coef = NA_real_, se = NA_real_, z = NA_real_, p_wald = NA_real_,
+                   lr_chisq = NA_real_, p_lr = NA_real_,
+                   cindex = NA_real_, cindex_delta = NA_real_,
+                   p_ph = NA_real_, p_nonlin = NA_real_)
+
+  if (all(is.na(d[[xcol]])) || length(unique(na.omit(d[[xcol]]))) < 2) return(na_row)
+
+  rhs_full <- paste(c(xcol, covar_terms), collapse = " + ")
+  f_full   <- stats::as.formula(paste("Surv(time_to_event, status) ~", rhs_full))
+
+  fit <- try(coxph(f_full, data = d, ties = "efron", x = TRUE), silent = TRUE)
+  if (inherits(fit, "try-error") || any(!is.finite(coef(fit)))) return(na_row)
+
+  s  <- summary(fit)
+  cf <- s$coefficients[xcol, , drop = TRUE]
+  ci <- s$conf.int[xcol, , drop = TRUE]
+
+  # ---- likelihood-ratio test for the feature term only ----
+  if (length(covar_terms)) {
+    f_null   <- stats::as.formula(
+      paste("Surv(time_to_event, status) ~", paste(covar_terms, collapse = " + ")))
+    fit_null <- try(coxph(f_null, data = d, ties = "efron"), silent = TRUE)
+    if (inherits(fit_null, "try-error")) {
+      lr <- NA_real_; c_null <- NA_real_
+    } else {
+      lr     <- 2 * (fit$loglik[2] - fit_null$loglik[2])
+      c_null <- unname(concordance(fit_null)$concordance)
+    }
+  } else {
+    lr     <- 2 * (fit$loglik[2] - fit$loglik[1])
+    c_null <- 0.5
+  }
+  p_lr <- if (is.na(lr)) NA_real_ else stats::pchisq(lr, df = 1, lower.tail = FALSE)
+
+  c_full <- unname(concordance(fit)$concordance)
+
+  # ---- proportional hazards ----
+  zph <- try(cox.zph(fit), silent = TRUE)
+  p_ph <- if (inherits(zph, "try-error")) NA_real_ else {
+    tb <- zph$table
+    if (xcol %in% rownames(tb)) unname(tb[xcol, "p"]) else NA_real_
+  }
+
+  # ---- nonlinearity: linear vs natural spline (3 df) ----
+  p_nl <- NA_real_
+  if (length(unique(na.omit(d[[xcol]]))) > 10) {
+    f_sp <- stats::as.formula(
+      paste("Surv(time_to_event, status) ~",
+            paste(c(sprintf("ns(%s, df = 3)", xcol), covar_terms), collapse = " + ")))
+    fit_sp <- try(coxph(f_sp, data = d, ties = "efron"), silent = TRUE)
+    if (!inherits(fit_sp, "try-error")) {
+      dev <- 2 * (fit_sp$loglik[2] - fit$loglik[2])
+      if (is.finite(dev) && dev >= 0) p_nl <- stats::pchisq(dev, df = 2, lower.tail = FALSE)
+    }
+  }
+
+  tibble(
+    scale        = scale_label,
+    hr           = unname(ci["exp(coef)"]),
+    lo           = unname(ci["lower .95"]),
+    hi           = unname(ci["upper .95"]),
+    coef         = unname(cf["coef"]),
+    se           = unname(cf["se(coef)"]),
+    z            = unname(cf["z"]),
+    p_wald       = unname(cf["Pr(>|z|)"]),
+    lr_chisq     = lr,
+    p_lr         = p_lr,
+    cindex       = c_full,
+    cindex_delta = c_full - c_null,
+    p_ph         = p_ph,
+    p_nonlin     = p_nl
+  )
+}
+
+#' Assemble the per-feature model frame and fit all three scales.
+fit_feature <- function(df) {
+
+  nm <- df$name[1]
+  ty <- df$type[1]
+
+  d <- surv_base %>% inner_join(select(df, immucan_id, value), by = "immucan_id")
+  if (nrow(d) < 3) return(NULL)
+
+  n_obs    <- nrow(d)
+  n_events <- sum(d$status)
+  if (n_events < MIN_EVENTS) return(NULL)
+
+  if (ty == "binary") {
+    tb <- table(d$value)
+    if (length(tb) < 2 || min(tb) < MIN_PREV) return(NULL)
+    prev      <- mean(d$value == 1, na.rm = TRUE)
+    ev_pos    <- sum(d$status[d$value == 1])
+    ev_neg    <- sum(d$status[d$value == 0])
+    tie_frac  <- NA_real_
+    d$x_rank  <- d$value
+    d$x_sd    <- d$value
+    d$x_iqr   <- d$value
+    unit      <- "present vs absent"
+  } else {
+    if (length(unique(d$value)) < 3) return(NULL)
+    prev <- NA_real_; ev_pos <- NA_integer_; ev_neg <- NA_integer_
+    tie_frac <- tie_fraction(d$value)
+    v_nat <- if (LOG_NUMERIC && ty == "numeric" && min(d$value, na.rm = TRUE) >= 0) {
+      log1p(d$value)
+    } else d$value
+    d$x_rank <- inv_norm(d$value)     # monotone: logging is irrelevant here
+    d$x_sd   <- safe_sd_scale(v_nat)
+    d$x_iqr  <- safe_iqr_scale(v_nat)
+    unit     <- "per 1 SD of normal scores"
+  }
+
+  out <- bind_rows(
+    fit_one_scale(d, "x_rank", "rank_INT"),
+    fit_one_scale(d, "x_sd",   "per_SD"),
+    fit_one_scale(d, "x_iqr",  "per_IQR")
+  )
+
+  out %>%
+    mutate(name = nm, type = ty, n = n_obs, n_events = n_events,
+           prevalence = prev, events_pos = ev_pos, events_neg = ev_neg,
+           tie_frac = tie_frac, scale_unit = unit, .before = 1)
+}
+
+message("\nFitting ", length(feat_split), " features ...")
+cox_res <- map_dfr(feat_split, fit_feature)
+
+# ---------------------------------------------------------------------------
+# 5. MULTIPLICITY
+# ---------------------------------------------------------------------------
+
+cox_res <- cox_res %>%
+  group_by(scale) %>%
+  mutate(fdr_global = p.adjust(p_lr, method = "BH")) %>%
+  group_by(scale, type) %>%
+  mutate(fdr_within_type = p.adjust(p_lr, method = "BH")) %>%
+  ungroup()
+
+# Primary table: rank scale, sorted by effect size not by p
+primary <- cox_res %>%
+  filter(scale == "rank_INT") %>%
+  arrange(desc(abs(log(hr)))) %>%
+  select(name, type, n, n_events, hr, lo, hi, lr_chisq, p_lr,
+         fdr_global, fdr_within_type, cindex, cindex_delta,
+         p_ph, p_nonlin, tie_frac, prevalence, scale_unit)
+
+hits <- primary %>%
+  filter(if (FDR_WITHIN_TYPE) fdr_within_type < 0.05 else fdr_global < 0.05)
+
+message(sprintf("\n%d features pass FDR < 0.05 on the rank scale", nrow(hits)))
+print(head(hits, 30), width = Inf)
+
+# ---- agreement between scales: does the ranking survive the transform? ----
+scale_agreement <- cox_res %>%
+  filter(type != "binary") %>%
+  select(name, scale, coef) %>%
+  pivot_wider(names_from = scale, values_from = coef)
+
+message("\nSpearman correlation of log-HR across scales:")
+print(round(cor(scale_agreement[, -1], use = "pairwise.complete.obs",
+                method = "spearman"), 3))
+
+# Features where rank and SD scales disagree in sign or magnitude
+# -> almost always outlier-driven on the native scale.
+discordant <- scale_agreement %>%
+  filter(!is.na(rank_INT), !is.na(per_SD),
+         sign(rank_INT) != sign(per_SD) |
+           abs(rank_INT - per_SD) > 0.5 * pmax(abs(rank_INT), abs(per_SD))) %>%
+  arrange(desc(abs(per_SD)))
+
+message(sprintf("\n%d features discordant between rank and SD scales (inspect these)",
+                nrow(discordant)))
+
+# ---------------------------------------------------------------------------
+# 6. FLAGS ON THE HITS
+# ---------------------------------------------------------------------------
+
+flagged <- hits %>%
+  mutate(
+    flag_ph      = !is.na(p_ph) & p_ph < 0.05,          # time-varying effect
+    flag_nonlin  = !is.na(p_nonlin) & p_nonlin < 0.05,  # not log-linear
+    flag_ties    = !is.na(tie_frac) & tie_frac > 0.3,   # point mass, INT degraded
+    flag_disc    = name %in% discordant$name
+  )
+
+message("\nFlag counts among hits:")
+print(flagged %>% summarise(across(starts_with("flag_"), sum)))
+
+# ---------------------------------------------------------------------------
+# 7. BOOTSTRAP RANK STABILITY (on the rank scale, whole pipeline resampled)
+# ---------------------------------------------------------------------------
+
+boot_stability <- function(feature_names, B = N_BOOT) {
+
+  if (B == 0 || !length(feature_names)) return(tibble())
+
+  wide <- feat_long %>%
+    filter(name %in% feature_names) %>%
+    select(immucan_id, name, value) %>%
+    pivot_wider(names_from = name, values_from = value)
+
+  d0  <- surv_base %>% inner_join(wide, by = "immucan_id")
+  ids <- seq_len(nrow(d0))
+
+  reps <- map_dfr(seq_len(B), function(b) {
+    idx <- sample(ids, replace = TRUE)
+    db  <- d0[idx, , drop = FALSE]
+
+    map_dfr(feature_names, function(fn) {
+      x <- db[[fn]]
+      if (length(unique(na.omit(x))) < 3) {
+        return(tibble(boot = b, name = fn, coef = NA_real_, p = NA_real_))
+      }
+      db$xb <- if (length(unique(na.omit(x))) == 2) x else inv_norm(x)
+      f <- stats::as.formula(
+        paste("Surv(time_to_event, status) ~", paste(c("xb", covar_terms), collapse = " + ")))
+      fit <- try(coxph(f, data = db, ties = "efron"), silent = TRUE)
+      if (inherits(fit, "try-error")) {
+        return(tibble(boot = b, name = fn, coef = NA_real_, p = NA_real_))
+      }
+      sc <- summary(fit)$coefficients
+      tibble(boot = b, name = fn,
+             coef = unname(sc["xb", "coef"]),
+             p    = unname(sc["xb", "Pr(>|z|)"]))
+    })
+  })
+
+  reps %>%
+    group_by(boot) %>%
+    mutate(rk = rank(-abs(coef), na.last = "keep")) %>%
+    group_by(name) %>%
+    summarise(
+      sel_freq   = mean(p < 0.05, na.rm = TRUE),
+      sign_cons  = max(mean(coef > 0, na.rm = TRUE), mean(coef < 0, na.rm = TRUE)),
+      rank_med   = stats::median(rk, na.rm = TRUE),
+      rank_q1    = stats::quantile(rk, 0.25, na.rm = TRUE),
+      rank_q3    = stats::quantile(rk, 0.75, na.rm = TRUE),
+      .groups    = "drop"
+    ) %>%
+    arrange(rank_med)
+}
+
+stab <- boot_stability(hits$name)
+if (nrow(stab)) {
+  message("\nBootstrap stability (rank scale):")
+  print(head(stab, 30), width = Inf)
+}
+
+# ---------------------------------------------------------------------------
+# 8. REDUNDANCY: are the hits independent signals?
+# ---------------------------------------------------------------------------
+
+hit_mat <- feat_long %>%
+  filter(name %in% hits$name) %>%
+  select(immucan_id, name, value) %>%
+  pivot_wider(names_from = name, values_from = value) %>%
+  column_to_rownames("immucan_id") %>%
+  as.matrix()
+
+hit_mat_int <- apply(hit_mat, 2, function(x) if (length(unique(na.omit(x))) > 2) inv_norm(x) else x)
+
+if (ncol(hit_mat_int) > 2) {
+  cmat <- cor(hit_mat_int, use = "pairwise.complete.obs", method = "spearman")
+  hc   <- hclust(as.dist(1 - abs(cmat)), method = "average")
+  # cut at |rho| = 0.7 -> features within a cluster are near-interchangeable
+  clus <- cutree(hc, h = 1 - 0.7)
+
+  cluster_tbl <- tibble(name = names(clus), cluster = clus) %>%
+    left_join(select(hits, name, hr, lr_chisq, fdr_within_type), by = "name") %>%
+    group_by(cluster) %>%
+    arrange(desc(lr_chisq), .by_group = TRUE) %>%
+    mutate(representative = row_number() == 1) %>%
+    ungroup()
+
+  message(sprintf("\n%d hits collapse into %d correlation clusters (|rho| > 0.7)",
+                  nrow(cluster_tbl), n_distinct(cluster_tbl$cluster)))
+  print(cluster_tbl %>% filter(representative), width = Inf)
+} else {
+  cluster_tbl <- tibble()
+}
+
+# ---------------------------------------------------------------------------
+# 9. FOREST PLOT -- continuous and binary in separate panels (different units)
+# ---------------------------------------------------------------------------
+
+plot_dat <- hits %>%
+  mutate(panel = ifelse(type == "binary", "Binary (present vs absent)",
+                        "Continuous (per 1 SD of normal scores)"),
+         name  = factor(name, levels = name[order(hr)])) %>%
+  left_join(select(flagged, name, flag_ph, flag_nonlin), by = "name")
+
+p_forest <- ggplot(plot_dat, aes(x = hr, y = name, colour = type)) +
+  geom_vline(xintercept = 1, linetype = 2, colour = "grey50") +
+  geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0) +
+  geom_point(aes(shape = flag_ph), size = 2) +
+  scale_x_log10() +
+  scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 1),
+                     name = "PH violated") +
+  facet_grid(panel ~ ., scales = "free_y", space = "free_y") +
+  labs(x = "Hazard ratio (log scale)", y = NULL,
+       title = "Univariate Cox screen, rank-based inverse-normal scale",
+       subtitle = "Open circles: cox.zph p < 0.05 (effect not constant over time)") +
+  theme_bw(base_size = 10) +
+  theme(panel.grid.minor = element_blank())
+
+print(p_forest)
+
+# ---------------------------------------------------------------------------
+# 10. OUTPUTS
+# ---------------------------------------------------------------------------
+
+results <- list(
+  all        = cox_res,
+  primary    = primary,
+  hits       = flagged,
+  discordant = discordant,
+  stability  = stab,
+  clusters   = cluster_tbl,
+  forest     = p_forest
+)
+
+# write.csv(primary, "cox_univariate_rank_scale.csv", row.names = FALSE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+###### old stuff
+```
 res <- res %>%
-  select(immucan_id,censoring,time_to_event,everything())
+  dplyr::select(immucan_id,censoring,time_to_event,everything())
 
 p_list <- lapply(res[,-c(1:3)], function(x){
    coxph( Surv(time_to_event, censoring) ~  x ,data = res)
 })
 
-RNA <- RNA %>%
-  rename(immucan_id = Immucan_id) %>%
-  mutate(immucan_id = gsub("_","-",immucan_id))
-RNA <- left_join(RNA, cur_traits %>% select(immucan_id,censoring, time_to_event),by = "immucan_id")
-RNA <- RNA %>%
-  select(immucan_id, censoring,time_to_event, everything())
-p_list_RNA <- lapply(RNA[,-c(1:3)], function(x){
-   coxph( Surv(time_to_event, censoring) ~ x ,data = RNA)
-})
-  
 df <- data.frame(HR = unlist(lapply(p_list, function(x){summary(x)$coefficients[,"exp(coef)"]})),
                  p.value = unlist(lapply(p_list, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
                  lower_conf = unlist(lapply(p_list, function(x){summary(x)$conf.int[, "lower .95"]})),
                  upper_conf = unlist(lapply(p_list, function(x){summary(x)$conf.int[, "upper .95"]}))) 
 df <- df %>%
   mutate(feature = rownames(df))
+
+cur_RNA <- left_join(RNA, cur_traits %>% dplyr::select(immucan_id,censoring, time_to_event),by = "immucan_id")
+cur_RNA <- cur_RNA %>%
+  dplyr::select(immucan_id, censoring,time_to_event, everything())
+p_list_RNA <- lapply(cur_RNA[,-c(1:3)], function(x){
+   coxph( Surv(time_to_event, censoring) ~ x ,data = cur_RNA)
+})
+
 df_RNA <- data.frame(HR = unlist(lapply(p_list_RNA, function(x){summary(x)$coefficients[,"exp(coef)"]})),
                  p.value = unlist(lapply(p_list_RNA, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
                  lower_conf = unlist(lapply(p_list_RNA, function(x){summary(x)$conf.int[, "lower .95"]})),
@@ -145,15 +1436,17 @@ df_RNA <- df_RNA %>%
 out <- df %>%
   mutate(FDR = p.adjust(p = p.value,method = "BH")) %>%
   filter(FDR < 0.1)
+  filter(feature == "TAN")
 out_RNA <- df_RNA %>%
   mutate(FDR = p.adjust(p = p.value,method = "BH")) %>%
   filter(FDR < 0.1)
 # no RNA features survived FDR correction
 
+out <- rbind(out, out_RNA)
 
 ## check HR for those features in dichotomized model
 res_out <- res %>%
-  select(immucan_id,censoring, time_to_event,all_of(out$feature)) %>%
+  dplyr::select(immucan_id,censoring, time_to_event,all_of(out$feature)) %>%
   mutate(across(.cols = all_of(out$feature),.fns = ~ as.factor(ntile(.,n = 2))))
 
 p_list_final <- lapply(res_out[,-c(1:3)], function(x){
@@ -161,8 +1454,8 @@ p_list_final <- lapply(res_out[,-c(1:3)], function(x){
 })
 
 
-res_out_RNA <- RNA %>%
-  select(immucan_id,censoring, time_to_event,all_of(out_RNA$feature)) %>%
+res_out_RNA <- cur_RNA %>%
+  dplyr::select(immucan_id,censoring, time_to_event,all_of(out_RNA$feature)) %>%
   mutate(across(.cols = all_of(out_RNA$feature),.fns = ~ as.factor(ntile(.,n = 2))))
 
 p_list_final_RNA <- lapply(res_out_RNA[,-c(1:3)], function(x){
@@ -180,7 +1473,7 @@ df_2_RNA <- data.frame(HR = unlist(lapply(p_list_final_RNA, function(x){summary(
 
 df_2 <- rbind(df_2, df_2_RNA)
 
-df_2 %>%
+out %>%
   mutate(feature = rownames(df_2),
          sig = as.factor(p.value < 0.05)) %>%
   ggplot(aes(x = HR,y = feature, col = sig))+
@@ -259,7 +1552,7 @@ __we cannot find any of the ten genes found with LF1 from MOFA when just searchi
 
 ```{r, fig.height=10}
 cur_traits <-traits %>%
-  select(immucan_id,TPS, CPS, TMB,TP53,EGFR, KRAS,STK11,CDKN2A,PIK3CA, censoring,time_to_event)
+  dplyr::select(immucan_id,TPS, CPS, TMB,TP53,EGFR, KRAS,STK11,CDKN2A,PIK3CA, censoring,time_to_event)
 cur_traits <- cur_traits %>%
   mutate(across(.cols = c(TP53,EGFR, KRAS, STK11,CDKN2A,PIK3CA),.fns = ~ ifelse(. == TRUE,1,0)))
 res <- left_join(dat,cur_traits,by = "immucan_id")
@@ -269,7 +1562,7 @@ LUAD_samples <- traits %>%
   pull(immucan_id)
 
 res <- res %>%
-  select(immucan_id,censoring,time_to_event,everything()) %>%
+  dplyr::select(immucan_id,censoring,time_to_event,everything()) %>%
   filter(immucan_id %in% LUAD_samples)
 
 
@@ -289,7 +1582,7 @@ out <- df %>%
 out$feature <- rownames(out)
 
 res_out <- res %>% 
-  select(immucan_id,censoring, time_to_event,all_of(out$feature)) %>%
+  dplyr::select(immucan_id,censoring, time_to_event,all_of(out$feature)) %>%
   mutate(across(.cols = all_of(out$feature),.fns = ~ as.factor(ntile(.,n = 2))))
 
 p_list_final <- lapply(res_out[,-c(1:3)], function(x){
@@ -332,7 +1625,7 @@ df_2 %>%
 no features LUSC
 ```{r, fig.height=10, eval=FALSE}
 cur_traits <-traits %>%
-  select(immucan_id,TPS, CPS, TMB,TP53,EGFR, KRAS,STK11,CDKN2A,PIK3CA, censoring,time_to_event)
+  dplyr::select(immucan_id,TPS, CPS, TMB,TP53,EGFR, KRAS,STK11,CDKN2A,PIK3CA, censoring,time_to_event)
 cur_traits <- cur_traits %>%
   mutate(across(.cols = c(TP53,EGFR, KRAS, STK11,CDKN2A,PIK3CA),.fns = ~ ifelse(. == TRUE,1,0)))
 res <- left_join(dat,cur_traits,by = "immucan_id")
@@ -342,7 +1635,7 @@ LUSC_samples <- traits %>%
   pull(immucan_id)
 
 res <- res %>%
-  select(immucan_id,censoring,time_to_event,everything()) %>%
+  dplyr::select(immucan_id,censoring,time_to_event,everything()) %>%
   filter(immucan_id %in% LUSC_samples)
 
 
@@ -362,7 +1655,7 @@ out <- df %>%
 out$feature <- rownames(out)
 
 res_out <- res %>% 
-  select(immucan_id,censoring, time_to_event,all_of(out$feature)) %>%
+  dplyr::select(immucan_id,censoring, time_to_event,all_of(out$feature)) %>%
   mutate(across(.cols = all_of(out$feature),.fns = ~ as.factor(ntile(.,n = 2))))
 
 p_list_final <- lapply(res_out[,-c(1:3)], function(x){
@@ -405,7 +1698,7 @@ df_2 %>%
 
 ```{r, fig.height=10}
 cur_traits <- traits %>%
-  select(immucan_id,TPS, CPS, TMB,TP53,EGFR, KRAS,STK11,CDKN2A,PIK3CA, censoring,time_to_event)
+  dplyr::select(immucan_id,TPS, CPS, TMB,TP53,EGFR, KRAS,STK11,CDKN2A,PIK3CA, censoring,time_to_event)
 cur_traits <- cur_traits %>%
   mutate(across(.cols = c(TP53,EGFR, KRAS, STK11,CDKN2A,PIK3CA),.fns = ~ ifelse(. == TRUE,1,0)))
 res <- left_join(dat,cur_traits,by = "immucan_id")
@@ -413,7 +1706,7 @@ res <- left_join(dat,cur_traits,by = "immucan_id")
 res_out <- res %>%
   mutate(across(.cols =-c(immucan_id,censoring,time_to_event),.fns = ~ as.factor(ntile(.,n = 2))))
 
-p_list_final <- lapply(res_out %>% select(-immucan_id,-censoring, -time_to_event), function(x){
+p_list_final <- lapply(res_out %>% dplyr::select(-immucan_id,-censoring, -time_to_event), function(x){
    coxph( Surv(time_to_event, censoring) ~  x ,data = res_out)
 })
 
@@ -421,12 +1714,12 @@ RNA <- read.csv(paste0(mount_path, "Figures/scores_for_sharing/MOFA/RNA_named.cs
 RNA <- RNA %>%
   rename(immucan_id = Immucan_id) %>%
   mutate(immucan_id = gsub("_","-",immucan_id))
-RNA <- left_join(RNA, cur_traits %>% select(immucan_id,censoring, time_to_event),by = "immucan_id")
+RNA <- left_join(RNA, cur_traits %>% dplyr::select(immucan_id,censoring, time_to_event),by = "immucan_id")
 res_out_RNA <- RNA %>%
   mutate(across(.cols = -c(immucan_id,censoring,time_to_event),.fns = ~ as.factor(ntile(.,n = 2))))
 
 
-p_list_final_RNA <- lapply(res_out_RNA %>% select(-immucan_id,-censoring, -time_to_event), function(x){
+p_list_final_RNA <- lapply(res_out_RNA %>% dplyr::select(-immucan_id,-censoring, -time_to_event), function(x){
    coxph( Surv(time_to_event, censoring) ~  x ,data = res_out_RNA)
 })
   
@@ -662,7 +1955,7 @@ top_hrs <- HRs %>%
 clin_dat <- read_csv("O:/projects/immucan/clinical_data/Lung_NSCLC2/20230825/NSCLC2_for_R_update_2024.csv")
 
 clin_dat <- df_text %>%
-  select(immucan_id,top_hrs) %>%
+  dplyr::select(immucan_id,top_hrs) %>%
   left_join(clin_dat,by = "immucan_id") %>%
   filter(simple_histology != "unknown")
 
@@ -690,7 +1983,7 @@ top_hrs <- HRs %>%
 
 
 plot_dat <- dat %>%
-  select(all_of(top_hrs))
+  dplyr::select(all_of(top_hrs))
 
 set.seed(12345)
 cur_clust <- kmeans(plot_dat,centers = 3)

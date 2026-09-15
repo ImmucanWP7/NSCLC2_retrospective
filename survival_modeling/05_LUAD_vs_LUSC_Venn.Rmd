@@ -1,0 +1,163 @@
+---
+title: "Venn LUAD LUSC"
+author: "Daniel Schulz"
+date: "2026-09-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+06_venn_luad_lusc_overlap.R
+Per-category (modality) overlap of nominally significant univariate Cox
+hits between LUAD and LUSC. Hit definition matches the pooled overlap
+already computed in 04_luad_lusc_survival.R (Plot 4): rank_INT scale,
+likelihood-ratio p_lr < 0.05 -- here broken out per feature category
+instead of pooled across all categories.
+
+For shared hits (nominally significant in BOTH histologies), we also
+report whether the direction of association agrees: sign(coef) on the
+rank_INT scale is positive when a higher feature value is associated with
+WORSE survival (higher hazard) and negative when associated with better
+survival, so "same direction" (concordant) vs "opposite direction"
+(discordant) is directly comparable across features and histologies.
+IMPORTANT CAVEATS carried over from 04_luad_lusc_survival.R (also printed
+on each panel):
+- Nothing here survives FDR correction (see cox_luad.rds/cox_lusc.rds
+  fdr_within_category/fdr_global); this is a nominal-p, hypothesis-
+  generating comparison, consistent with how the rest of the project
+  frames these screens.
+- LUAD and LUSC are screened at different MIN_EVENTS/MIN_PREV thresholds,
+  so the *tested* feature set per category can already differ between
+  histologies before any hit-calling happens -- n_tested is reported per
+  panel so this isn't silently folded into the overlap counts.
+- LUSC remains EXPLORATORY throughout (12 events cohort-wide).
+Base R only -- no extra plotting packages; the Venn circles are drawn by
+hand with polygon(). NOT area-proportional: circle size is fixed and
+identical in every panel, only the printed counts carry the quantitative
+information. Must run on R 4.2+.
+
+```{r}
+
+
+RESULTS_DIR <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/survival/Rout/"
+PLOTS_DIR   <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/survival/plots/"
+if (!dir.exists(PLOTS_DIR)) dir.create(PLOTS_DIR, recursive = TRUE)
+
+log_msg <- function(...) cat(format(Sys.time(), "%H:%M:%S"), "-", ..., "\n")
+
+cox_luad <- readRDS(file.path(RESULTS_DIR, "cox_luad.rds"))
+cox_lusc <- readRDS(file.path(RESULTS_DIR, "cox_lusc.rds"))
+
+P_THRESH <- 0.05  ## nominal rank_INT / LR-test p; nothing survives FDR (see docs) --
+                  ## deliberately framed as nominal/exploratory throughout.
+
+```
+
+
+# Per-category tested sets, hit sets, and (for shared hits) direction
+## concordance, LUAD vs LUSC
+
+```{r}
+summarize_category <- function(cc) {
+  luad <- cox_luad[cox_luad$category == cc & cox_luad$scale == "rank_INT", ]
+  lusc <- cox_lusc[cox_lusc$category == cc & cox_lusc$scale == "rank_INT", ]
+
+  tested_luad <- luad$name[!is.na(luad$p_lr)]
+  tested_lusc <- lusc$name[!is.na(lusc$p_lr)]
+
+  hits_luad <- luad$name[!is.na(luad$p_lr) & luad$p_lr < P_THRESH]
+  hits_lusc <- lusc$name[!is.na(lusc$p_lr) & lusc$p_lr < P_THRESH]
+
+  shared    <- intersect(hits_luad, hits_lusc)
+  luad_only <- setdiff(hits_luad, hits_lusc)
+  lusc_only <- setdiff(hits_lusc, hits_luad)
+
+  dir_luad <- setNames(sign(luad$coef), luad$name)
+  dir_lusc <- setNames(sign(lusc$coef), lusc$name)
+  concordant <- shared[dir_luad[shared] == dir_lusc[shared]]
+  discordant <- shared[dir_luad[shared] != dir_lusc[shared]]
+
+  list(category = cc,
+       n_tested_luad = length(tested_luad), n_tested_lusc = length(tested_lusc),
+       n_hits_luad = length(hits_luad), n_hits_lusc = length(hits_lusc),
+       luad_only = luad_only, lusc_only = lusc_only,
+       shared = shared, concordant = concordant, discordant = discordant)
+}
+
+cats <- sort(unique(c(cox_luad$category, cox_lusc$category)))
+overlap_list <- lapply(cats, summarize_category)
+names(overlap_list) <- cats
+
+## flat table for saving / manuscript text (one row per category)
+overlap_tab <- do.call(rbind, lapply(overlap_list, function(o) {
+  data.frame(category = o$category,
+             n_tested_luad = o$n_tested_luad, n_tested_lusc = o$n_tested_lusc,
+             n_hits_luad = o$n_hits_luad, n_hits_lusc = o$n_hits_lusc,
+             n_luad_only = length(o$luad_only), n_lusc_only = length(o$lusc_only),
+             n_shared = length(o$shared), n_concordant = length(o$concordant),
+             n_discordant = length(o$discordant), stringsAsFactors = FALSE)
+}))
+rownames(overlap_tab) <- NULL
+log_msg("Per-category LUAD/LUSC nominal-hit overlap (rank_INT, p_lr<", P_THRESH, "):")
+print(overlap_tab)
+
+saveRDS(overlap_list, file.path(RESULTS_DIR, "venn_overlap_by_category.rds"))
+write.csv(overlap_tab, file.path(RESULTS_DIR, "venn_overlap_by_category.csv"), row.names = FALSE)
+log_msg("Saved results/venn_overlap_by_category.rds, results/venn_overlap_by_category.csv")
+```
+
+## Hand-drawn 2-circle schematic Venn, one panel per category.
+LUAD/LUSC colors match qq_pvalues_luad_lusc.pdf and
+hitcounts_by_category_histology.pdf ("blue" / "orange").
+```{r}
+draw_circle <- function(cx, cy, r, col, alpha_fill = 0.15, n = 200) {
+  th <- seq(0, 2 * pi, length.out = n)
+  polygon(cx + r * cos(th), cy + r * sin(th),
+          border = col, col = adjustcolor(col, alpha.f = alpha_fill), lwd = 2)
+}
+
+venn_panel <- function(o, col_luad = "blue", col_lusc = "orange") {
+  r <- 1; offset <- 0.75
+  plot(NA, xlim = c(-2.2, 2.2), ylim = c(-1.6, 1.9), asp = 1, axes = FALSE,
+       xlab = "", ylab = "", main = o$category, cex.main = 1.1)
+  draw_circle(-offset, 0, r, col_luad)
+  draw_circle( offset, 0, r, col_lusc)
+
+  n_luad_only <- length(o$luad_only); n_lusc_only <- length(o$lusc_only)
+  n_shared    <- length(o$shared)
+  dir_lab <- if (n_shared > 0)
+    paste0(n_shared, "\n(", length(o$concordant), " same dir,\n",
+           length(o$discordant), " opp. dir)")
+  else "0"
+
+  text(-offset * 1.55, 0, n_luad_only, cex = 1.2, font = 2)
+  text( offset * 1.55, 0, n_lusc_only, cex = 1.2, font = 2)
+  text(0, 0, dir_lab, cex = 0.8)
+
+  text(-offset, 1.3, "LUAD", col = col_luad, font = 2, cex = 1.0)
+  text( offset, 1.3, "LUSC", col = col_lusc, font = 2, cex = 1.0)
+  mtext(paste0("tested: LUAD n=", o$n_tested_luad, ", LUSC n=", o$n_tested_lusc,
+               " | hits (p<", P_THRESH, "): LUAD=", o$n_hits_luad, ", LUSC=", o$n_hits_lusc),
+        side = 1, line = 0.8, cex = 0.6)
+}
+
+n_col <- ceiling(length(cats) / 2)
+pdf(file.path(PLOTS_DIR, "venn_luad_lusc_by_category.pdf"), width = 3.2 * n_col, height = 7.5)
+op <- par(mfrow = c(2, n_col), mar = c(3, 1, 3, 1), oma = c(0, 0, 4, 0))
+for (cc in cats) venn_panel(overlap_list[[cc]])
+mtext(paste0("Overlap of nominally significant (p_lr<", P_THRESH, ", rank_INT) univariate Cox hits, ",
+             "LUAD vs LUSC, by feature category\n",
+             "Schematic Venn (NOT area-proportional) -- LUSC is EXPLORATORY (12 events cohort-wide); ",
+             "nothing here survives FDR correction; tested feature sets differ by histology ",
+             "(see MIN_EVENTS/MIN_PREV in 04_luad_lusc_survival.R)"),
+      side = 3, outer = TRUE, line = 0.5, cex = 0.75)
+par(op)
+dev.off()
+
+log_msg("Saved plots/venn_luad_lusc_by_category.pdf")
+log_msg("DONE 06_venn_luad_lusc_overlap.R")
+
+```
+

@@ -44,7 +44,252 @@ if (!dir.exists(out_path)){
 model <- readRDS(model_path)
 ```
 
-# S6A supp: GSEA per Factor
+# S7A bootstrapping
+
+code here: [bootstrapping](../../MOFA/Analysis/analysis/03_bootstrapping_mofa.Rmd)
+
+# S7B - features per factor
+
+## plotting function
+```{r}
+library(purrr)
+library(dplyr)
+library(tidyr)
+library(ComplexHeatmap)
+library(circlize)
+library(data.table)
+
+get_clusterd_features <- function(view, features, version){
+  files <- list.files(mount_path, full.names = TRUE, pattern = "clusters")
+  files <- files[grepl(version, files)]
+  file <- files[grepl(tolower(view), tolower(files))]
+  if (length(file) == 0){
+    return (NULL)
+  }
+  df <- read.csv(file) 
+  feats <- df %>%
+    filter(feature %in% as.character(features))
+  clusters <- feats$cluster_id
+  
+  df <- df %>%
+    filter(cluster_id %in% clusters) %>%
+    mutate(top_feature = feature %in% features,
+           view = view)
+  
+  return (df)
+}
+
+get_top_features <- function(model, view, factor, top_n = top_n) {
+  weights_df <- get_weights(model, views = view, factors = factor, as.data.frame = TRUE)
+  
+  top_df <- weights_df %>%
+    arrange(desc(abs(value))) %>%
+    slice_head(n = top_n) %>%
+    dplyr::rename(weight = value) %>%
+    mutate(view = view, factor = factor) %>%
+    dplyr::select(view, factor, feature, weight)
+  
+  return(top_df)
+}
+
+plot_top_feature_heatmap <- function(model, views, view_order, view_colors, model_version, n_factors = 10, top_n = 5) {
+
+  factors <- paste0("Factor", 1:n_factors)
+
+  top_feats <- map_dfr(factors, function(fac) {
+    map_dfr(views, function(v) {
+      tryCatch({
+        get_top_features(model, view = v, factor = fac, top_n = top_n)
+      }, error = function(e) NULL)
+    })
+  })
+
+  top_features <- top_feats %>%
+    unite("feature_id", view, feature, sep = " | ", remove = FALSE)
+  
+  related_features <- do.call(rbind,lapply(unique(top_feats$view), function(x){
+    get_clusterd_features(x, top_feats %>%
+                            filter(view == x) %>%
+                            pull(feature),
+                          model_version)
+    
+  })) %>%
+      mutate(cluster_id = paste0(view, "_", cluster_id))
+
+  all_weights <- get_weights(model, views = unique(top_features$view), 
+                             factors = unique(top_features$factor), as.data.frame = TRUE) %>%
+    unite("feature_id", view, feature, sep = " | ", remove = FALSE) %>%
+    filter(feature_id %in% top_features$feature_id)
+
+  feature_matrix <- all_weights %>%
+    dplyr::select(factor, feature_id, value) %>%
+    pivot_wider(names_from = feature_id, values_from = value, values_fill = NA)
+
+  feature_mat <- as.matrix(feature_matrix[, -1])
+  rownames(feature_mat) <- feature_matrix$factor
+
+  highlight_matrix <- outer(rownames(feature_mat), colnames(feature_mat),
+                            Vectorize(function(fac, feat) {
+                              any(top_features$factor == fac & top_features$feature_id == feat)
+                            }))
+  dimnames(highlight_matrix) <- dimnames(feature_mat)
+
+  feature_ids <- colnames(feature_mat)
+  view_labels <- sapply(strsplit(feature_ids, " \\| "), `[`, 1)
+  feature_names <- sapply(strsplit(feature_ids, " \\| "), `[`, 2)
+  # test to change names
+  feature_names <- gsub(pattern = "_P1|_p1|_p1_p1", replacement = "_IMC1",feature_names)
+  feature_names <- gsub(pattern = "_P2|_p2|_p2_p2", replacement = "_IMC2",feature_names)
+  feature_names <- gsub(pattern = "_density", replacement = "",feature_names)
+  feature_names <- gsub(pattern = "_minor", replacement = "",feature_names)
+  
+  feature_priority <- top_features %>%
+    group_by(feature_id) %>%
+    summarise(first_factor = factor[1], .groups = "drop") %>%
+    mutate(priority = match(first_factor, sort(unique(first_factor)))) %>%
+    dplyr::select(feature_id, priority)
+
+  feature_order_df <- data.frame(
+    feature_id = colnames(feature_mat),
+    view = view_labels,
+    name = feature_names,
+    stringsAsFactors = FALSE
+  ) %>%
+    left_join(feature_priority, by = "feature_id") %>%
+    arrange(view, priority)
+  
+  # sort views
+  feature_order_df$view <- factor(feature_order_df$view, levels = view_order)
+  feature_order_df <- feature_order_df[order(feature_order_df$view),]
+  feature_order_df$view <- as.character(feature_order_df$view)
+
+  feature_mat <- feature_mat[, feature_order_df$feature_id]
+  highlight_matrix <- highlight_matrix[, feature_order_df$feature_id]
+  feature_names <- feature_order_df$name
+  view_labels <- feature_order_df$view
+
+  column_split <- factor(view_labels, levels = unique(view_labels))
+  
+  # Convert to data.table
+  related_features_dt <- as.data.table(related_features)
+  
+  # For each cluster_id, create a label with all its features pasted together
+  cluster_labels <- related_features_dt[, .(
+    cluster_label = paste(unique(feature), collapse = " | ")
+  ), by = cluster_id]
+  
+  # Map from feature -> cluster_id
+  feature_to_cluster <- related_features_dt[, .(feature, cluster_id)]
+  # Merge to get feature -> cluster_label mapping
+  feature_labels <- merge(feature_to_cluster, cluster_labels, by = "cluster_id")
+  # Create a named vector from feature to cluster_label
+  feature_label_map <- setNames(feature_labels$cluster_label, feature_labels$feature)
+  # Extend feature_names: replace each with its cluster label
+  extended_feature_names <- sapply(feature_names, function(f) {
+    if (!is.na(feature_label_map[f])) feature_label_map[f] else f
+  })
+
+  ht <- Heatmap(
+    feature_mat,
+    name = "Factor Weight",
+    column_split = column_split,
+    top_annotation = HeatmapAnnotation(
+      View = anno_block(
+        gp = gpar(fill = view_colors[levels(column_split)]),
+        labels = levels(column_split),
+        labels_gp = gpar(fontsize = 9, fontface = "bold")
+      )
+    ),
+    column_labels = feature_names,
+    show_column_names = TRUE,
+    show_row_names = TRUE,
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    show_column_dend = FALSE,
+    column_title = "Top Features by View and Factor",
+    row_title = "MOFA Factors",
+    heatmap_legend_param = list(title = "Weight", direction = "horizontal"),
+    column_names_gp = gpar(fontsize = 7),
+    cell_fun = function(j, i, x, y, width, height, fill) {
+      if (highlight_matrix[i, j]) {
+        grid.rect(x, y, width, height, gp = gpar(col = "black", fill = NA, lwd = 1.5))
+      }
+    }
+  )
+  
+  ht_extended <- Heatmap(
+    feature_mat,
+    name = "Factor Weight",
+    column_split = column_split,
+    top_annotation = HeatmapAnnotation(
+      View = anno_block(
+        gp = gpar(fill = view_colors[levels(column_split)]),
+        labels = levels(column_split),
+        labels_gp = gpar(fontsize = 9, fontface = "bold")
+      )
+    ),
+    column_labels = extended_feature_names,
+    show_column_names = TRUE,
+    show_row_names = TRUE,
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    show_column_dend = FALSE,
+    show_heatmap_legend = FALSE,
+    column_title = "Top Features by View and Factor",
+    row_title = "MOFA Factors",
+    heatmap_legend_param = list(title = "Weight", direction = "horizontal"),
+    column_names_gp = gpar(fontsize = 2),
+    cell_fun = function(j, i, x, y, width, height, fill) {
+      if (highlight_matrix[i, j]) {
+        grid.rect(x, y, width, height, gp = gpar(col = "black", fill = NA, lwd = 1))
+      }
+    }
+  )
+
+  return(list(ht = ht, ht_extended = ht_extended, related_features = related_features))
+}
+```
+
+## medium
+```{r} 
+num_fac <- 6
+num_features <- 5
+VIEWS <- MOFA2::views_names(model)
+res <- plot_top_feature_heatmap(model, views = VIEWS, view_order, view_colors, "V6_minor", n_factors = num_fac, top_n = num_features)
+
+
+# Set PDF output
+pdf(paste0(out_path, "/5C_",num_fac,"factors_x_",num_features,"features.pdf"), width = 14, height = 4) 
+draw(res$ht, heatmap_legend_side = "bottom", padding = unit(c(1, 2, 2, 10), "mm"))
+
+dev.off()
+
+
+# EXTRA
+pdf(paste0(out_path, "/extras/5C_",num_fac,"factors_x_",num_features,"features_ext.pdf"), width = 14, height = 4) 
+draw(res$ht_extended, heatmap_legend_side = "bottom", padding = unit(c(1, 2, 2, 100), "mm"))
+dev.off()
+```
+
+## big (extra)
+```{r, fig.width=25, fig.height=10}
+num_fac <- 6
+num_features <- 10
+VIEWS <- MOFA2::views_names(model)
+res <- plot_top_feature_heatmap(model, views = c("Cellohood", "Densities", "Interactions", "Expressions", "RNA", "BINARY"), view_order,view_colors, "V6_minor",  n_factors = num_fac, top_n = num_features)
+
+# Set PDF output
+pdf(paste0(out_path, "/extras/5C_",num_fac,"factors_x_",num_features,"features.pdf"), width = 17, height = 4) 
+draw(res$ht, padding = unit(c(15, 2, 0, 2), "mm"))
+dev.off()
+
+# EXTRA
+pdf(paste0(out_path, "/extras/5C_",num_fac,"factors_x_",num_features,"features_ext.pdf"), width = 14, height = 4) 
+draw(res$ht_extended, heatmap_legend_side = "bottom", padding = unit(c(1, 2, 2, 100), "mm"))
+dev.off()
+```
+
+# S7C supp: GSEA per Factor
 ```{r}
 # Load required libraries
 library(MOFA2)
@@ -217,7 +462,7 @@ ht <- Heatmap(
   column_names_side = "top",
   column_names_rot = 0
 )
-pdf(paste0(out_path,"/S6A_GSEA_GOBP_C5_heatmap.pdf"), height = 14, width = 10)
+pdf(paste0(out_path,"/S7AC_GSEA_GOBP_C5_heatmap.pdf"), height = 14, width = 10)
 draw(ht, heatmap_legend_side = "left", padding = unit(c(1, 1,1, 11), "cm"))
 dev.off()
 ```

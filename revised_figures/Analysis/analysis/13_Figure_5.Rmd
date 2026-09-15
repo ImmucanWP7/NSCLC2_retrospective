@@ -206,6 +206,94 @@ dev.off()
 
 # 5C - features per factor
 
+## imaging modules
+
+```{r}
+library(pheatmap)
+mofa <- readRDS( '/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/MOFA/mofa_V6_minor.rds')
+
+lf_raw <- as.data.frame(get_factors(mofa)[["group1"]])   # or [[1]]
+
+lf_raw <- lf_raw %>%
+  mutate(immucan_id = rownames(lf_raw),
+         immucan_id = gsub("_","-",immucan_id))
+
+meta_scores <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/patient_imaging_meta_cluster_scores_tpm.rds")
+meta_scores_df <- as.data.frame(meta_scores)
+meta_scores_df$immucan_id <- rownames(meta_scores_df)
+rownames(meta_scores_df) <- NULL
+
+df <- left_join(meta_scores_df,lf_raw,"immucan_id")
+
+imc_cols <- colnames(meta_scores)
+gc_cols <- colname(lf_raw)[1:6]
+for (imc_feat in imc_cols) {
+  for (gc_prot in gc_cols) {
+    
+    x <- imc_mat[, imc_feat]
+    y <- gc_mat[, gc_prot]
+    
+    # Only test if both vectors have sufficient non-NA observations
+    n_complete <- sum(complete.cases(x, y))
+    
+    if (n_complete >= 5) {
+      ct <- cor.test(x, y, method = "spearman", exact = FALSE)
+      cor_list[[idx]] <- tibble(
+        imc_feature  = imc_feat,
+        gc_feature = gc_prot,
+        rho           = ct$estimate,
+        pval          = ct$p.value,
+        n             = n_complete
+      )
+    } else {
+      cor_list[[idx]] <- tibble(
+        imc_feature   = imc_feat,
+        gc_feature = gc_prot,
+        rho           = NA_real_,
+        pval          = NA_real_,
+        n             = n_complete
+      )
+    }
+    idx <- idx + 1L
+  }
+}
+
+cor_df <- bind_rows(cor_list)
+
+
+# -----------------------------------------------------------------------------
+# 3. Multiple testing correction
+#    BH (FDR) correction across all tests; also Bonferroni for reference
+# -----------------------------------------------------------------------------
+cor_df <- cor_df %>%
+  mutate(
+    padj_BH          = p.adjust(pval, method = "BH"),
+    padj_bonferroni  = p.adjust(pval, method = "bonferroni")
+  ) %>%
+  arrange(pval)
+
+cat("\nSignificant associations (FDR < 0.05):", sum(cor_df$padj_BH < 0.05, na.rm = TRUE), "\n")
+cat("Significant associations (FDR < 0.10):", sum(cor_df$padj_BH < 0.10, na.rm = TRUE), "\n")
+
+
+# -----------------------------------------------------------------------------
+# 4. Preview top hits
+# -----------------------------------------------------------------------------
+cat("\nTop 20 associations by p-value:\n")
+print(cor_df %>%
+        filter(!is.na(rho)) %>%
+        mutate(across(c(rho, pval, padj_BH), \(x) signif(x, 3))))
+```
+
+cor(df %>%
+      dplyr::select(-immucan_id), use = "pairwise.complete.obs") %>%
+  as.data.frame() %>%
+  dplyr::select(Factor1, Factor2, Factor3, Factor4, Factor5, Factor6) %>%
+  dplyr::slice(1:7) %>%
+  pheatmap(color = colorRampPalette(c("dark blue", "white", "dark red"))(100),
+         breaks = seq(-1, 1, length.out = 101))
+```
+
 
 ## plotting function
 ```{r}

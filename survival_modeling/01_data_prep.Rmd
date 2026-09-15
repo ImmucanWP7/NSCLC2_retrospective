@@ -1,0 +1,280 @@
+---
+title: "data_prep"
+author: "Daniel Schulz"
+date: "2026-09-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## 02_data_prep.R
+## Merge all data modalities by immucan_id, build a feature dictionary
+## (name -> category -> spatial flag -> modality) and a tidy long-format
+## table (immucan_id, name, value, category, spatial). Save both to results/.
+##
+## Base R only (survival/boot + base). Must run on R 4.2+.
+
+```{r}
+
+suppressWarnings(suppressMessages(library(survival)))
+
+DATA_DIR    <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/"
+RESULTS_DIR <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/survival/Rout/"
+
+log_msg <- function(...) cat(format(Sys.time(), "%H:%M:%S"), "-", ..., "\n")
+
+```
+
+# read data
+```{r}
+traits <- read.csv(file.path(DATA_DIR, "all_traits.csv"), stringsAsFactors = FALSE)
+
+dens <- readRDS(file.path(DATA_DIR, "densities_dat.rds"))
+
+inter <- readRDS(file.path(DATA_DIR, "interaction_dat.rds"))
+
+cello <- readRDS(file.path(DATA_DIR, "cello_dat.rds"))
+
+img_mat <- readRDS(file.path(DATA_DIR, "patient_imaging_meta_cluster_scores_tpm.rds"))
+
+rna_gene <- read.csv(file.path(DATA_DIR, "MOFA/RNA_named.csv"), stringsAsFactors = FALSE,
+                      check.names = FALSE)
+
+rna_mod <- readRDS(file.path(DATA_DIR, "rna_scores_tpm.rds"))
+```
+
+
+
+# 2. Sanity checks / structure verification (printed, not assumed)
+```{r}
+
+log_msg("Raw dims: traits=", paste(dim(traits), collapse = "x"),
+        " dens=", paste(dim(dens), collapse = "x"),
+        " inter=", paste(dim(inter), collapse = "x"),
+        " cello=", paste(dim(cello), collapse = "x"),
+        " img_mat=", paste(dim(img_mat), collapse = "x"),
+        " rna_gene=", paste(dim(rna_gene), collapse = "x"),
+        " rna_mod=", paste(dim(rna_mod), collapse = "x"))
+
+stopifnot("immucan_id" %in% colnames(traits))
+stopifnot("immucan_id" %in% colnames(dens))
+stopifnot("immucan_id" %in% colnames(inter))
+stopifnot("immucan_id" %in% colnames(cello))
+stopifnot("Immucan_id" %in% colnames(rna_gene))  # confirmed capitalisation differs
+
+```
+
+## death vs censoring cross-check: confirm which value of `censoring` = event.
+
+```{r}
+xtab <- table(traits$death, traits$censoring, useNA = "always")
+log_msg("death x censoring crosstab:")
+print(xtab)
+event_value <- 1
+if (!(all(traits$death[traits$censoring == 1] == "Yes", na.rm = TRUE) &&
+      all(traits$death[traits$censoring == 0] == "No", na.rm = TRUE))) {
+  stop("censoring==1 does not cleanly correspond to death=='Yes' -- re-check coding before proceeding.")
+}
+log_msg("Confirmed: censoring == 1 corresponds to death == 'Yes' (event). Using event_value = 1.")
+```
+
+
+
+## histology levels present (for info; filtering to LUAD/LUSC happens in downstream scripts)
+```{r}
+print(table(traits$simple_histology, useNA = "always"))
+```
+
+# 3. Fix RNA names
+```{r}
+rna_gene$immucan_id <- gsub("_", "-", rna_gene$Immucan_id)
+rna_gene$Immucan_id <- NULL
+stopifnot(all(rna_gene$immucan_id %in% traits$immucan_id))
+```
+
+
+# 4. image module matrix prep
+```{r}
+stopifnot(all(rownames(img_mat) %in% traits$immucan_id))
+img_df <- as.data.frame(img_mat, stringsAsFactors = FALSE)
+img_df$immucan_id <- rownames(img_mat)
+rownames(img_df) <- NULL
+
+names(img_df) <- as.character(names(img_df))
+log_msg("image module colnames: ", paste(setdiff(colnames(img_df), "immucan_id"), collapse = ", "))
+
+```
+
+
+# 5. RNA module score matrix 
+```{r}
+stopifnot(all(rownames(rna_mod) %in% traits$immucan_id))
+rna_mod_df <- as.data.frame(rna_mod, stringsAsFactors = FALSE)
+rna_mod_df$immucan_id <- rownames(rna_mod)
+rownames(rna_mod_df) <- NULL
+```
+
+# 6. Biomarker + mutation columns pulled out of traits
+```{r}
+biomarker_cols <- c("TPS", "CPS", "TMB")
+mutation_cols  <- c("KRAS","EGFR","BRAF","MET","ALK","RET","NRG1","FGFR1","FGFR2",
+                     "ERBB2","ROS1","PIK3CA","NTRK1","STK11","TP53","KEAP1","RB1",
+                     "CDKN2A","NF1")
+stopifnot(all(biomarker_cols %in% colnames(traits)))
+stopifnot(all(mutation_cols %in% colnames(traits)))
+
+biomarker_df <- traits[, c("immucan_id", biomarker_cols)]
+mutation_df  <- traits[, c("immucan_id", mutation_cols)]
+
+# mutation columns are logical TRUE/FALSE/NA -> convert to numeric 0/1 for modelling
+for (cc in mutation_cols) mutation_df[[cc]] <- as.numeric(mutation_df[[cc]])
+```
+
+
+# 7. Name-collisions 
+handling: driver-gene mutation symbols (e.g. ROS1, RET,
+    CDKN2A, ERBB2) also exist as RNA_gene expression column names (same
+    gene symbol, completely different measurement: binary mutation call vs
+    continuous bulk expression). Disambiguate RNA_gene columns with a
+    "__RNA_gene" suffix before merging (documented in decisions log).
+
+```{r}
+rna_gene_feat_cols <- setdiff(colnames(rna_gene), "immucan_id")
+overlap_before <- intersect(rna_gene_feat_cols, mutation_cols)
+log_msg("Gene-symbol collisions between RNA_gene expression and mutation calls: ",
+        paste(overlap_before, collapse = ", "))
+new_names <- paste0(rna_gene_feat_cols, "__RNA_gene")
+names(rna_gene)[match(rna_gene_feat_cols, colnames(rna_gene))] <- new_names
+rna_gene_feat_cols <- new_names
+
+```
+
+
+# 8. Merge all modalities 
+
+```{r}
+merge_all <- function(a, b) merge(a, b, by = "immucan_id", all = TRUE)
+
+feature_tables <- list(dens, inter, cello, img_df, rna_gene, rna_mod_df,
+                        biomarker_df, mutation_df)
+full_wide <- Reduce(merge_all, feature_tables)
+log_msg("Merged feature-only wide table dim: ", paste(dim(full_wide), collapse = "x"))
+
+```
+
+
+## clinical/core columns needed by downstream scripts
+```{r}
+clinical_core <- traits[, c("immucan_id", "simple_histology", "time_to_event",
+                             "censoring", "death")]
+clinical_core$status <- as.integer(clinical_core$censoring == event_value)
+```
+
+
+
+## merge with clinical
+```{r}
+full_wide <- merge(clinical_core, full_wide, by = "immucan_id", all.x = TRUE)
+log_msg("Final full_wide dim (patients x [clinical + features]): ",
+        paste(dim(full_wide), collapse = "x"))
+stopifnot(!any(duplicated(full_wide$immucan_id)))
+```
+
+
+# 9. Feature dictionary
+```{r}
+extract_modality <- function(nm, strip_suffix = NULL) {
+  m <- sub("^.*__", "", nm)
+  if (!is.null(strip_suffix)) m <- sub(paste0(strip_suffix, "$"), "", m)
+  m
+}
+
+dict_density <- data.frame(
+  name = setdiff(colnames(dens), "immucan_id"), category = "density",
+  spatial = FALSE, stringsAsFactors = FALSE)
+dict_density$modality <- extract_modality(dict_density$name)
+
+dict_interaction <- data.frame(
+  name = setdiff(colnames(inter), "immucan_id"), category = "interaction",
+  spatial = TRUE, stringsAsFactors = FALSE)
+dict_interaction$modality <- extract_modality(dict_interaction$name, strip_suffix = "_int")
+
+dict_cello <- data.frame(
+  name = setdiff(colnames(cello), "immucan_id"), category = "cellohood",
+  spatial = TRUE, stringsAsFactors = FALSE)
+dict_cello$modality <- extract_modality(dict_cello$name)
+
+dict_img <- data.frame(
+  name = setdiff(colnames(img_df), "immucan_id"), category = "image_module",
+  spatial = NA, modality = "imaging_meta_cluster", stringsAsFactors = FALSE)
+
+dict_rna_gene <- data.frame(
+  name = rna_gene_feat_cols, category = "RNA_gene",
+  spatial = FALSE, modality = "RNA_gene", stringsAsFactors = FALSE)
+
+dict_rna_mod <- data.frame(
+  name = setdiff(colnames(rna_mod_df), "immucan_id"), category = "RNA_module",
+  spatial = FALSE, modality = "RNA_module", stringsAsFactors = FALSE)
+
+dict_biomarker <- data.frame(
+  name = biomarker_cols, category = "biomarker",
+  spatial = FALSE, modality = "clinical_biomarker", stringsAsFactors = FALSE)
+
+dict_mutation <- data.frame(
+  name = mutation_cols, category = "mutation",
+  spatial = FALSE, modality = "WES_driver_mutation", stringsAsFactors = FALSE)
+
+feature_dict <- rbind(dict_density, dict_interaction, dict_cello, dict_img,
+                       dict_rna_gene, dict_rna_mod, dict_biomarker, dict_mutation)
+stopifnot(!any(duplicated(feature_dict$name)))
+stopifnot(all(feature_dict$name %in% colnames(full_wide)))
+log_msg("Feature dictionary: ", nrow(feature_dict), " features across categories:")
+print(table(feature_dict$category))
+
+```
+
+
+# 10. Tidy long-format table
+immucan_id, name, value, category, spatial
+(values coerced to numeric; logicals from mutation_df already numeric)
+
+```{r}
+log_msg("Building long-format table ...")
+feat_names <- feature_dict$name
+n_pat <- nrow(full_wide)
+val_list <- vector("list", length(feat_names))
+for (k in seq_along(feat_names)) {
+  val_list[[k]] <- suppressWarnings(as.numeric(full_wide[[feat_names[k]]]))
+}
+long_dat <- data.frame(
+  immucan_id = rep(full_wide$immucan_id, times = length(feat_names)),
+  name       = rep(feat_names, each = n_pat),
+  value      = unlist(val_list, use.names = FALSE),
+  stringsAsFactors = FALSE
+)
+long_dat <- merge(long_dat, feature_dict[, c("name", "category", "spatial")],
+                   by = "name", all.x = TRUE)
+long_dat <- long_dat[, c("immucan_id", "name", "value", "category", "spatial")]
+log_msg("Long table dim: ", paste(dim(long_dat), collapse = "x"),
+        " (expected ", n_pat, " x ", length(feat_names), " = ", n_pat * length(feat_names), " rows)")
+stopifnot(nrow(long_dat) == n_pat * length(feat_names))
+```
+
+
+
+# 11. Save
+```{r}
+saveRDS(feature_dict,  file.path(RESULTS_DIR, "feature_dictionary.rds"))
+saveRDS(long_dat,      file.path(RESULTS_DIR, "features_long.rds"))
+saveRDS(full_wide,     file.path(RESULTS_DIR, "full_wide.rds"))
+saveRDS(clinical_core, file.path(RESULTS_DIR, "clinical_core.rds"))
+
+log_msg("Saved: results/feature_dictionary.rds, results/features_long.rds, ",
+        "results/full_wide.rds, results/clinical_core.rds")
+log_msg("DONE 02_data_prep.R")
+```
+
+

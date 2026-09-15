@@ -1,0 +1,218 @@
+---
+title: "QC"
+author: "Daniel Schulz"
+date: "2026-09-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+## 03_qc_plots.R
+## "Difference in detected features for LUAD vs LUSC"
+## For each feature category, compute how many features pass basic QC
+## (non-degenerate: >=2 unique observed values; <50% missing) within
+## LUAD-only rows and LUSC-only rows separately.
+##
+## Base R only. Must run on R 4.2+.
+
+RESULTS_DIR <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/survival/Rout/"
+PLOTS_DIR   <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/survival/plots/"
+if (!dir.exists(PLOTS_DIR)) dir.create(PLOTS_DIR, recursive = TRUE)
+
+log_msg <- function(...) cat(format(Sys.time(), "%H:%M:%S"), "-", ..., "\n")
+
+long_dat      <- readRDS(file.path(RESULTS_DIR, "features_long.rds"))
+feature_dict  <- readRDS(file.path(RESULTS_DIR, "feature_dictionary.rds"))
+clinical_core <- readRDS(file.path(RESULTS_DIR, "clinical_core.rds"))
+
+## Restrict the LUAD-vs-LUSC comparison to the two histologies of interest;
+## Adenosquamous / LCNEC / Other / unknown are excluded per the project spec.
+histo_map <- clinical_core[clinical_core$simple_histology %in%
+                              c("Adenocarcinoma", "Squamous cell carcinoma"),
+                            c("immucan_id", "simple_histology", "status")]
+histo_map$histology <- ifelse(histo_map$simple_histology == "Adenocarcinoma", "LUAD", "LUSC")
+log_msg("Patients in LUAD/LUSC comparison: ", nrow(histo_map),
+        " (LUAD=", sum(histo_map$histology == "LUAD"),
+        ", LUSC=", sum(histo_map$histology == "LUSC"), ")")
+
+long_hs <- merge(long_dat, histo_map[, c("immucan_id", "histology")], by = "immucan_id")
+
+## ---------------------------------------------------------------------
+## Per-feature QC within each histology: non-degenerate (>=2 unique observed
+## values) and missingness < 50%.
+## ---------------------------------------------------------------------
+qc_one_group <- function(df, denom_n) {
+  ## df: rows for ONE feature, ONE histology (immucan_id, value, ...)
+  n_obs    <- sum(!is.na(df$value))
+  frac_na  <- 1 - n_obs / denom_n
+  n_unique <- length(unique(df$value[!is.na(df$value)]))
+  data.frame(n_obs = n_obs, frac_na = frac_na, n_unique = n_unique)
+}
+
+histologies <- c("LUAD", "LUSC")
+n_per_histo <- table(histo_map$histology)
+
+qc_list <- list()
+idx <- 1
+for (h in histologies) {
+  denom_n <- as.integer(n_per_histo[h])
+  sub_h <- long_hs[long_hs$histology == h, ]
+  spl <- split(sub_h, sub_h$name)
+  qc_rows <- lapply(spl, qc_one_group, denom_n = denom_n)
+  qc_df <- do.call(rbind, qc_rows)
+  qc_df$name <- rownames(qc_df)
+  rownames(qc_df) <- NULL
+  qc_df$histology <- h
+  qc_list[[idx]] <- qc_df
+  idx <- idx + 1
+}
+qc_all <- do.call(rbind, qc_list)
+qc_all <- merge(qc_all, feature_dict[, c("name", "category", "spatial")], by = "name")
+qc_all$pass_qc <- qc_all$n_unique >= 2 & qc_all$frac_na < 0.5
+
+log_msg("QC table dim: ", paste(dim(qc_all), collapse = "x"))
+saveRDS(qc_all, file.path(RESULTS_DIR, "qc_by_category_histology.rds"))
+
+## ---------------------------------------------------------------------
+## Aggregate: features passing QC, by category x histology
+## ---------------------------------------------------------------------
+categories <- sort(unique(feature_dict$category))
+
+pass_tab <- table(qc_all$category[qc_all$pass_qc], qc_all$histology[qc_all$pass_qc])
+pass_mat <- matrix(0, nrow = length(categories), ncol = length(histologies),
+                    dimnames = list(categories, histologies))
+for (r in rownames(pass_tab)) for (cn in colnames(pass_tab)) pass_mat[r, cn] <- pass_tab[r, cn]
+
+## missingness rate (mean frac_na across features) by category x histology
+miss_mat <- matrix(NA_real_, nrow = length(categories), ncol = length(histologies),
+                    dimnames = list(categories, histologies))
+for (r in categories) for (h in histologies) {
+  vals <- qc_all$frac_na[qc_all$category == r & qc_all$histology == h]
+  miss_mat[r, h] <- if (length(vals)) mean(vals) else NA_real_
+}
+
+## total feature count per category (for context / denominator on the bar plot)
+n_feat_cat <- table(feature_dict$category)[categories]
+
+log_msg("Features passing QC by category x histology:")
+print(pass_mat)
+log_msg("Mean missingness by category x histology:")
+print(round(miss_mat, 3))
+
+## ---------------------------------------------------------------------
+## Plot 1: plots/qc_features_by_category_histology.pdf
+## Grouped bar chart: features passing QC by category, LUAD vs LUSC
+## ---------------------------------------------------------------------
+#pdf(file.path(PLOTS_DIR, "qc_features_by_category_histology.pdf"), width = 10, height = 6)
+op <- par(mar = c(8, 5, 4, 2))
+bp <- barplot(t(pass_mat), beside = TRUE, las = 2,
+              col = c("blue", "orange"),
+              ylim = c(0, max(pass_mat, na.rm = TRUE) * 1.25),
+              ylab = "Number of features passing QC\n(>=2 unique values, <50% missing)",
+              main = paste0("Features passing basic QC by category: LUAD (n=",
+                             sum(histo_map$histology == "LUAD"), ", ",
+                             sum(histo_map$status[histo_map$histology == "LUAD"]), " events) vs LUSC (n=",
+                             sum(histo_map$histology == "LUSC"), ", ",
+                             sum(histo_map$status[histo_map$histology == "LUSC"]), " events, EXPLORATORY)"),
+              cex.names = 0.9)
+text(x = bp, y = t(pass_mat), labels = t(pass_mat), pos = 3, cex = 0.65, xpd = NA)
+## annotate total available features per category above the bars
+for (i in seq_along(categories)) {
+  mid <- mean(bp[, i])
+  text(mid, max(pass_mat[i, ], na.rm = TRUE) * 1.15,
+       labels = paste0("of ", n_feat_cat[categories[i]]), cex = 0.6, col = "grey30")
+}
+legend("topright", legend = c("LUAD", "LUSC (exploratory)"), fill = c("blue", "orange"), bty = "n")
+mtext("image_module is a spatially-derived per-patient summary index (own category, not scored as spatial/non-spatial)",
+      side = 1, line = 6.5, cex = 0.65, col = "grey40")
+par(op)
+#dev.off()
+
+```
+
+```{r}
+## ---------------------------------------------------------------------
+## Plot 2: plots/qc_missingness_by_category_histology.pdf
+## ---------------------------------------------------------------------
+#pdf(file.path(PLOTS_DIR, "qc_missingness_by_category_histology.pdf"), width = 10, height = 6)
+op <- par(mar = c(8, 5, 4, 2))
+bp2 <- barplot(t(miss_mat) * 100, beside = TRUE, las = 2,
+               col = c("blue", "orange"),
+               ylim = c(0, 100),
+               ylab = "Mean missingness rate (%) across features in category",
+               main = "Missingness by category: LUAD vs LUSC (exploratory)",
+               cex.names = 0.9)
+text(x = bp2, y = t(miss_mat) * 100, labels = round(t(miss_mat) * 100, 1),
+     pos = 3, cex = 0.6, xpd = NA)
+abline(h = 50, lty = 2, col = "grey50")
+legend("topright", legend = c("LUAD", "LUSC (exploratory)"), fill = c("blue", "orange"), bty = "n")
+par(op)
+#dev.off()
+```
+
+```{r}
+## ---------------------------------------------------------------------
+## Plot 3: plots/qc_sample_event_summary.pdf
+## n patients and n events for LUAD vs LUSC, per modality/category
+## (since densities/interactions/cellohood/RNA all have different n due to
+## per-patient modality availability)
+## ---------------------------------------------------------------------
+## Determine, for each category, how many LUAD/LUSC patients have >=1
+## non-missing value in that category (a proxy for "modality available").
+avail_mat <- matrix(0, nrow = length(categories), ncol = length(histologies),
+                     dimnames = list(categories, histologies))
+event_mat <- matrix(0, nrow = length(categories), ncol = length(histologies),
+                     dimnames = list(categories, histologies))
+for (r in categories) {
+  feats_r <- feature_dict$name[feature_dict$category == r]
+  sub_r <- long_hs[long_hs$name %in% feats_r, ]
+  ## a patient counts as "has this modality" if ANY feature in the category is non-NA
+  has_any <- tapply(sub_r$value, sub_r$immucan_id, function(v) any(!is.na(v)))
+  ids_with <- names(has_any)[has_any]
+  for (h in histologies) {
+    ids_h <- histo_map$immucan_id[histo_map$histology == h]
+    ids_with_h <- intersect(ids_with, ids_h)
+    avail_mat[r, h] <- length(ids_with_h)
+    event_mat[r, h] <- sum(histo_map$status[histo_map$immucan_id %in% ids_with_h])
+  }
+}
+
+log_msg("N patients with >=1 non-missing feature, by category x histology:")
+print(avail_mat)
+log_msg("N events among those patients, by category x histology:")
+print(event_mat)
+
+#pdf(file.path(PLOTS_DIR, "qc_sample_event_summary.pdf"), width = 11, height = 7)
+op <- par(mfrow = c(1, 2), mar = c(8, 5, 4, 1))
+bp3 <- barplot(t(avail_mat), beside = TRUE, las = 2,
+               col = c("blue", "orange"),
+               ylab = "N patients with modality available",
+               main = "N patients by category x histology",
+               cex.names = 0.85)
+text(x = bp3, y = t(avail_mat), labels = t(avail_mat), pos = 3, cex = 0.6, xpd = NA)
+legend("topright", legend = c("LUAD", "LUSC (exploratory)"), fill = c("blue", "orange"), bty = "n", cex = 0.8)
+
+bp4 <- barplot(t(event_mat), beside = TRUE, las = 2,
+               col = c("blue", "orange"),
+               ylab = "N events (deaths) among available patients",
+               main = "N EVENTS by category x histology\n(note the small LUSC counts)",
+               cex.names = 0.85)
+text(x = bp4, y = t(event_mat), labels = t(event_mat), pos = 3, cex = 0.6, xpd = NA)
+legend("topright", legend = c("LUAD", "LUSC (exploratory)"), fill = c("blue", "orange"), bty = "n", cex = 0.8)
+mtext(paste0("Overall: LUAD n=", sum(histo_map$histology == "LUAD"),
+             " events=", sum(histo_map$status[histo_map$histology == "LUAD"]),
+             "  |  LUSC n=", sum(histo_map$histology == "LUSC"),
+             " events=", sum(histo_map$status[histo_map$histology == "LUSC"]),
+             " -- LUSC results are EXPLORATORY throughout due to low event count"),
+      outer = TRUE, line = -1.2, cex = 0.75, col = "grey20")
+par(op)
+#dev.off()
+
+log_msg("Saved plots: qc_features_by_category_histology.pdf, qc_missingness_by_category_histology.pdf, qc_sample_event_summary.pdf")
+log_msg("DONE 03_qc_plots.R")
+
+```
+

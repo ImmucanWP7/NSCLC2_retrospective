@@ -1,0 +1,399 @@
+---
+title: "survival_modeling"
+author: "Daniel Schulz"
+date: "2026-09-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+```{r}
+## 04_luad_lusc_survival.R
+## Univariate Cox screen, LUAD and LUSC separately.
+## Re-implements the rank-based inverse-normal transform + MIN_EVENTS/MIN_PREV
+## style filtering from code/01_feature_selection.R (reference only), in base
+## R. LUSC is systematically underpowered (12 events cohort-wide, as low as 7
+## once RNA missingness is applied) -- thresholds are relaxed for LUSC and
+## every LUSC output is labelled EXPLORATORY.
+##
+## QC gate (previously computed in 03_qc_plots.R but never consumed
+## downstream -- pass_qc there only requires >=2 unique values and <50%
+## missing within a histology, and was purely descriptive): candidate
+## features are now first restricted, per histology, to those with
+## pass_qc==TRUE in results/qc_by_category_histology.rds, BEFORE the
+## MIN_EVENTS/MIN_PREV screening below is applied. In practice this drops
+## only a handful of rare driver-mutation columns per histology (features
+## that clear the QC bar but never had enough mutation-positive patients to
+## clear MIN_PREV anyway), so screened results are numerically almost
+## unchanged -- the point of this change is that the QC step is now an
+## explicit, traceable upstream gate instead of a coincidentally-similar
+## parallel computation.
+##
+## Base R + survival only. Must run on R 4.2+.
+
+suppressWarnings(suppressMessages(library(survival)))
+
+RESULTS_DIR <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/survival/Rout/"
+#PLOTS_DIR   <- "plots"
+
+
+log_msg <- function(...) cat(format(Sys.time(), "%H:%M:%S"), "-", ..., "\n")
+
+full_wide     <- readRDS(file.path(RESULTS_DIR, "full_wide.rds"))
+feature_dict  <- readRDS(file.path(RESULTS_DIR, "feature_dictionary.rds"))
+qc_all        <- readRDS(file.path(RESULTS_DIR, "qc_by_category_histology.rds"))
+
+```
+
+# helper functions
+ Thresholds. LUAD keeps the reference defaults; LUSC's thresholds are
+ deliberately relaxed because with only 12 events cohort-wide (and as few
+ as 7 once RNA missingness is applied), MIN_EVENTS=10/MIN_PREV=10 would
+ leave almost nothing to test. This is documented explicitly in the
+ decisions log; LUSC results are exploratory/hypothesis-generating only.
+
+```{r}
+
+THRESH <- list(
+  LUAD = list(MIN_EVENTS = 10, MIN_PREV = 10),
+  LUSC = list(MIN_EVENTS = 5,  MIN_PREV = 5)
+)
+
+inv_norm <- function(x) {
+  n <- sum(!is.na(x)); if (n < 3) return(rep(NA_real_, length(x)))
+  qnorm((rank(x, na.last = "keep", ties.method = "average") - 0.5) / n)
+}
+tie_fraction <- function(x) {
+  x <- x[!is.na(x)]; if (!length(x)) NA_real_ else max(table(x)) / length(x)
+}
+
+## single-predictor Cox model; returns one-row data.frame (or NA-row on failure)
+fit_one <- function(d, xcol, lab) {
+  na_row <- data.frame(scale = lab, hr = NA_real_, lo = NA_real_, hi = NA_real_,
+                        coef = NA_real_, se = NA_real_, p_wald = NA_real_,
+                        lr_chisq = NA_real_, p_lr = NA_real_,
+                        cindex = NA_real_, p_ph = NA_real_, stringsAsFactors = FALSE)
+  if (length(unique(stats::na.omit(d[[xcol]]))) < 2) return(na_row)
+
+  f <- stats::as.formula(paste("Surv(time_to_event, status) ~", xcol))
+  fit <- try(coxph(f, data = d, ties = "efron"), silent = TRUE)
+  if (inherits(fit, "try-error") || !all(is.finite(stats::coef(fit)))) return(na_row)
+
+  s  <- summary(fit)
+  cf <- s$coefficients[xcol, ]
+  ci <- s$conf.int[xcol, ]
+  lr <- 2 * (fit$loglik[2] - fit$loglik[1])
+
+  zph  <- try(cox.zph(fit), silent = TRUE)
+  p_ph <- if (inherits(zph, "try-error") || !xcol %in% rownames(zph$table)) NA_real_
+          else unname(zph$table[xcol, "p"])
+
+  data.frame(scale = lab,
+             hr = unname(ci["exp(coef)"]), lo = unname(ci["lower .95"]),
+             hi = unname(ci["upper .95"]), coef = unname(cf["coef"]),
+             se = unname(cf["se(coef)"]), p_wald = unname(cf["Pr(>|z|)"]),
+             lr_chisq = lr,
+             p_lr = if (is.na(lr)) NA_real_ else stats::pchisq(lr, 1, lower.tail = FALSE),
+             cindex = unname(concordance(fit)$concordance),
+             p_ph = p_ph, stringsAsFactors = FALSE)
+}
+
+fit_feature <- function(nm, category, d_base, min_events, min_prev) {
+  x <- d_base[[nm]]
+  ok <- !is.na(x)
+  n_ev <- sum(d_base$status[ok])
+  if (n_ev < min_events) return(NULL)
+
+  is_binary <- identical(category, "mutation")
+  d <- d_base[ok, , drop = FALSE]
+  xv <- x[ok]
+
+  if (is_binary) {
+    tb <- table(xv)
+    if (length(tb) < 2 || min(tb) < min_prev) return(NULL)
+    d$x_rank <- xv; d$x_sd <- xv
+    prev <- mean(xv == 1); tf <- NA_real_; unit <- "present vs absent"
+  } else {
+    if (length(unique(xv)) < 3) return(NULL)
+    d$x_rank <- inv_norm(xv)
+    sdv <- stats::sd(xv)
+    d$x_sd <- if (sdv > 0) (xv - mean(xv)) / sdv else NA_real_
+    prev <- NA_real_; tf <- tie_fraction(xv); unit <- "per 1 SD normal scores"
+  }
+
+  n_ev2 <- sum(d$status)
+  if (n_ev2 < min_events) return(NULL)
+
+  out <- rbind(fit_one(d, "x_rank", "rank_INT"), fit_one(d, "x_sd", "per_SD"))
+  out$name <- nm; out$category <- category
+  out$n <- nrow(d); out$n_events <- n_ev2
+  out$prevalence <- prev; out$tie_frac <- tf; out$scale_unit <- unit
+  out
+}
+
+run_screen <- function(histology_label, full_wide, feature_dict, qc_all, min_events, min_prev) {
+  d_base <- full_wide[full_wide$simple_histology ==
+                         ifelse(histology_label == "LUAD", "Adenocarcinoma", "Squamous cell carcinoma"), ]
+  d_base <- d_base[!is.na(d_base$time_to_event) & d_base$time_to_event > 0 & !is.na(d_base$status), ]
+  log_msg(histology_label, ": n=", nrow(d_base), " events=", sum(d_base$status))
+
+  ## QC gate: only screen features that passed the per-histology QC check
+  ## from 03_qc_plots.R (>=2 unique values, <50% missing within this
+  ## histology). See header comment for why this used to be a no-op.
+  qc_pass_names <- qc_all$name[qc_all$histology == histology_label & qc_all$pass_qc]
+  feature_dict_h <- feature_dict[feature_dict$name %in% qc_pass_names, ]
+  log_msg(histology_label, ": ", nrow(feature_dict) - nrow(feature_dict_h), " / ", nrow(feature_dict),
+          " candidate features dropped by the QC gate (failed >=2 unique values or <50% missing",
+          " within ", histology_label, ")")
+
+  res_list <- vector("list", nrow(feature_dict_h))
+  for (k in seq_len(nrow(feature_dict_h))) {
+    nm  <- feature_dict_h$name[k]
+    cat_k <- feature_dict_h$category[k]
+    res_list[[k]] <- fit_feature(nm, cat_k, d_base, min_events, min_prev)
+  }
+  res <- do.call(rbind, res_list)
+  res$histology <- histology_label
+  res
+}
+
+```
+
+# run survival association
+```{r}
+if(!file.exists(file.path(RESULTS_DIR, "cox_luad.rds")) & !file.exists(file.path(RESULTS_DIR, "cox_lusc.rds"))){
+  log_msg("Running LUAD screen (MIN_EVENTS=", THRESH$LUAD$MIN_EVENTS,
+          ", MIN_PREV=", THRESH$LUAD$MIN_PREV, ") ...")
+  t0 <- Sys.time()
+  cox_luad <- run_screen("LUAD", full_wide, feature_dict, qc_all,
+                         THRESH$LUAD$MIN_EVENTS, THRESH$LUAD$MIN_PREV)
+  log_msg("LUAD screen done in ", round(as.numeric(difftime(Sys.time(), t0, units = "secs")), 1),
+          "s -- ", nrow(cox_luad) / 2, " features tested")
+  
+  log_msg("Running LUSC screen (EXPLORATORY; MIN_EVENTS=", THRESH$LUSC$MIN_EVENTS,
+          ", MIN_PREV=", THRESH$LUSC$MIN_PREV, ") ...")
+  t0 <- Sys.time()
+  cox_lusc <- run_screen("LUSC", full_wide, feature_dict, qc_all,
+                         THRESH$LUSC$MIN_EVENTS, THRESH$LUSC$MIN_PREV)
+  log_msg("LUSC screen done in ", round(as.numeric(difftime(Sys.time(), t0, units = "secs")), 1),
+          "s -- ", nrow(cox_lusc) / 2, " features tested")
+}
+```
+
+# FDR
+
+```{r}
+add_fdr <- function(res) {
+  res$fdr_within_category <- NA_real_
+  for (sc in unique(res$scale)) {
+    for (cc in unique(res$category)) {
+      idx <- res$scale == sc & res$category == cc
+      res$fdr_within_category[idx] <- stats::p.adjust(res$p_lr[idx], method = "BH")
+    }
+  }
+  res$fdr_global <- NA_real_
+  for (sc in unique(res$scale)) {
+    idx <- res$scale == sc
+    res$fdr_global[idx] <- stats::p.adjust(res$p_lr[idx], method = "BH")
+  }
+  res
+}
+cox_luad <- add_fdr(cox_luad)
+cox_lusc <- add_fdr(cox_lusc)
+
+cox_all <- rbind(cox_luad, cox_lusc)
+
+saveRDS(cox_luad, file.path(RESULTS_DIR, "cox_luad.rds"))
+saveRDS(cox_lusc, file.path(RESULTS_DIR, "cox_lusc.rds"))
+saveRDS(cox_all,  file.path(RESULTS_DIR, "cox_all.rds"))
+log_msg("Saved results/cox_luad.rds, results/cox_lusc.rds, results/cox_all.rds")
+
+```
+
+# Feature count
+Final per-category, per-histology feature counts (for the Methods text):
+how many candidate features existed, how many the QC gate dropped, and how
+many were ultimately fit and tested (survived QC + MIN_EVENTS/MIN_PREV) --
+i.e. the actual denominator behind cox_luad.rds/cox_lusc.rds and the
+screen's implicit FDR correction, not just 03_qc_plots.R's descriptive
+pass/fail count.
+
+```{r}
+categories_all <- sort(unique(feature_dict$category))
+
+count_tested <- function(res, histology_label) {
+  sub <- res[res$scale == "rank_INT" & !is.na(res$p_lr), ]
+  tab <- table(factor(sub$category, levels = categories_all))
+  data.frame(category = names(tab), n_tested = as.integer(tab),
+             histology = histology_label, stringsAsFactors = FALSE)
+}
+count_dropped_qc <- function(histology_label) {
+  qc_pass_names <- qc_all$name[qc_all$histology == histology_label & qc_all$pass_qc]
+  dropped <- feature_dict[!feature_dict$name %in% qc_pass_names, ]
+  tab <- table(factor(dropped$category, levels = categories_all))
+  data.frame(category = names(tab), n_dropped_qc = as.integer(tab),
+             histology = histology_label, stringsAsFactors = FALSE)
+}
+
+n_candidate <- data.frame(category = categories_all,
+                           n_candidate = as.integer(table(factor(feature_dict$category, levels = categories_all))),
+                           stringsAsFactors = FALSE)
+
+tested_tab <- merge(count_tested(cox_luad, "LUAD"),  count_dropped_qc("LUAD"),  by = c("category", "histology"))
+tested_tab <- rbind(tested_tab,
+                     merge(count_tested(cox_lusc, "LUSC"), count_dropped_qc("LUSC"), by = c("category", "histology")))
+tested_tab <- merge(n_candidate, tested_tab, by = "category")
+tested_tab$n_dropped_threshold <- with(tested_tab, n_candidate - n_dropped_qc - n_tested)
+tested_tab <- tested_tab[order(tested_tab$category, tested_tab$histology),
+                          c("category", "histology", "n_candidate", "n_dropped_qc",
+                            "n_dropped_threshold", "n_tested")]
+
+log_msg("Final feature counts by category x histology (candidate -> QC-dropped -> ",
+        "MIN_EVENTS/MIN_PREV-dropped -> tested):")
+print(tested_tab)
+
+saveRDS(tested_tab, file.path(RESULTS_DIR, "n_features_tested_by_category.rds"))
+write.csv(tested_tab, file.path(RESULTS_DIR, "n_features_tested_by_category.csv"), row.names = FALSE)
+log_msg("Saved results/n_features_tested_by_category.rds, results/n_features_tested_by_category.csv")
+
+## summary table, printed for the log
+summarize_screen <- function(res, label) {
+  sub <- res[res$scale == "rank_INT", ]
+  agg <- aggregate(cbind(tested = !is.na(p_lr),
+                          raw05 = p_lr < 0.05,
+                          fdr10 = fdr_within_category < 0.1) ~ category,
+                    data = sub, FUN = function(v) sum(v, na.rm = TRUE))
+  agg$histology <- label
+  agg
+}
+summ_luad <- summarize_screen(cox_luad, "LUAD")
+summ_lusc <- summarize_screen(cox_lusc, "LUSC")
+log_msg("LUAD summary (rank_INT scale):"); print(summ_luad)
+log_msg("LUSC summary (rank_INT scale, EXPLORATORY):"); print(summ_lusc)
+```
+
+
+
+
+# PLOT 1: plots/qq_pvalues_luad_lusc.pdf -- observed vs expected -log10(p)
+```{r}
+#pdf(file.path(PLOTS_DIR, "qq_pvalues_luad_lusc.pdf"), width = 10, height = 5.5)
+op <- par(mfrow = c(1, 2), mar = c(5, 5, 4, 2))
+qq_panel <- function(res, title_lab, col_pt) {
+  p <- res$p_lr[res$scale == "rank_INT"]
+  p <- p[!is.na(p)]
+  p <- sort(p)
+  n <- length(p)
+  expected <- -log10(((seq_len(n)) - 0.5) / n)
+  observed <- -log10(p)
+  lim <- c(0, max(c(expected, observed), na.rm = TRUE) * 1.05)
+  plot(expected, observed, pch = 16, cex = 0.5, col = col_pt,
+       xlim = lim, ylim = lim,
+       xlab = expression(Expected~-log[10](p)), ylab = expression(Observed~-log[10](p)),
+       main = title_lab)
+  abline(0, 1, col = "grey40", lty = 2)
+}
+qq_panel(cox_luad, paste0("LUAD (n=", sum(cox_luad$n[cox_luad$scale=="rank_INT"] > 0, na.rm=TRUE),
+                           " features tested, ", length(unique(full_wide$immucan_id[full_wide$simple_histology=="Adenocarcinoma"])),
+                           " patients, 22 events)"), "blue")
+qq_panel(cox_lusc, "LUSC -- EXPLORATORY (only 12 events cohort-wide)", "#d95f02")
+par(op)
+#dev.off()
+```
+
+
+
+# PLOT 2: plots/volcano_luad_lusc.pdf -- log(HR) vs -log10(p), by category
+
+```{r}
+cats <- sort(unique(feature_dict$category))
+cat_cols <- setNames(c("blue","#d95f02","#7570b3","#e7298a","#66a61e","#e6ab02","#a6761d","#666666")[seq_along(cats)], cats)
+
+#pdf(file.path(PLOTS_DIR, "volcano_luad_lusc.pdf"), width = 12, height = 6)
+op <- par(mfrow = c(1, 2), mar = c(5, 5, 4, 8), xpd = FALSE)
+volcano_panel <- function(res, title_lab) {
+  sub <- res[res$scale == "rank_INT" & !is.na(res$p_lr), ]
+  plot(sub$coef, -log10(sub$p_lr), pch = 16, cex = 0.6,
+       col = cat_cols[sub$category],
+       xlab = "log(HR)  [rank-based inverse-normal scale]",
+       ylab = expression(-log[10](p[LR])),
+       main = title_lab)
+  abline(h = -log10(0.05), lty = 2, col = "grey50")
+  abline(v = 0, lty = 3, col = "grey70")
+}
+volcano_panel(cox_luad, "LUAD")
+volcano_panel(cox_lusc, "LUSC -- EXPLORATORY (12 events cohort-wide)")
+par(xpd = NA)
+legend(x = par("usr")[2] * 1.05, y = par("usr")[4],
+       legend = names(cat_cols), col = cat_cols, pch = 16, bty = "n", cex = 0.8)
+par(op)
+#dev.off()
+```
+
+
+
+## PLOT 3: plots/hitcounts_by_category_histology.pdf
+```{r}
+hit_tab <- function(res) {
+  sub <- res[res$scale == "rank_INT", ]
+  data.frame(
+    category = cats,
+    raw05 = sapply(cats, function(cc) sum(sub$p_lr[sub$category == cc] < 0.05, na.rm = TRUE)),
+    fdr10 = sapply(cats, function(cc) sum(sub$fdr_within_category[sub$category == cc] < 0.1, na.rm = TRUE))
+  )
+}
+h_luad <- hit_tab(cox_luad); h_lusc <- hit_tab(cox_lusc)
+
+hit_mat <- rbind(LUAD_raw05 = h_luad$raw05, LUAD_fdr10 = h_luad$fdr10,
+                  LUSC_raw05 = h_lusc$raw05, LUSC_fdr10 = h_lusc$fdr10)
+colnames(hit_mat) <- cats
+
+#pdf(file.path(PLOTS_DIR, "hitcounts_by_category_histology.pdf"), width = 11, height = 6.5)
+op <- par(mar = c(8, 5, 4, 2))
+cols4 <- c("blue", "lightblue", "orange", "yellow2")
+bp <- barplot(hit_mat, beside = TRUE, las = 2, col = cols4,
+              ylab = "Number of features",
+              main = "Nominal p<0.05 and FDR<0.1 hit counts by category\n(rank_INT scale; LUSC is EXPLORATORY, 12 events cohort-wide)",
+              cex.names = 0.9)
+legend("topright", legend = c("LUAD nominal p<0.05", "LUAD FDR<0.1",
+                                "LUSC nominal p<0.05 (exploratory)", "LUSC FDR<0.1 (exploratory)"),
+       fill = cols4, bty = "n", cex = 0.75)
+par(op)
+#dev.off()
+```
+
+
+
+
+# PLOT 4: plots/overlap_luad_lusc_hits.pdf -- overlap of nominal hits
+```{r}
+hits_luad <- unique(cox_luad$name[cox_luad$scale == "rank_INT" & !is.na(cox_luad$p_lr) & cox_luad$p_lr < 0.05])
+hits_lusc <- unique(cox_lusc$name[cox_lusc$scale == "rank_INT" & !is.na(cox_lusc$p_lr) & cox_lusc$p_lr < 0.05])
+n_luad_only <- length(setdiff(hits_luad, hits_lusc))
+n_shared    <- length(intersect(hits_luad, hits_lusc))
+n_lusc_only <- length(setdiff(hits_lusc, hits_luad))
+log_msg("Nominal p<0.05 hits: LUAD-only=", n_luad_only, " shared=", n_shared, " LUSC-only=", n_lusc_only,
+        " (LUAD total=", length(hits_luad), ", LUSC total=", length(hits_lusc), ")")
+
+#pdf(file.path(PLOTS_DIR, "overlap_luad_lusc_hits.pdf"), width = 7, height = 6)
+op <- par(mar = c(5, 5, 4, 2))
+counts <- c(`LUAD only` = n_luad_only, `Shared` = n_shared, `LUSC only (exploratory)` = n_lusc_only)
+bp <- barplot(counts, col = c("blue", "red", "orange"),
+              ylab = "Number of nominally significant features (p<0.05, rank_INT)",
+              main = paste0("Overlap of nominal hits, LUAD vs LUSC\n",
+                             "(LUAD ", length(hits_luad), " hits / LUSC ", length(hits_lusc),
+                             " hits -- different feature sets tested at different thresholds;\n",
+                             "LUSC hits are EXPLORATORY given only 12 events)"),
+              cex.main = 0.85, ylim = c(0, max(counts) * 1.2))
+text(bp, counts, labels = counts, pos = 3)
+par(op)
+#dev.off()
+
+log_msg("Saved plots: qq_pvalues_luad_lusc.pdf, volcano_luad_lusc.pdf, hitcounts_by_category_histology.pdf, overlap_luad_lusc_hits.pdf")
+log_msg("DONE 04_luad_lusc_survival.R")
+```
+
+
