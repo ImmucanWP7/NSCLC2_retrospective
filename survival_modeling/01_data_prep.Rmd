@@ -10,33 +10,85 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 
-## 02_data_prep.R
-## Merge all data modalities by immucan_id, build a feature dictionary
-## (name -> category -> spatial flag -> modality) and a tidy long-format
-## table (immucan_id, name, value, category, spatial). Save both to results/.
-##
-## Base R only (survival/boot + base). Must run on R 4.2+.
+# setup
+Merge all data modalities by immucan_id, build a feature dictionary
+(name -> category -> spatial flag -> modality) and a tidy long-format
+table (immucan_id, name, value, category, spatial). Save both to results/.
 
 ```{r}
-
 suppressWarnings(suppressMessages(library(survival)))
 
 DATA_DIR    <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/"
 RESULTS_DIR <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/survival/Rout/"
 
 log_msg <- function(...) cat(format(Sys.time(), "%H:%M:%S"), "-", ..., "\n")
-
 ```
 
+```{r}
+library(tidyverse)
+```
+
+
 # read data
+here we will use the same data as we  used for Mofa
+
 ```{r}
 traits <- read.csv(file.path(DATA_DIR, "all_traits.csv"), stringsAsFactors = FALSE)
 
-dens <- readRDS(file.path(DATA_DIR, "densities_dat.rds"))
+# density data
+dens_old <- readRDS(file.path(DATA_DIR, "densities_dat.rds"))
+dens <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/MOFA/densities.csv", row.names = 1)
+colnames(dens) <- gsub("_IF1","__IF1", colnames(dens))
+colnames(dens) <- gsub("_IF2","__IF2", colnames(dens))
+colnames(dens) <- gsub("_IF3","__IF3", colnames(dens))
+colnames(dens) <- gsub("_p1","__IMC1", colnames(dens))
+colnames(dens) <- gsub("_p2","__IMC2", colnames(dens))
+dens <- dens %>%
+  mutate(immucan_id = gsub("_","-",Immucan_id))
+dens$Immucan_id <- NULL
 
-inter <- readRDS(file.path(DATA_DIR, "interaction_dat.rds"))
+# interaction data
+inter_old <- readRDS(file.path(DATA_DIR, "interaction_dat.rds"))
+# use same interaction features as mofa used
+inter <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/MOFA/interactions.csv", row.names = 1)
+inter <- inter %>%
+  mutate(Immucan_id = gsub("_","-", Immucan_id))
+colnames(inter) <- gsub("_IF","__IF", colnames(inter))
+colnames(inter) <- gsub("_P1","__IMC1", colnames(inter))
+colnames(inter) <- gsub("_P2","__IMC2", colnames(inter))
+colnames(inter) <- paste0(colnames(inter), "_int")
+inter <- inter %>%
+  rename(immucan_id = Immucan_id_int)
 
-cello <- readRDS(file.path(DATA_DIR, "cello_dat.rds"))
+# cellohood data
+# cello1 <- read.csv(paste0(DATA_DIR,"cellohood_density_cellbased_p1.csv"))
+# cello2 <- read.csv(paste0(DATA_DIR,"cellohood_density_cellbased_p2.csv"))
+# colnames(cello1) <- c("immucan_id",paste0(colnames(cello1)[-1],"__cello1"))
+# colnames(cello2) <- c("immucan_id",paste0(colnames(cello2)[-1],"__cello2"))
+# 
+# cello_dat <- plyr::join_all(list(cello1, cello2), by='immucan_id', type='left')
+# # find overlapping patients
+# pats <- Reduce(intersect, list(cello1$immucan_id,cello2$immucan_id))
+# cello_dat <- cello_dat %>% 
+#   filter(immucan_id %in% pats)
+# filter cellohood clusters if not present in at least 10 patients
+# filt_dat <- apply(cello_dat[,-1],2,function(x) sum(x != 0,na.rm = TRUE))
+# rm_cols <- names(filt_dat[filt_dat < 10])
+# 
+# cello <- cello_dat %>%
+#   dplyr::select(!all_of(c(rm_cols)))
+
+
+
+cello_dat <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/MOFA/cellohood.csv", row.names = 1)
+colnames(cello_dat) <- gsub("_P1", "__cello1", colnames(cello_dat))
+colnames(cello_dat) <- gsub("_P2", "__cello2", colnames(cello_dat))
+cello <- cello_dat %>%
+  mutate(immucan_id = gsub("_","-",Immucan_id)) 
+cello$Immucan_id <- NULL
+
+
+
 
 img_mat <- readRDS(file.path(DATA_DIR, "patient_imaging_meta_cluster_scores_tpm.rds"))
 

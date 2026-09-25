@@ -40,10 +40,12 @@ log_msg("Patients in LUAD/LUSC comparison: ", nrow(histo_map),
 
 long_hs <- merge(long_dat, histo_map[, c("immucan_id", "histology")], by = "immucan_id")
 
-## ---------------------------------------------------------------------
-## Per-feature QC within each histology: non-degenerate (>=2 unique observed
-## values) and missingness < 50%.
-## ---------------------------------------------------------------------
+```
+
+# Per-feature QC
+within each histology: non-degenerate (>=2 unique observed values) and missingness < 50%.
+
+```{r}
 qc_one_group <- function(df, denom_n) {
   ## df: rows for ONE feature, ONE histology (immucan_id, value, ...)
   n_obs    <- sum(!is.na(df$value))
@@ -75,10 +77,12 @@ qc_all$pass_qc <- qc_all$n_unique >= 2 & qc_all$frac_na < 0.5
 
 log_msg("QC table dim: ", paste(dim(qc_all), collapse = "x"))
 saveRDS(qc_all, file.path(RESULTS_DIR, "qc_by_category_histology.rds"))
+```
 
-## ---------------------------------------------------------------------
-## Aggregate: features passing QC, by category x histology
-## ---------------------------------------------------------------------
+# QC 2
+Aggregate: features passing QC, by category x histology
+qc_features_by_category_histology
+```{r}
 categories <- sort(unique(feature_dict$category))
 
 pass_tab <- table(qc_all$category[qc_all$pass_qc], qc_all$histology[qc_all$pass_qc])
@@ -102,10 +106,6 @@ print(pass_mat)
 log_msg("Mean missingness by category x histology:")
 print(round(miss_mat, 3))
 
-## ---------------------------------------------------------------------
-## Plot 1: plots/qc_features_by_category_histology.pdf
-## Grouped bar chart: features passing QC by category, LUAD vs LUSC
-## ---------------------------------------------------------------------
 #pdf(file.path(PLOTS_DIR, "qc_features_by_category_histology.pdf"), width = 10, height = 6)
 op <- par(mar = c(8, 5, 4, 2))
 bp <- barplot(t(pass_mat), beside = TRUE, las = 2,
@@ -133,10 +133,9 @@ par(op)
 
 ```
 
+# QC 3
+qc_missingness_by_category_histology
 ```{r}
-## ---------------------------------------------------------------------
-## Plot 2: plots/qc_missingness_by_category_histology.pdf
-## ---------------------------------------------------------------------
 #pdf(file.path(PLOTS_DIR, "qc_missingness_by_category_histology.pdf"), width = 10, height = 6)
 op <- par(mar = c(8, 5, 4, 2))
 bp2 <- barplot(t(miss_mat) * 100, beside = TRUE, las = 2,
@@ -153,15 +152,16 @@ par(op)
 #dev.off()
 ```
 
+# QC 4
+qc_sample_event_summary
+
+n patients and n events for LUAD vs LUSC, per modality/category
+(since densities/interactions/cellohood/RNA all have different n due to
+per-patient modality availability)
+
 ```{r}
-## ---------------------------------------------------------------------
-## Plot 3: plots/qc_sample_event_summary.pdf
-## n patients and n events for LUAD vs LUSC, per modality/category
-## (since densities/interactions/cellohood/RNA all have different n due to
-## per-patient modality availability)
-## ---------------------------------------------------------------------
-## Determine, for each category, how many LUAD/LUSC patients have >=1
-## non-missing value in that category (a proxy for "modality available").
+# Determine, for each category, how many LUAD/LUSC patients have >=1
+# non-missing value in that category (a proxy for "modality available").
 avail_mat <- matrix(0, nrow = length(categories), ncol = length(histologies),
                      dimnames = list(categories, histologies))
 event_mat <- matrix(0, nrow = length(categories), ncol = length(histologies),

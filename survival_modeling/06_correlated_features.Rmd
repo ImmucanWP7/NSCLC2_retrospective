@@ -1,0 +1,444 @@
+---
+title: "correlated features survival"
+author: "Daniel Schulz"
+date: "2026-09-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+Post-hoc redundancy pruning of the nominal univariate Cox hits (rank_INT
+scale, p_lr < 0.05) in cox_luad.rds / cox_lusc.rds, FOR REPORTING PURPOSES
+ONLY -- this does not change any p-value, FDR result, or model; it just
+avoids listing multiple near-duplicate rows (e.g. an interaction term and
+the density feature of the same cell type -- the exact confound quantified
+in 05_spatial_vs_nonspatial.R/docs/decisions_round2.md) in a hit table or
+figure when they carry the same signal.
+
+ - Hits are pooled ACROSS ALL feature categories together per histology
+   (not clustered within each category separately), specifically because
+   the known confound is cross-category (interaction <-> density).
+ - Pairwise Spearman correlation among that histology's hit features,
+   computed on full_wide (pairwise-complete observations, >=10 required or
+   the pair is treated as uncorrelated) -- same convention already used in
+   05_spatial_vs_nonspatial.R's density-confounding check. Spearman is
+   invariant to the rank-based inverse-normal transform used for the Cox
+   fits, so correlating the raw full_wide columns gives identical rho to
+   correlating the rank_INT-transformed values.
+ - Features are grouped by connected components of the graph "|rho| > 0.8"
+   (transitive: if A-B and B-C both exceed 0.8 but A-C does not, all three
+   still collapse into one group -- standard for this kind of redundancy
+   pruning, but worth stating explicitly since it is not the only possible
+   convention).
+ - Within each group, the representative is the feature with the smallest
+   p_lr (matches the project's existing "rank hits by ascending LR p"
+   convention from docs/decisions_round2.md's top-8 lists).
+ - Both the full per-feature mapping (which group / representative each
+   hit was assigned to) and the pruned representatives-only list are
+   saved, so nothing is silently dropped from the record.
+
+# set up
+```{r}
+RESULTS_DIR <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/survival/Rout/"
+PLOTS_DIR <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/survival/plots/"
+log_msg <- function(...) cat(format(Sys.time(), "%H:%M:%S"), "-", ..., "\n")
+
+cox_luad  <- readRDS(file.path(RESULTS_DIR, "cox_luad.rds"))
+cox_lusc  <- readRDS(file.path(RESULTS_DIR, "cox_lusc.rds"))
+full_wide <- readRDS(file.path(RESULTS_DIR, "full_wide.rds"))
+
+P_THRESH   <- 0.05  ## nominal rank_INT / LR-test p, matching the hit definition used elsewhere
+R_THRESH   <- 0.8   ## |Spearman rho| above which two hit features are considered redundant
+MIN_PAIR_N <- 10    ## minimum pairwise-complete N to trust a correlation estimate at all
+
+```
+
+# connected components
+Connected components of an adjacency matrix (simple BFS, base R only --
+no igraph dependency for what is a small graph, at most a few hundred
+nodes per histology).
+
+```{r}
+
+connected_components <- function(adj) {
+  n <- nrow(adj)
+  comp <- rep(NA_integer_, n)
+  current <- 0L
+  for (i in seq_len(n)) {
+    if (!is.na(comp[i])) next
+    current <- current + 1L
+    queue <- i
+    comp[i] <- current
+    while (length(queue)) {
+      j <- queue[1]; queue <- queue[-1]
+      nb <- which(adj[j, ] & is.na(comp))
+      if (length(nb)) { comp[nb] <- current; queue <- c(queue, nb) }
+    }
+  }
+  comp
+}
+
+
+# Per-histology dedup: pull nominal hits, correlate, cluster, pick
+# representatives.
+
+dedup_histology <- function(cox_res, full_wide, histology_str, histology_label) {
+  hits <- cox_res[cox_res$scale == "rank_INT" & !is.na(cox_res$p_lr) & cox_res$p_lr < P_THRESH,
+                   c("name", "category", "p_lr", "coef", "hr")]
+  hits <- hits[order(hits$p_lr), ]
+  log_msg(histology_label, ": ", nrow(hits), " nominal hits (p_lr<", P_THRESH, ") pooled across categories")
+
+  if (nrow(hits) <= 1) {
+    hits$cluster_id <- seq_len(nrow(hits))
+    hits$cluster_size <- 1L
+    hits$is_representative <- TRUE
+    hits$representative_name <- hits$name
+    hits$histology <- histology_label
+    return(hits)
+  }
+
+  d <- full_wide[full_wide$simple_histology == histology_str, hits$name, drop = FALSE]
+  mat <- as.matrix(sapply(d, as.numeric))
+
+  cor_mat <- suppressWarnings(cor(mat, method = "spearman", use = "pairwise.complete.obs"))
+  not_na  <- !is.na(mat)
+  n_mat   <- crossprod(not_na, not_na)
+
+  adj <- (abs(cor_mat) > R_THRESH) & (n_mat >= MIN_PAIR_N)
+  adj[is.na(adj)] <- FALSE
+  diag(adj) <- FALSE
+
+  comp <- connected_components(adj)
+  hits$cluster_id <- comp[match(hits$name, colnames(mat))]
+
+  cluster_size <- table(hits$cluster_id)
+  hits$cluster_size <- as.integer(cluster_size[as.character(hits$cluster_id)])
+
+  ## representative = smallest p_lr within the cluster (ties -> alphabetical, deterministic)
+  hits <- hits[order(hits$cluster_id, hits$p_lr, hits$name), ]
+  rep_name <- tapply(hits$name, hits$cluster_id, `[`, 1)
+  hits$representative_name <- rep_name[as.character(hits$cluster_id)]
+  hits$is_representative <- hits$name == hits$representative_name
+  hits$histology <- histology_label
+  hits
+}
+
+dedup_luad <- dedup_histology(cox_luad, full_wide, "Adenocarcinoma", "LUAD")
+dedup_lusc <- dedup_histology(cox_lusc, full_wide, "Squamous cell carcinoma", "LUSC")
+dedup_all  <- rbind(dedup_luad, dedup_lusc)
+
+n_before <- c(LUAD = nrow(dedup_luad), LUSC = nrow(dedup_lusc))
+n_after  <- c(LUAD = sum(dedup_luad$is_representative), LUSC = sum(dedup_lusc$is_representative))
+log_msg("Nominal hits before -> after correlation dedup (|rho|>", R_THRESH, "): LUAD ",
+        n_before["LUAD"], " -> ", n_after["LUAD"], " | LUSC ", n_before["LUSC"], " -> ", n_after["LUSC"])
+
+## per-category breakdown of the collapse, for the methods text
+cat_summary <- aggregate(cbind(n_hits = rep(1, nrow(dedup_all)),
+                                n_kept = as.integer(dedup_all$is_representative)) ~
+                            histology + category, data = dedup_all, FUN = sum)
+cat_summary <- cat_summary[order(cat_summary$histology, cat_summary$category), ]
+log_msg("Per-category hit counts, before -> after dedup:")
+print(cat_summary)
+
+saveRDS(dedup_all, file.path(RESULTS_DIR, "hit_dedup_full.rds"))
+write.csv(dedup_all, file.path(RESULTS_DIR, "hit_dedup_full.csv"), row.names = FALSE)
+
+hit_dedup_representatives <- dedup_all[dedup_all$is_representative,
+                                        c("histology", "category", "name", "p_lr", "coef", "hr",
+                                          "cluster_id", "cluster_size")]
+hit_dedup_representatives <- hit_dedup_representatives[order(hit_dedup_representatives$histology,
+                                                               hit_dedup_representatives$p_lr), ]
+saveRDS(hit_dedup_representatives, file.path(RESULTS_DIR, "hit_dedup_representatives.rds"))
+write.csv(hit_dedup_representatives, file.path(RESULTS_DIR, "hit_dedup_representatives.csv"), row.names = FALSE)
+```
+
+
+# bootstrap stability afer removing correlation
+
+```{r}
+feat_number <- 20
+
+dat1 <- readRDS(file.path(RESULTS_DIR,"hit_dedup_full.rds"))
+
+cur_names <- dat1 %>%
+  group_by(cluster_id) %>%
+  mutate(density_filter   = category == "density",
+         final_selection  = if (any(density_filter)) density_filter else is_representative) %>%
+  ungroup() %>%
+  filter(final_selection == TRUE,
+         histology == "LUAD") %>%
+  arrange(p_lr) %>%
+  #filter(p_lr < 0.05) %>%
+  slice_head(n = feat_number) %>%
+  pull(name)
+
+
+
+# colors
+col_vec <- c(pals::alphabet(n = 8))
+names(col_vec) <- c("IMC1", "IMC2", "IF1", "IF2", "IF3", "RNA", "cello1", "cello2")
+library(tidyverse)
+cur_luad <- cox_luad %>%
+  filter(name %in% cur_names,
+         scale == "rank_INT") %>%
+  mutate(modality = str_split_i(string = name, pattern = "__", 2),
+         modality = str_split_i(string = modality, pattern = "_", 1),
+         feature = str_split_i(string = name, pattern = "__", 1))
+
+cur_ord_luad <- cur_luad %>%
+  group_by(category) %>%
+  arrange(desc(hr), .by_group = TRUE) %>%
+  pull(feature)
+
+p_luad <- cur_luad %>%
+  ggplot(aes(x = hr, y = factor(feature, cur_ord_luad), col = modality)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(xmin = lo, xmax = hi), lwd = 1, width = 0.3) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust = 1)) +
+  scale_x_log10(limits = c(-0.2, 6.5))+
+  theme_bw() +
+  scale_color_manual(values = col_vec)+
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  geom_text(aes(label = paste0("p = ", round(p_lr, 3))),
+            x = Inf, hjust = 1.05, col = "black", size = 3)+
+    geom_text(aes(label = ifelse(fdr_within_category < 0.1, "*", ""),
+            x = hr, vjust = 0.3, col = "black"), size = 5)+
+  facet_wrap(.~category, scales = "free_y", space = "free_y",strip.position = "top") +
+
+  theme(
+    strip.text       = element_text(size = 10, face = "bold", margin = margin(3, 3, 3, 3)),
+    strip.background = element_rect(fill = "grey90", color = NA),
+    panel.spacing    = unit(0.8, "lines"))+
+  labs(y = "Feature", x = "HR")
+
+p_luad
+```
+
+
+# 6. Bootstrap stability of top features
+Stratified bootstrap (by event status) with replacement; refit rank-INT
+transform + coxph each replicate; track nominal significance (Wald p<0.05)
+and same direction of effect vs the original fit.
+CAVEAT (round 2): the "top 8" features bootstrapped per histology are drawn
+from the same redundant/correlated set flagged above -- high stability here
+reflects that a shared underlying signal (e.g. Neutrophil abundance) is
+stable, not that 8 independent spatial associations are each individually
+confirmed. See docs/decisions_round2.md.
+
+```{r}
+feat_num <- 10
+dat1 <- readRDS(file.path(RESULTS_DIR,"hit_dedup_full.rds"))
+
+cur_names_luad <- dat1 %>%
+  group_by(cluster_id) %>%
+  mutate(density_filter   = category == "density",
+         final_selection  = if (any(density_filter)) density_filter else is_representative) %>%
+  ungroup() %>%
+  filter(final_selection == TRUE,
+         histology == "LUAD") %>%
+  arrange(p_lr) %>%
+  #filter(p_lr < 0.05) %>%
+  slice_head(n = feat_number) %>%
+  pull(name)
+
+cur_names_lusc <- dat1 %>%
+  group_by(cluster_id) %>%
+  mutate(density_filter   = category == "density",
+         final_selection  = if (any(density_filter)) density_filter else is_representative) %>%
+  ungroup() %>%
+  filter(final_selection == TRUE,
+         histology == "LUSC") %>%
+  arrange(p_lr) %>%
+  #filter(p_lr < 0.05) %>%
+  slice_head(n = feat_number) %>%
+  pull(name)
+
+
+top_overall <- function(res, n_top = 15, name_sel) {
+  sub <- res[res$scale == "rank_INT" & res$name %in% name_sel, ]
+  sub <- sub[order(sub$p_lr), ]
+  head(sub, n_top)
+}
+
+
+top_luad <- top_overall(cox_luad, feat_num, cur_names_luad)
+top_lusc <- top_overall(cox_lusc, feat_num, cur_names_lusc)
+
+inv_norm <- function(x) {
+  n <- sum(!is.na(x)); if (n < 3) return(rep(NA_real_, length(x)))
+  qnorm((rank(x, na.last = "keep", ties.method = "average") - 0.5) / n)
+}
+
+stratified_boot_idx <- function(status) {
+  idx <- seq_along(status)
+  idx0 <- idx[status == 0]; idx1 <- idx[status == 1]
+  c(sample(idx0, length(idx0), replace = TRUE), sample(idx1, length(idx1), replace = TRUE))
+}
+
+bootstrap_feature <- function(nm, d_base, orig_coef, B = 200) {
+  d <- d_base[!is.na(d_base[[nm]]), c("time_to_event", "status", nm)]
+  colnames(d)[3] <- "x_raw"
+  n_sig <- 0L; n_same_dir <- 0L; n_estimable <- 0L
+  for (b in seq_len(B)) {
+    idx <- stratified_boot_idx(d$status)
+    db <- d[idx, ]
+    if (length(unique(db$x_raw)) < 3) next
+    db$x_rank <- inv_norm(db$x_raw)
+    fit <- try(coxph(Surv(time_to_event, status) ~ x_rank, data = db, ties = "efron"), silent = TRUE)
+    if (inherits(fit, "try-error") || !is.finite(stats::coef(fit))) next
+    n_estimable <- n_estimable + 1L
+    cf <- summary(fit)$coefficients
+    pw <- cf["x_rank", "Pr(>|z|)"]
+    co <- cf["x_rank", "coef"]
+    if (!is.na(pw) && pw < 0.05) n_sig <- n_sig + 1L
+    if (sign(co) == sign(orig_coef)) n_same_dir <- n_same_dir + 1L
+  }
+  data.frame(name = nm, B = B, n_estimable = n_estimable,
+             pct_significant = 100 * n_sig / B,
+             pct_same_direction = 100 * n_same_dir / n_estimable,
+             stringsAsFactors = FALSE)
+}
+
+run_bootstrap <- function(top_df, full_wide, histology_str, n_features = 8, B = 200) {
+  d_base <- full_wide[full_wide$simple_histology == histology_str, ]
+  d_base <- d_base[!is.na(d_base$time_to_event) & d_base$time_to_event > 0 & !is.na(d_base$status), ]
+  feats <- head(top_df$name, n_features)
+  orig_coefs <- top_df$coef[match(feats, top_df$name)]
+  res <- do.call(rbind, Map(function(nm, cf) bootstrap_feature(nm, d_base, cf, B = B), feats, orig_coefs))
+  res
+}
+
+log_msg("Running bootstrap stability for top LUAD spatial features ...")
+set.seed(12215)
+boot_luad <- run_bootstrap(top_luad, full_wide, "Adenocarcinoma", n_features = feat_num, B = 200)
+log_msg("Running bootstrap stability for top LUSC spatial features (EXPLORATORY) ...")
+set.seed(12215)
+boot_lusc <- run_bootstrap(top_lusc, full_wide, "Squamous cell carcinoma", n_features = feat_num, B = 200)
+
+boot_luad$histology <- "LUAD"; boot_lusc$histology <- "LUSC"
+boot_all <- rbind(boot_luad, boot_lusc)
+saveRDS(boot_all, file.path(RESULTS_DIR, "bootstrap_stability_top_features.rds"))
+write.csv(boot_all, file.path(RESULTS_DIR, "bootstrap_stability_top_features.csv"), row.names = FALSE)
+log_msg("Bootstrap stability results:")
+print(boot_all)
+
+pdf(file.path(PLOTS_DIR, "bootstrap_stability_top_features.pdf"), width = 12, height = 8.5)
+op <- par(mfrow = c(1, 2), mar = c(10, 5, 4, 2), oma = c(3, 0, 0, 0))
+stability_panel <- function(boot_df, title_lab) {
+  if (nrow(boot_df) == 0) { plot.new(); title(title_lab); return(invisible(NULL)) }
+  ord <- order(-boot_df$pct_significant)
+  bd <- boot_df[ord, ]
+  m <- rbind(bd$pct_significant, bd$pct_same_direction)
+  colnames(m) <- bd$name
+  bp <- barplot(m, beside = TRUE, las = 2, col = c("#1b9e77", "#7570b3"),
+                ylim = c(0, 100), ylab = "% of bootstrap replicates",
+                main = title_lab, cex.names = 0.6)
+  legend("topright", legend = c("% nominally significant (p<0.05)", "% same direction as original"),
+         fill = c("#1b9e77", "#7570b3"), bty = "n", cex = 0.7)
+  abline(h = 50, lty = 3, col = "grey60")
+}
+stability_panel(boot_luad, paste0("LUAD: bootstrap stability of top spatial features\n(B=200, stratified resampling, n=",
+                                    sum(full_wide$simple_histology == "Adenocarcinoma", na.rm = TRUE), " patients, 22 events)"))
+stability_panel(boot_lusc, paste0("LUSC -- EXPLORATORY: bootstrap stability of top spatial features\n(B=200, only 12 events cohort-wide -- expect low stability)"))
+mtext(paste0("CAVEAT: top features are highly inter-correlated (e.g. share the same partner cell type / underlying abundance signal) -- ",
+             "high stability here reflects a shared signal being stable, not 8 independent confirmations. See docs/decisions_round2.md."),
+      side = 1, outer = TRUE, line = 1, cex = 0.7, col = "grey30")
+par(op)
+dev.off()
+
+log_msg("Saved plots: enrichment_pvalue_ecdf_luad_lusc.pdf, forest_top_features_features.pdf, bootstrap_stability_top_features.pdf")
+log_msg("Round 2 new/updated outputs: results/spatial_density_confounding_check.{csv,rds}, ",
+        "results/spatial_enrichment_permutation.{csv,rds}, plus caveat pages/annotations added to all three plots above.")
+log_msg("DONE 05_spatial_vs_nonspatial.R")
+
+```
+
+# fixed subsamplin 70%
+```{r, fig.width=12, fig.height=5}
+subsample_idx <- function(status, frac = 0.7) {
+  idx <- seq_along(status)
+  idx0 <- idx[status == 0]; idx1 <- idx[status == 1]
+  c(sample(idx0, round(frac * length(idx0))), sample(idx1, round(frac * length(idx1))))
+}
+
+subsample_feature <- function(nm, d_base, orig_coef, frac = 0.7, B = 200) {
+  d <- d_base[!is.na(d_base[[nm]]), c("time_to_event", "status", nm)]
+  colnames(d)[3] <- "x_raw"
+  n_sig <- 0L; n_same_dir <- 0L; n_estimable <- 0L
+  for (b in seq_len(B)) {
+    idx <- subsample_idx(d$status, frac = frac)
+    db <- d[idx, ]
+    if (length(unique(db$x_raw)) < 3) next
+    db$x_rank <- inv_norm(db$x_raw)
+    fit <- try(coxph(Surv(time_to_event, status) ~ x_rank, data = db, ties = "efron"), silent = TRUE)
+    if (inherits(fit, "try-error") || !is.finite(stats::coef(fit))) next
+    n_estimable <- n_estimable + 1L
+    cf <- summary(fit)$coefficients
+    pw <- cf["x_rank", "Pr(>|z|)"]
+    co <- cf["x_rank", "coef"]
+    if (!is.na(pw) && pw < 0.05) n_sig <- n_sig + 1L
+    if (sign(co) == sign(orig_coef)) n_same_dir <- n_same_dir + 1L
+  }
+  data.frame(name = nm, B = B, frac = frac, n_estimable = n_estimable,
+             pct_significant = 100 * n_sig / B,
+             pct_same_direction = 100 * n_same_dir / n_estimable,
+             stringsAsFactors = FALSE)
+}
+
+run_subsample <- function(top_df, full_wide, histology_str, n_features = 8, frac = 0.7, B = 200) {
+  d_base <- full_wide[full_wide$simple_histology == histology_str, ]
+  d_base <- d_base[!is.na(d_base$time_to_event) & d_base$time_to_event > 0 & !is.na(d_base$status), ]
+  feats <- head(top_df$name, n_features)
+  orig_coefs <- top_df$coef[match(feats, top_df$name)]
+  do.call(rbind, Map(function(nm, cf) subsample_feature(nm, d_base, cf, frac = frac, B = B), feats, orig_coefs))
+}
+
+log_msg("Running 70% subsampling (no replacement) sanity check for top LUAD spatial features ...")
+set.seed(1235)
+subsample_luad <- run_subsample(top_luad, full_wide, "Adenocarcinoma", n_features = feat_num, frac = 0.7, B = 200)
+log_msg("Running 70% subsampling (no replacement) sanity check for top LUSC spatial features (EXPLORATORY) ...")
+set.seed(1235)
+subsample_lusc <- run_subsample(top_lusc, full_wide, "Squamous cell carcinoma", n_features = feat_num, frac = 0.7, B = 200)
+
+subsample_luad$histology <- "LUAD"; subsample_lusc$histology <- "LUSC"
+subsample_all <- rbind(subsample_luad, subsample_lusc)
+saveRDS(subsample_all, file.path(RESULTS_DIR, "subsample70_stability_top_spatial.rds"))
+write.csv(subsample_all, file.path(RESULTS_DIR, "subsample70_stability_top_spatial.csv"), row.names = FALSE)
+log_msg("70% subsampling (no replacement) stability results:")
+print(subsample_all)
+
+pdf(file.path(PLOTS_DIR, "subsample70_stability_top_spatial.pdf"), width = 12, height = 8.5)
+op <- par(mfrow = c(1, 2), mar = c(10, 5, 4, 2), oma = c(3, 0, 0, 0))
+stability_panel(subsample_luad, paste0("LUAD: 70% subsampling stability of top spatial features\n(B=200, no replacement, n=",
+                                        round(0.7 * sum(full_wide$simple_histology == "Adenocarcinoma", na.rm = TRUE)), " patients per replicate)"))
+stability_panel(subsample_lusc, "LUSC -- EXPLORATORY: 70% subsampling stability of top spatial features\n(B=200, no replacement -- expect low stability)")
+mtext(paste0("Sanity check alongside the with-replacement bootstrap above: does the finding survive training on a fixed, ",
+             "duplicate-free 70% of patients? Same inter-correlation caveat applies -- see docs/decisions_round2.md."),
+      side = 1, outer = TRUE, line = 1, cex = 0.7, col = "grey30")
+par(op)
+dev.off()
+p1 <- subsample_luad %>%
+  ggplot(aes(y = factor(name, levels = subsample_luad %>% arrange(pct_significant) %>% pull(name)), x = histology, fill = pct_significant))+
+  geom_tile()+
+  geom_text(aes(label= pct_significant) )+
+  scale_fill_viridis_c(limits = c(0,100))+
+  ylab("Top 20 features")+
+  theme_bw()
+
+p2 <- subsample_lusc %>%
+  ggplot(aes(y = factor(name, levels = subsample_lusc %>% arrange(pct_significant) %>% pull(name)), x = histology, fill = pct_significant))+
+  geom_tile()+  
+  geom_text(aes(label= pct_significant) )+
+  scale_fill_viridis_c(limits = c(0,100))+
+  ylab("Top 20 features")+
+  theme_bw()
+
+p <- cowplot::plot_grid(p1, p2, ncol = 2)
+p
+
+```
+

@@ -9,31 +9,30 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
-```{r}
-## 04_luad_lusc_survival.R
-## Univariate Cox screen, LUAD and LUSC separately.
-## Re-implements the rank-based inverse-normal transform + MIN_EVENTS/MIN_PREV
-## style filtering from code/01_feature_selection.R (reference only), in base
-## R. LUSC is systematically underpowered (12 events cohort-wide, as low as 7
-## once RNA missingness is applied) -- thresholds are relaxed for LUSC and
-## every LUSC output is labelled EXPLORATORY.
-##
-## QC gate (previously computed in 03_qc_plots.R but never consumed
-## downstream -- pass_qc there only requires >=2 unique values and <50%
-## missing within a histology, and was purely descriptive): candidate
-## features are now first restricted, per histology, to those with
-## pass_qc==TRUE in results/qc_by_category_histology.rds, BEFORE the
-## MIN_EVENTS/MIN_PREV screening below is applied. In practice this drops
-## only a handful of rare driver-mutation columns per histology (features
-## that clear the QC bar but never had enough mutation-positive patients to
-## clear MIN_PREV anyway), so screened results are numerically almost
-## unchanged -- the point of this change is that the QC step is now an
-## explicit, traceable upstream gate instead of a coincidentally-similar
-## parallel computation.
-##
-## Base R + survival only. Must run on R 4.2+.
 
+Univariate Cox screen, LUAD and LUSC separately.
+Re-implements the rank-based inverse-normal transform + MIN_EVENTS/MIN_PREV
+style filtering from code/01_feature_selection.R (reference only), in base
+R. LUSC is systematically underpowered (12 events cohort-wide, as low as 7
+once RNA missingness is applied) -- thresholds are relaxed for LUSC and
+every LUSC output is labelled EXPLORATORY.
+
+QC gate (previously computed in 03_qc_plots.R but never consumed
+downstream -- pass_qc there only requires >=2 unique values and <50%
+missing within a histology, and was purely descriptive): candidate
+features are now first restricted, per histology, to those with
+pass_qc==TRUE in results/qc_by_category_histology.rds, BEFORE the
+MIN_EVENTS/MIN_PREV screening below is applied. In practice this drops
+only a handful of rare driver-mutation columns per histology (features
+that clear the QC bar but never had enough mutation-positive patients to
+clear MIN_PREV anyway), so screened results are numerically almost
+unchanged -- the point of this change is that the QC step is now an
+explicit, traceable upstream gate instead of a coincidentally-similar
+parallel computation.
+
+
+# setup
+```{r}
 suppressWarnings(suppressMessages(library(survival)))
 
 RESULTS_DIR <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/survival/Rout/"
@@ -180,12 +179,9 @@ if(!file.exists(file.path(RESULTS_DIR, "cox_luad.rds")) & !file.exists(file.path
                          THRESH$LUSC$MIN_EVENTS, THRESH$LUSC$MIN_PREV)
   log_msg("LUSC screen done in ", round(as.numeric(difftime(Sys.time(), t0, units = "secs")), 1),
           "s -- ", nrow(cox_lusc) / 2, " features tested")
-}
-```
+  # FDR
 
-# FDR
 
-```{r}
 add_fdr <- function(res) {
   res$fdr_within_category <- NA_real_
   for (sc in unique(res$scale)) {
@@ -210,6 +206,11 @@ saveRDS(cox_luad, file.path(RESULTS_DIR, "cox_luad.rds"))
 saveRDS(cox_lusc, file.path(RESULTS_DIR, "cox_lusc.rds"))
 saveRDS(cox_all,  file.path(RESULTS_DIR, "cox_all.rds"))
 log_msg("Saved results/cox_luad.rds, results/cox_lusc.rds, results/cox_all.rds")
+
+} else {
+  cox_luad <- readRDS(file.path(RESULTS_DIR, "cox_luad.rds"))
+  cox_lusc <- readRDS(file.path(RESULTS_DIR, "cox_lusc.rds"))
+}
 
 ```
 

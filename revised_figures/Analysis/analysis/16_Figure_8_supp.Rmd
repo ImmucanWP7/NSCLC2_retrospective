@@ -1,0 +1,614 @@
+---
+title: "Feature selection"
+author: "Daniel Schulz"
+date: "2026-09-21"
+output: html_document
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+# Set path
+if (Sys.info()["sysname"] == "Darwin"){
+  mount_path <- "/Volumes/G_DQBM_BB_Central$/projects/immucan/"
+} else if (Sys.info()["sysname"] == "Linux"){
+  mount_path <- "/mnt/immucan_volume/"
+} else if (Sys.info()["sysname"] == "Windows"){
+  mount_path <- "Y:/"
+} else {
+  stop("Operating system is not supported")
+}
+```
+
+
+load libraries
+```{r}
+library(ggplot2)
+library(reticulate)
+library(MOFA2)
+library(dplyr)
+library(tidyverse)
+```
+
+## load model
+```{r}
+out_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_8_supp/"
+
+if (!dir.exists(out_path)){
+  dir.create(out_path)
+  dir.create(paste0(out_path, "/extras"))
+}
+
+RESULTS_DIR <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/survival/Rout/"
+
+cox_luad  <- readRDS(file.path(RESULTS_DIR,"cox_luad.rds"))
+cox_lusc  <- readRDS(file.path(RESULTS_DIR,"cox_lusc.rds"))
+```
+
+# S8A overall feature selection
+```{r}
+# load data from survival analysis
+
+
+
+df <- rbind(cox_luad, cox_lusc)
+p <- df %>%
+  filter(p_lr < 0.05,
+         scale == "rank_INT") %>%
+  group_by(histology) %>%
+  dplyr::count(category) %>%
+  ggplot(aes(x = category,y = n, fill = histology))+
+  geom_bar(stat= "identity", position= "dodge")+
+  scale_fill_manual(values = c("LUAD" = "blue", "LUSC"= "orange"))+
+  labs(y = "Features p < 0.05", x = "Modality")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 1),
+        legend.position = "bottom")
+p
+
+ggsave(plot = p, path = out_path,
+       filename = "S8A_sig_feature_count.pdf",
+       width = 2, 
+       height = 3.5,
+       device = cairo_pdf)
+```
+
+
+## feature FDR < 0.1
+```{r}
+cox_luad %>%
+  filter(fdr_within_category < 0.1)
+cox_luad %>%
+  filter(fdr_global < 0.1)
+cox_luad %>%
+  filter(name == "Cold_fibrotic")
+```
+
+# S8B overlap between LUAD and LUSC
+```{r}
+library(ggVennDiagram)
+library(ggvenn)
+luad_names <- df %>% 
+  filter(p_lr < 0.05,
+         histology == "LUAD",
+         scale == "rank_INT") %>% 
+  pull(name)
+
+lusc_names <- df %>% 
+  filter(p_lr < 0.05,
+         histology == "LUSC",
+         scale == "rank_INT") %>% 
+  pull(name)
+
+p <- ggvenn(data =  list(LUAD = luad_names, LUSC = lusc_names),fill_color = c("LUAD" = "blue", "LUSC" = "orange"),set_name_size = 4)+
+  coord_flip()+
+  ggtitle("Feature overlap")
+p
+ggsave(plot = p, path = out_path,
+       filename = "S8B_overlap_LUAD_LUSC.pdf",
+       width = 2.15, 
+       height = 2.5,
+       device = cairo_pdf)
+```
+
+# S8C significance of overlab
+```{r}
+perm     <- readRDS(file.path(RESULTS_DIR, "spatial_enrichment_permutation.rds"))
+
+P_THRESH <- 0.05
+
+
+# Observed hit sets and overlap (matches 04_luad_lusc_survival.R's Venn:
+# pooled across ALL categories, rank_INT scale, no exclusions)
+
+hits_luad_obs <- unique(cox_luad$name[cox_luad$scale == "rank_INT" & !is.na(cox_luad$p_lr) & cox_luad$p_lr < P_THRESH])
+hits_lusc_obs <- unique(cox_lusc$name[cox_lusc$scale == "rank_INT" & !is.na(cox_lusc$p_lr) & cox_lusc$p_lr < P_THRESH])
+observed_overlap <- length(intersect(hits_luad_obs, hits_lusc_obs))
+
+# Null distribution of overlap: for each of LUAD's 200 permutations and
+# each of LUSC's 200 permutations independently, get that permutation's hit
+# set (features with permuted p<0.05), then compute all 200x200 pairwise
+# overlap sizes at once via a matrix product of 0/1 indicator matrices.
+
+all_feats <- union(colnames(perm$p_null_luad), colnames(perm$p_null_lusc))
+
+to_indicator <- function(p_mat, feats) {
+  ind <- matrix(0L, nrow = nrow(p_mat), ncol = length(feats), dimnames = list(NULL, feats))
+  ind[, colnames(p_mat)] <- (p_mat < P_THRESH) * 1L
+  ind[is.na(ind)] <- 0L
+  ind
+}
+A  <- to_indicator(perm$p_null_luad, all_feats)   ## 200 x n_feat, LUAD permutations
+Bm <- to_indicator(perm$p_null_lusc, all_feats)   ## 200 x n_feat, LUSC permutations
+
+overlap_null <- as.vector(A %*% t(Bm))  ## 200*200 = 40,000 pairwise overlap counts
+
+
+# Empirical p-values: is the observed overlap smaller (the actual
+# observation motivating this test: only 1.3% overlap) or larger than
+# chance alone would produce?
+
+emp_p_small <- (1 + sum(overlap_null <= observed_overlap)) / (1 + length(overlap_null))
+emp_p_large <- (1 + sum(overlap_null >= observed_overlap)) / (1 + length(overlap_null))
+
+result <- list(
+  hits_luad_obs = hits_luad_obs, hits_lusc_obs = hits_lusc_obs,
+  observed_overlap = observed_overlap, overlap_null = overlap_null,
+  emp_p_overlap_small = emp_p_small, emp_p_overlap_large = emp_p_large
+)
+saveRDS(result, file.path(RESULTS_DIR, "luad_lusc_overlap_permutation.rds"))
+
+ov <- readRDS(file.path(RESULTS_DIR, "luad_lusc_overlap_permutation.rds"))
+
+## null distribution is 40,000 values -- subsample for the jitter layer only
+## (plotting all 40,000 points would just be a solid blob); the boxplot and
+## p-value below still use the FULL null distribution, not the subsample.
+set.seed(1)
+jitter_sample <- sample(ov$overlap_null, min(2000, length(ov$overlap_null)))
+
+x_lab <- "LUAD & LUSC"
+null_df <- data.frame(x = x_lab, overlap = jitter_sample)
+obs_df  <- data.frame(x = x_lab, overlap = ov$observed_overlap,
+                       p_label = sprintf("p=%.2f", ov$emp_p_overlap_small))
+
+## view is capped near the 99th percentile of the null for readability (a
+## handful of the 40,000 permutation pairs reach much higher, up to the true
+## max -- noted in the subtitle; no data are removed, only the visible range)
+y_cap <- ceiling(quantile(ov$overlap_null, 0.99) / 5) * 5
+
+p <- ggplot(null_df, aes(x = x, y = overlap)) +
+  geom_boxplot(width = 0.4, fill = "grey70", color = "grey40", alpha = 0.3, outlier.shape = NA) +
+  geom_jitter(width = 0.12, height = 0, size = 0.5, alpha = 0.3, color = "grey40") +
+  geom_point(data = obs_df, aes(x = x, y = overlap), shape = 23, size = 3.5,
+             fill = "#d95f02", color = "black", inherit.aes = FALSE) +
+  geom_text(data = obs_df, aes(x = x, y = 30, label = p_label),
+            vjust = -1.3, size = 4.5, fontface = "italic", inherit.aes = FALSE) +
+  coord_cartesian(ylim = c(-1, y_cap)) +
+  labs(title = "LUAD/LUSC overlap \nsignificance",
+       x = NULL, y = "N overlapping nominal (p<0.05) hits") +
+  theme_bw(base_size = 11) +
+  theme(axis.text.x = element_text(size = 10),
+        plot.title = element_text(face = "bold", size = 10),
+        plot.subtitle = element_text(size = 8, color = "grey40"))
+p
+ggsave(file.path(out_path, "S8C_luad_lusc_overlap_permutation_ggplot.pdf"), p, width = 2, height = 3)
+```
+
+# S8B top survival features
+## LUAD
+```{r}
+feat_number <- 20
+
+dat1 <- readRDS(file.path(RESULTS_DIR,"hit_dedup_full.rds"))
+
+cur_names_luad <- dat1 %>%
+  group_by(histology,cluster_id) %>%
+  mutate(density_filter   = category == "density",
+         final_selection  = if (any(density_filter)) density_filter else is_representative) %>%
+  ungroup() %>%
+  filter(final_selection == TRUE,
+         histology == "LUAD") %>%
+  arrange(p_lr) %>%
+  #filter(p_lr < 0.05) %>%
+  slice_head(n = feat_number) %>%
+  pull(name)
+
+
+
+# colors
+col_vec <- c(pals::alphabet(n = 8))
+names(col_vec) <- c("IMC1", "IMC2", "IF1", "IF2", "IF3", "RNA", "cello1", "cello2")
+library(tidyverse)
+cur_luad <- cox_luad %>%
+  filter(name %in% cur_names_luad,
+         scale == "rank_INT") %>%
+  mutate(modality = str_split_i(string = name, pattern = "__", 2),
+         modality = str_split_i(string = modality, pattern = "_", 1),
+         feature = str_split_i(string = name, pattern = "__", 1))
+
+cur_ord_luad <- cur_luad %>%
+  group_by(category) %>%
+  arrange(desc(hr), .by_group = TRUE) %>%
+  pull(feature)
+
+p_luad <- cur_luad %>%
+  ggplot(aes(x = hr, y = factor(feature, cur_ord_luad), col = modality)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(xmin = lo, xmax = hi), lwd = 1, width = 0.3) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust = 1)) +
+  scale_x_log10(limits = c(0.1, 10))+
+  theme_bw() +
+  scale_color_manual(values = col_vec)+
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  geom_text(aes( x = ifelse(hr > 1,0.8, 8),label = paste0("p = ", round(p_lr, 3))),
+            hjust = 1.05, col = "black", size = 3)+
+    geom_text(aes(label = ifelse(fdr_within_category < 0.1, "*", ""),
+            x = hr, vjust = 0.3, col = "black"), size = 5)+
+  facet_wrap(.~category, scales = "free_y", space = "free_y",strip.position = "top") +
+
+  theme(
+    strip.text       = element_text(size = 10, face = "bold", margin = margin(3, 3, 3, 3)),
+    strip.background = element_rect(fill = "grey90", color = NA),
+    panel.spacing    = unit(0.8, "lines"))+
+  labs(y = "Feature", x = "HR")
+
+p_luad
+#ggsave(plot = p_luad, path = out_path,
+#       filename = "5F_top_features_LUAD.pdf",
+#       width = 5, 
+#       height = 8,
+#       device = cairo_pdf)
+
+
+```
+
+## LUSC
+```{r}
+cur_names_lusc <- dat1 %>%
+  group_by(histology,cluster_id) %>%
+  mutate(density_filter   = category == "density",
+         final_selection  = if (any(density_filter)) density_filter else is_representative) %>%
+  ungroup() %>%
+  filter(final_selection == TRUE,
+         histology == "LUSC") %>%
+  arrange(p_lr) %>%
+  #filter(p_lr < 0.05) %>%
+  slice_head(n = feat_number) %>%
+  pull(name)
+
+cur_lusc <- cox_lusc %>%
+  filter(name %in% cur_names_lusc,
+         scale == "rank_INT") %>%
+   arrange(p_lr) %>%
+  #filter(p_lr < 0.05) %>%
+  slice_head(n = feat_number) %>%
+  mutate(modality = str_split_i(string = name, pattern = "__", 2),
+         modality = str_split_i(string = modality, pattern = "_", 1),
+         feature = str_split_i(string = name, pattern = "__", 1))
+
+cur_ord_lusc <- cur_lusc %>%
+  group_by(category) %>%
+  arrange(desc(hr), .by_group = TRUE) %>%
+  pull(feature)
+
+p_lusc <- cur_lusc %>%
+  ggplot(aes(x = hr, y = factor(feature, cur_ord_lusc), col = modality)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(xmin = lo, xmax = hi), lwd = 1, width = 0.3) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust = 1)) +
+  scale_x_log10(limits = c(0.01, 100))+
+  scale_color_manual(values = col_vec)+
+  theme_bw() +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  geom_text(aes( x = ifelse(hr > 1,0.8, 80),label = paste0("p = ", round(p_lr, 3))),
+            hjust = 1.05, col = "black", size = 3)+
+  facet_wrap(.~category, scales = "free_y", space = "free_y",strip.position = "top") +
+
+  theme(
+    strip.text       = element_text(size = 10, face = "bold", margin = margin(3, 3, 3, 3)),
+    strip.background = element_rect(fill = "grey90", color = NA),
+    panel.spacing    = unit(0.8, "lines"))+
+  labs(y = "Feature", x = "HR")
+
+p_lusc <- p_lusc+theme(legend.position = "bottom")+guides(color = guide_legend(nrow = 2))
+p_luad <- p_luad+theme(legend.position = "bottom")+guides(color = guide_legend(nrow = 2))
+p <- cowplot::plot_grid(p_luad, p_lusc, ncol = 2)
+p
+ggsave(plot = p, path = out_path,
+       filename = "S8B_top_features.pdf",
+       width = 8, 
+       height = 6.5,
+       device = cairo_pdf)
+```
+
+
+# S8D null model overall
+
+## compact sig plot
+NEW compact plot (round 6): same per-category permutation null as above,
+but as one space-efficient panel instead of 16 separate histograms --
+boxplot + jittered null draws per category (dodged LUAD/LUSC), hit RATE
+(%) on a shared axis (not raw count, since categories differ ~1000x in
+size), observed value as a large marker, empirical p printed per box.
+biomarker/mutation excluded (both at floor -- 0 observed hits, near-0%
+null, in both histologies -- not informative to plot; DS decision).
+
+```{r}
+perm <- readRDS(file.path(RESULTS_DIR, "spatial_enrichment_permutation.rds"))
+
+EXCLUDE_CATS <- c("biomarker", "mutation")
+categories   <- setdiff(perm$categories, EXCLUDE_CATS)
+hist_col     <- c(LUAD = "blue", LUSC = "orange")
+
+null_df <- do.call(rbind, lapply(categories, function(cc) {
+  do.call(rbind, lapply(names(hist_col), function(h) {
+    n_tested <- perm$category_summary$n_tested[perm$category_summary$histology == h &
+                                                   perm$category_summary$category == cc]
+    rate <- 100 * perm[[paste0("hits_null_", tolower(h))]][, cc] / n_tested
+    data.frame(category = cc, histology = h, rate = rate)
+  }))
+}))
+null_df$category  <- factor(null_df$category, levels = categories)
+null_df$histology <- factor(null_df$histology, levels = names(hist_col))
+
+## --- one row per (category, histology): observed hit rate + empirical p ---
+obs_df <- perm$category_summary[perm$category_summary$category %in% categories, ]
+obs_df$category  <- factor(obs_df$category, levels = categories)
+obs_df$histology <- factor(obs_df$histology, levels = names(hist_col))
+obs_df$p_label   <- sprintf("p=%.2f", obs_df$emp_p_hits_gt)
+
+dodge <- position_dodge(width = 0.75)
+
+p <- ggplot(null_df, aes(x = category, y = rate, fill = histology, color = histology)) +
+  geom_hline(yintercept = 5, linetype = "dashed", color = "grey50") +
+  annotate("text", x = categories[1], y = Inf, vjust = 1.5, hjust = -0.05,
+           label = "- - - 5% (expected by chance)", size = 2.6, color = "grey40") +
+  geom_boxplot(position = dodge, width = 0.65, alpha = 0.25, outlier.shape = NA) +
+  geom_point(position = position_jitterdodge(dodge.width = 0.75, jitter.width = 0.15, jitter.height = 0),
+             size = 0.5, alpha = 0.35, show.legend = FALSE) +
+  geom_point(data = obs_df, aes(x = category, y = hit_rate_obs_pct, fill = histology),
+             position = dodge, shape = 23, size = 3.2, color = "red", inherit.aes = FALSE) +
+  geom_text(data = obs_df, aes(x = category, y = 40, label = p_label, group = histology),
+            position = dodge, vjust = -1, size = 3, fontface = "italic", inherit.aes = FALSE) +
+  scale_fill_manual(values = hist_col, name = "Histology") +
+  scale_color_manual(values = hist_col, guide = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0.02, 0.15))) +
+  labs(title = "Per-category permutation null vs. observed hit rate",
+       x = NULL, y = "Nominal (p<0.05) hit rate (%)") +
+  theme_bw(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 40, hjust = 1),
+        legend.position = "right",
+        plot.title = element_text(face = "bold"))
+p
+ggsave(plot = p, path = out_path,
+       filename = "S8D_category_hitrate_permutation_compact.pdf",
+       width = 10, 
+       height = 3.25,
+       device = cairo_pdf)
+```
+
+
+# S8E sub-smapled survival relevance
+```{r, fig.width=12, fig.height=5}
+full_wide <- readRDS(file.path(RESULTS_DIR, "full_wide.rds"))
+
+cur_names_luad <- dat1 %>%
+  group_by(cluster_id) %>%
+  mutate(density_filter   = category == "density",
+         final_selection  = if (any(density_filter)) density_filter else is_representative) %>%
+  ungroup() %>%
+  filter(final_selection == TRUE,
+         histology == "LUAD") %>%
+  arrange(p_lr) %>%
+  #filter(p_lr < 0.05) %>%
+  slice_head(n = feat_number) %>%
+  pull(name)
+
+cur_names_lusc <- dat1 %>%
+  group_by(cluster_id) %>%
+  mutate(density_filter   = category == "density",
+         final_selection  = if (any(density_filter)) density_filter else is_representative) %>%
+  ungroup() %>%
+  filter(final_selection == TRUE,
+         histology == "LUSC") %>%
+  arrange(p_lr) %>%
+  #filter(p_lr < 0.05) %>%
+  slice_head(n = feat_number) %>%
+  pull(name)
+
+
+top_overall <- function(res, n_top = 15, name_sel) {
+  sub <- res[res$scale == "rank_INT" & res$name %in% name_sel, ]
+  sub <- sub[order(sub$p_lr), ]
+  head(sub, n_top)
+}
+
+
+top_luad <- top_overall(cox_luad, feat_number, cur_names_luad)
+top_lusc <- top_overall(cox_lusc, feat_number, cur_names_lusc)
+
+inv_norm <- function(x) {
+  n <- sum(!is.na(x)); if (n < 3) return(rep(NA_real_, length(x)))
+  qnorm((rank(x, na.last = "keep", ties.method = "average") - 0.5) / n)
+}
+
+subsample_idx <- function(status, frac = 0.7) {
+  idx <- seq_along(status)
+  idx0 <- idx[status == 0]; idx1 <- idx[status == 1]
+  c(sample(idx0, round(frac * length(idx0))), sample(idx1, round(frac * length(idx1))))
+}
+
+subsample_feature <- function(nm, d_base, orig_coef, frac = 0.7, B = 200) {
+  d <- d_base[!is.na(d_base[[nm]]), c("time_to_event", "status", nm)]
+  colnames(d)[3] <- "x_raw"
+  n_sig <- 0L; n_same_dir <- 0L; n_estimable <- 0L
+  for (b in seq_len(B)) {
+    idx <- subsample_idx(d$status, frac = frac)
+    db <- d[idx, ]
+    if (length(unique(db$x_raw)) < 3) next
+    db$x_rank <- inv_norm(db$x_raw)
+    fit <- try(coxph(Surv(time_to_event, status) ~ x_rank, data = db, ties = "efron"), silent = TRUE)
+    if (inherits(fit, "try-error") || !is.finite(stats::coef(fit))) next
+    n_estimable <- n_estimable + 1L
+    cf <- summary(fit)$coefficients
+    pw <- cf["x_rank", "Pr(>|z|)"]
+    co <- cf["x_rank", "coef"]
+    if (!is.na(pw) && pw < 0.05) n_sig <- n_sig + 1L
+    if (sign(co) == sign(orig_coef)) n_same_dir <- n_same_dir + 1L
+  }
+  data.frame(name = nm, B = B, frac = frac, n_estimable = n_estimable,
+             pct_significant = 100 * n_sig / B,
+             pct_same_direction = 100 * n_same_dir / n_estimable,
+             stringsAsFactors = FALSE)
+}
+
+run_subsample <- function(top_df, full_wide, histology_str, n_features = 8, frac = 0.7, B = 200) {
+  d_base <- full_wide[full_wide$simple_histology == histology_str, ]
+  d_base <- d_base[!is.na(d_base$time_to_event) & d_base$time_to_event > 0 & !is.na(d_base$status), ]
+  feats <- head(top_df$name, n_features)
+  orig_coefs <- top_df$coef[match(feats, top_df$name)]
+  do.call(rbind, Map(function(nm, cf) subsample_feature(nm, d_base, cf, frac = frac, B = B), feats, orig_coefs))
+}
+
+set.seed(1235)
+subsample_luad <- run_subsample(top_luad, full_wide, "Adenocarcinoma", n_features = feat_number, frac = 0.7, B = 200)
+
+set.seed(1235)
+subsample_lusc <- run_subsample(top_lusc, full_wide, "Squamous cell carcinoma", n_features = feat_number, frac = 0.7, B = 200)
+
+subsample_luad$histology <- "LUAD"
+subsample_lusc$histology <- "LUSC"
+
+
+p1 <- subsample_luad %>%
+  ggplot(aes(y = factor(name, levels = subsample_luad %>% arrange(pct_significant) %>% pull(name)), x = histology, fill = pct_significant))+
+  geom_tile()+
+  geom_text(aes(label= pct_significant) )+
+  scale_fill_viridis_c(limits = c(0,100))+
+  ylab("Top 20 features")+
+  theme_bw()
+
+p2 <- subsample_lusc %>%
+  ggplot(aes(y = factor(name, levels = subsample_lusc %>% arrange(pct_significant) %>% pull(name)), x = histology, fill = pct_significant))+
+  geom_tile()+  
+  geom_text(aes(label= pct_significant) )+
+  scale_fill_viridis_c(limits = c(0,100))+
+  ylab("Top 20 features")+
+  theme_bw()
+
+p <- cowplot::plot_grid(p1, p2, ncol = 2)
+
+p2
+p
+
+ggsave(plot = p, path = out_path,
+       filename = "S8E_subsampled_feature_relevance.pdf",
+       width = 6, 
+       height = 5,
+       device = cairo_pdf)
+```
+
+
+# S8E Spatial vs non-spatial
+
+```{r}
+perm <- readRDS(file.path(RESULTS_DIR, "spatial_enrichment_permutation.rds"))
+hist_col <- c(LUAD = "blue", LUSC = "orange")
+
+stat_labels <- c(
+  D    = "KS D  (LR-test p)",
+  diff = "Δ mean(-log10(p)"
+)
+
+## --- null distributions, long format: one row per (histology, stat, permutation draw) ---
+null_df <- rbind(
+  data.frame(histology = "LUAD", stat = stat_labels[["D"]],    value = perm$D_null_luad),
+  data.frame(histology = "LUSC", stat = stat_labels[["D"]],    value = perm$D_null_lusc),
+  data.frame(histology = "LUAD", stat = stat_labels[["diff"]], value = perm$diff_null_luad),
+  data.frame(histology = "LUSC", stat = stat_labels[["diff"]], value = perm$diff_null_lusc)
+)
+null_df$histology <- factor(null_df$histology, levels = names(hist_col))
+null_df$stat      <- factor(null_df$stat, levels = stat_labels)
+
+## --- observed value + empirical p per (histology, stat) ---
+obs_long <- rbind(
+  data.frame(histology = perm$summary$histology, stat = stat_labels[["D"]],
+             obs = perm$summary$D_obs, p = perm$summary$emp_p_ks),
+  data.frame(histology = perm$summary$histology, stat = stat_labels[["diff"]],
+             obs = perm$summary$diff_obs, p = perm$summary$emp_p_diff_one_sided_spatial_gt)
+)
+obs_long$histology <- factor(obs_long$histology, levels = names(hist_col))
+obs_long$stat      <- factor(obs_long$stat, levels = stat_labels)
+obs_long$p_label   <- sprintf("p=%.2f", obs_long$p)
+
+p <- ggplot(null_df, aes(x = histology, y = value, fill = histology, color = histology)) +
+  geom_boxplot(width = 0.5, alpha = 0.25, outlier.shape = NA) +
+  geom_jitter(width = 0.12, height = 0, size = 0.6, alpha = 0.35, show.legend = FALSE) +
+  geom_point(data = obs_long, aes(x = histology, y = obs, fill = histology),
+             shape = 23, size = 3.2, color = "red", inherit.aes = FALSE) +
+  geom_text(data = obs_long, aes(x = histology, y = 0.25, label = p_label),
+            vjust = -1, size = 2.8, fontface = "italic", inherit.aes = FALSE) +
+  facet_wrap(~ stat, scales = "free_y") +
+  scale_fill_manual(values = hist_col, name = "Histology") +
+  scale_color_manual(values = hist_col, guide = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0.08, 0.18))) +
+  labs(title = "Spatial vs non-spatial: permutation null (p-value based)",
+       x = NULL, y = NULL) +
+  theme_bw(base_size = 11) +
+  theme(legend.position = "right", strip.text = element_text(size = 9),
+        plot.title = element_text(face = "bold", size = 9))
+p
+ggsave(file.path(out_path, "S8F_spatial_nonspatial_pvalue_permutation_ggplot.pdf"), p, width = 4, height = 3.25, device = cairo_pdf)
+```
+
+# spatial vs non spatial effect size
+```{r}
+perm <- readRDS(file.path(RESULTS_DIR, "spatial_enrichment_permutation.rds"))
+
+stat_labels <- c(
+    D    = "KS D (|coef|)",
+  diff = "Δ mean(|coef|)"
+)
+
+## --- null distributions, long format: one row per (histology, stat, permutation draw) ---
+null_df <- rbind(
+  data.frame(histology = "LUAD", stat = stat_labels[["D"]],    value = perm$D_null_hr_luad),
+  data.frame(histology = "LUSC", stat = stat_labels[["D"]],    value = perm$D_null_hr_lusc),
+  data.frame(histology = "LUAD", stat = stat_labels[["diff"]], value = perm$diff_null_hr_luad),
+  data.frame(histology = "LUSC", stat = stat_labels[["diff"]], value = perm$diff_null_hr_lusc)
+)
+null_df$histology <- factor(null_df$histology, levels = names(hist_col))
+null_df$stat      <- factor(null_df$stat, levels = stat_labels)
+
+## --- observed value + empirical p per (histology, stat) ---
+obs_long <- rbind(
+  data.frame(histology = perm$summary$histology, stat = stat_labels[["D"]],
+             obs = perm$summary$D_obs_hr, p = perm$summary$emp_p_ks_hr),
+  data.frame(histology = perm$summary$histology, stat = stat_labels[["diff"]],
+             obs = perm$summary$diff_obs_hr, p = perm$summary$emp_p_diff_hr_one_sided_spatial_gt)
+)
+obs_long$histology <- factor(obs_long$histology, levels = names(hist_col))
+obs_long$stat      <- factor(obs_long$stat, levels = stat_labels)
+obs_long$p_label   <- sprintf("p=%.2f", obs_long$p)
+
+p <- ggplot(null_df, aes(x = histology, y = value, fill = histology, color = histology)) +
+  geom_boxplot(width = 0.5, alpha = 0.25, outlier.shape = NA) +
+  geom_jitter(width = 0.12, height = 0, size = 0.6, alpha = 0.35, show.legend = FALSE) +
+  geom_point(data = obs_long, aes(x = histology, y = obs, fill = histology),
+             shape = 23, size = 3.2, color = "red", inherit.aes = FALSE) +
+  geom_text(data = obs_long, aes(x = histology, y = 0.4, label = p_label),
+            vjust = -1, size = 2.8, fontface = "italic", inherit.aes = FALSE) +
+  facet_wrap(~ stat, scales = "free_y") +
+  scale_fill_manual(values = hist_col, name = "Histology") +
+  scale_color_manual(values = hist_col, guide = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0.08, 0.18))) +
+  labs(title = "Spatial vs non-spatial: permutation null (effect-size based)",
+       x = NULL, y = NULL) +
+  theme_bw(base_size = 11) +
+  theme(legend.position = "right", strip.text = element_text(size = 9),
+        plot.title = element_text(face = "bold", size = 9))
+p
+ggsave(file.path(out_path, "S8G_spatial_nonspatial_effectsize_permutation_ggplot.pdf"), p, width = 4, height = 3.25, device = cairo_pdf)
+```
+

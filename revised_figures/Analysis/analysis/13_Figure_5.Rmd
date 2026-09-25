@@ -292,7 +292,7 @@ cor(df %>%
   dplyr::slice(1:7) %>%
   pheatmap(color = colorRampPalette(c("dark blue", "white", "dark red"))(100),
          breaks = seq(-1, 1, length.out = 101))
-```
+
 
 
 ## plotting function
@@ -1432,6 +1432,7 @@ for (f in seq(1,6,1)){
 
 df <- data.frame(HR = unlist(lapply(p.list, function(x){summary(x)$coefficients[,"coef"]})),
                  p.value = unlist(lapply(p.list, function(x){summary(x)$coefficients[, "Pr(>|z|)"]})),
+                 p_lr = unlist(lapply(p.list, function(x){summary(x)$logtest["pvalue"]})),
                  lower_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "lower .95"]})),
                  upper_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "upper .95"]}))) %>%
   rownames_to_column("term")
