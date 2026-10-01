@@ -180,7 +180,7 @@ mofa <- prepare_mofa(
 reticulate::use_condaenv("mofa_env")
 
 # 9. Run MOFA
-model_path <- file.path(paste0(MOFA_INPUT_PATH, "/mofa_V6_minor.rds"))
+model_path <- file.path(paste0(MOFA_INPUT_PATH, "/mofa_V6_minor_20261001.rds"))
 mofa_trained <- run_mofa(mofa, use_basilisk = FALSE)
 
 saveRDS(mofa_trained, model_path)
@@ -192,12 +192,12 @@ saveRDS(mofa_trained, model_path)
 model <- readRDS(model_path)
 
 factors <- get_factors(model, as.data.frame = TRUE) %>%
-  pivot_wider(names_from = "factor", values_from = "value") %>%
+  tidyr::pivot_wider(names_from = "factor", values_from = "value") %>%
   dplyr::select(-c(group)) %>%
   dplyr::rename(Immucan_id = sample)
 
 data <- get_data(model, as.data.frame = TRUE) %>%
-  pivot_wider(names_from = "feature", values_from = "value") %>%
+  tidyr::pivot_wider(names_from = "feature", values_from = "value") %>%
   dplyr::select(-c(group, view)) %>%
   group_by(sample) %>%
   summarise_all(base::sum, na.rm = TRUE) %>%

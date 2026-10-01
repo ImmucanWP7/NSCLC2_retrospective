@@ -141,6 +141,11 @@ ggsave(plot = p2+
 
 # 2C imaging modules for histology
 ```{r, fig.height=10, fig.width=8}
+pat_nums <-  left_join(modules, traits, "immucan_id") %>%
+  filter(!is.na(LUAD_vs_LUSC)) %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"))
+table(pat_nums[["LUAD_vs_LUSC"]])
+
 dat_z <- left_join(modules, traits, "immucan_id") %>%
   filter(!is.na(LUAD_vs_LUSC)) %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
@@ -160,17 +165,25 @@ condition <- c("Adenocarcinoma")
 names(condition) <- c("LUAD_vs_LUSC")
 j <- names(condition)
 p.list <- list()
-for (i in data_type) {
 
-  # get cell abundances and remove NAs
-  abundances <- dat %>%
-    dplyr::select(contains(i)) %>%
-    filter(complete.cases(.))
-  abundances <- t(abundances)
-  colnames(abundances) <-dat %>%
-    dplyr::select(contains(i),immucan_id) %>%
-    filter(complete.cases(.)) %>%
-    pull(immucan_id)
+for (i in c(data_type,"cello1","cello2")) {
+    
+    if(grepl("cello",i)){
+      abundances <- cello_dat %>%
+        select(contains(i))
+      abundances <- t(abundances)
+      colnames(abundances) <- cello_dat$immucan_id
+    } else {
+      abundances <- dat %>%
+        select(contains(i)) %>%
+        filter(complete.cases(.))
+      abundances <- t(abundances)
+      colnames(abundances) <-dat %>%
+        select(contains(i),immucan_id) %>%
+        filter(complete.cases(.)) %>%
+        pull(immucan_id)
+    }
+
   
   # merge with clinical data
   anno <- clin_dat %>%
@@ -217,14 +230,21 @@ cur_dat <- cur_dat %>%
          sig = ifelse(is.na(sig),"NOTSIG", sig),
          ct_name = gsub("_density","",str_split_i(celltypes,"__",1)))
   
-to_show <- cur_dat %>%
+to_show_dens <- cur_dat %>%
+  filter(tech %in% c("IMC1", "IMC2", "IF1", "IF2","IF3")) %>%
   arrange((abs(FDR))) %>%
   ungroup() %>%
-  slice_head(n = 20) %>%
+  slice_head(n = 15) %>%
+  pull(celltypes)
+to_show_spat <- cur_dat %>%
+  filter(tech %in% c("cello1", "cello2")) %>%
+  arrange((abs(FDR))) %>%
+  ungroup() %>%
+  slice_head(n = 5) %>%
   pull(celltypes)
 
 cur_dat <- cur_dat %>%
-  filter(celltypes %in% to_show) %>%
+  filter(celltypes %in% c(to_show_dens, to_show_spat)) %>%
   mutate(celltypes = gsub("_abundance","",celltypes),
          cond = "LUSC_over_LUAD")
 
@@ -275,13 +295,18 @@ ggsave(filename = paste0(out_folder,"2D_diff_abundance_histology.pdf"),
 # 2E RNA scores
 
 ```{r, fig.height=15, fig.width=15}
+pat_nums <-  left_join(rna, traits, "immucan_id") %>%
+  filter(!is.na(LUAD_vs_LUSC)) %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC"))
+table(pat_nums[["LUAD_vs_LUSC"]])
+
 dat_z <- left_join(rna, traits, "immucan_id") %>%
   filter(!is.na(LUAD_vs_LUSC)) %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   pivot_longer(cols = 1:29)
 
 result <- lollipop_plot(dat_z, condition = "LUAD_vs_LUSC", var_A = "LUAD", var_B = "LUSC", col_A = "blue", col_B = "orange",zscore_data = TRUE)
-sigs <- result$data %>% filter(sig != "Non") %>% pull(name)
+sigs <- result$data %>% filter(sig == "FDR < 0.1") %>% pull(name)
 result_sel <- lollipop_plot(dat_z %>% filter(name %in% sigs), condition = "LUAD_vs_LUSC", var_A = "LUAD", var_B = "LUSC", col_A = "blue", col_B = "orange",zscore_data = TRUE)
 p <- result_sel$plot +
   ggtitle(paste0("RNA modules for Histology"))+
@@ -291,7 +316,7 @@ p <- result_sel$plot +
         axis.title.x = element_text(size = 10),
         legend.position = "bottom", legend.box = "vertical")+
   guides(color = guide_legend(nrow = 1, byrow = TRUE))+
-  xlab("Δ enrichment score")
+  xlab("Δ z-score")
 p
 
 ggsave(plot = p, path = out_folder,filename = "2E_RNA_difference_for_histology_selected.pdf",width = 5.5, height = 5,device = cairo_pdf)
@@ -416,13 +441,16 @@ ttypes <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/sco
 
 dat_z <- ttypes %>% left_join(modules, "immucan_id")
 
+# numbers
+table(dat_z$subtype)
+
 dat_z$immucan_id <- NULL
 luad_dat <- dat_z %>%
   filter(subtype %in% c("TRU","PI","PP")) %>%
-  mutate(across(.cols = -subtype,scale)) %>%
+  mutate(across(.cols = -subtype, scale)) %>%
   group_by(subtype) %>%
   summarise(across(.fns = mean))
-  
+
 luad_mat <- as.matrix(luad_dat[,-1])
 rownames(luad_mat) <- luad_dat$subtype
 
@@ -441,34 +469,48 @@ compute_subtype_sig <- function(data, subtypes) {
     mutate(padj = p.adjust(pvalue, method = "BH"))
 }
 
-to_padj_matrix <- function(sig_df, ref_mat) {
+# one helper for either statistic, so p and FDR matrices stay perfectly aligned
+to_stat_matrix <- function(sig_df, ref_mat, value_col) {
   sig_df %>%
-    dplyr::select(subtype, module, padj) %>%
-    tidyr::pivot_wider(names_from = module, values_from = padj) %>%
+    dplyr::select(subtype, module, dplyr::all_of(value_col)) %>%
+    tidyr::pivot_wider(names_from = module, values_from = dplyr::all_of(value_col)) %>%
     tibble::column_to_rownames("subtype") %>%
     as.matrix() %>%
     .[rownames(ref_mat), colnames(ref_mat)]
 }
 
-luad_sig      <- compute_subtype_sig(dat_z, c("TRU", "PI", "PP"))
+luad_sig <- compute_subtype_sig(dat_z, c("TRU", "PI", "PP"))
 
-luad_padj_mat <- t(to_padj_matrix(luad_sig, luad_mat))   # transpose to match t(luad_mat): modules x subtypes
+# transpose to match t(luad_mat): modules x subtypes
+luad_p_mat   <- t(to_stat_matrix(luad_sig, luad_mat, "pvalue"))
+luad_fdr_mat <- t(to_stat_matrix(luad_sig, luad_mat, "padj"))
+
+# star tier from raw p, but only shown when BH-FDR < 0.1
+sig_star <- function(p, fdr) {
+  if (is.na(p) || is.na(fdr) || fdr >= 0.1) return("")
+  if (p < 0.001) return("***")
+  if (p < 0.01)  return("**")
+  if (p < 0.05)  return("*")
+  ""
+}
 
 ann_df <- data.frame(Subtype = c(unique(luad_dat$subtype)),
-                     subtype_col = c( "blue","deepskyblue","dodgerblue2"))
+                     subtype_col = c("blue","deepskyblue","dodgerblue2"))
 ha <- HeatmapAnnotation(subtype = ann_df$Subtype,
-                        col = list(subtype = structure(ann_df$subtype_col,names = ann_df$Subtype)))
+                        col = list(subtype = structure(ann_df$subtype_col, names = ann_df$Subtype)))
 
 z_col <- circlize::colorRamp2(c(-1, 0, 1), c("#2166AC", "white", "#B2182B"))
-
 
 h <- ComplexHeatmap::Heatmap(
   t(luad_mat), name = "mean z_score",
   cell_fun = function(j, i, x, y, width, height, fill) {
-    p <- luad_padj_mat[i, j]
-    if (!is.na(p) && p < 0.05) grid::grid.text("*", x, y, gp = grid::gpar(fontsize = 14))
+    lab <- sig_star(luad_p_mat[i, j], luad_fdr_mat[i, j])
+    if (nzchar(lab)) {
+      grid::grid.text(lab, x, y - height * 0.15,
+                      gp = grid::gpar(fontsize = 12))
+    }
   },
-  top_annotation = ha, 
+  top_annotation = ha,
   col = z_col
 )
 h
@@ -476,6 +518,7 @@ h
 pdf(file = paste0(out_folder,"2F_imaging_modules_for_tumor_subtypes_LUAD.pdf"), width = 4.5, height = 4)
 draw(h, merge_legend = TRUE)
 dev.off()
+
 ```
 
 
@@ -486,6 +529,8 @@ dev.off()
 scores <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/tumor_subtype_scores.csv")
 
 scores <- left_join(scores, traits,"immucan_id")
+
+
 scores <- scores %>%
   rename(magnoid = "PP",
          squamoid = "PI",
@@ -497,6 +542,7 @@ dat_z <-  scores %>%
          !is.na(simple_stage), 
          LUAD_vs_LUSC == "Adenocarcinoma")
 
+table(dat_z$simple_stage)/3
 sigs <- dat_z %>%
   select(immucan_id,name, value,simple_stage) %>%
   mutate(stage = ifelse(simple_stage == "I",1,NA),
@@ -634,6 +680,10 @@ p
 
 ### imaging modules never vs current
 ```{r}
+pat_nums <- left_join(modules, traits, "immucan_id") %>%
+  filter(LUAD_vs_LUSC == "Adenocarcinoma")
+table(pat_nums[["never_vs_current_smoker"]])
+
 dat_z <- left_join(modules, traits, "immucan_id") %>%
   pivot_longer(cols = all_of(module_names)) %>%
   filter(LUAD_vs_LUSC == "Adenocarcinoma")
@@ -689,22 +739,31 @@ names(condition) <- c("never_vs_current_smoker","never_vs_Ex_smoker","current_vs
 
 p.list <- list()
 
-# merge with clinical data
+# clinical data prep
 anno <- clin_dat %>%
   filter(!is.na(smoking_status),
          simple_histology == "Adenocarcinoma")
-  
-for (i in data_type) {
-  
-  # get cell abundances and remove NAs
-  abundances <- dat %>%
-    dplyr::select(contains(i)) %>%
-    filter(complete.cases(.))
-  abundances <- t(abundances)
-  colnames(abundances) <-dat %>%
-    dplyr::select(contains(i),immucan_id) %>%
-    filter(complete.cases(.)) %>%
-    pull(immucan_id)
+# numbers
+table(anno$current_vs_Ex_smoker)
+table(anno$never_vs_current_smoker)
+
+for (i in c(data_type,"cello1","cello2")) {
+    
+    if(grepl("cello",i)){
+      abundances <- cello_dat %>%
+        select(contains(i))
+      abundances <- t(abundances)
+      colnames(abundances) <- cello_dat$immucan_id
+    } else {
+      abundances <- dat %>%
+        select(contains(i)) %>%
+        filter(complete.cases(.))
+      abundances <- t(abundances)
+      colnames(abundances) <-dat %>%
+        select(contains(i),immucan_id) %>%
+        filter(complete.cases(.)) %>%
+        pull(immucan_id)
+    }
   
   abundances <- abundances[,colnames(abundances) %in% anno$immucan_id]
   

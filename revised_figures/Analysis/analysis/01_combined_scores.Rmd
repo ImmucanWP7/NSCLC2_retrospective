@@ -102,100 +102,20 @@ write.csv(PDL1_score,file = paste0(out_folder,"PDL1_score",".csv"), row.names = 
 # Driver mutations
 
 ```{r}
-# this is the old mutation file from before the VAF integration
-#mut_new <- read.csv(paste0(mount_path,"data/WES/data/Rout/NSCLC2_mutation_matrix.csv"))
-mut_new <- read.csv(paste0(mount_path,"data/WES/data/Rout/20260210_mutations_all.csv"))
-# Matrix
-mut_new <- mut_new %>%
-  filter(if_all(starts_with("FILTER_"), ~ . == "keep")) %>%
-  dplyr::rename(Gene = gene)
-
-
-# apply stringency filters:
-VAF <- 0.05
-#ref_VAF <- 0.01
-min_VAR_counts <- 8
-min_cov <- 100
-disruptive_variants <- TRUE
-
-mut_new <- mut_new %>%
-  filter(gt_AF > VAF,
-         gt_DP > min_cov,
-         var_counts > min_VAR_counts,
-         if(disruptive_variants == TRUE) FILTER_type == "keep" else FILTER_type %in% c("keep", "remove"))
-
-mut_new <- mut_new %>%
-  group_by(immucan_id, Gene, .drop = FALSE) %>%
-  dplyr::count() %>%
-  pivot_wider(names_from = immucan_id, values_from = n, values_fill = 0) %>%
-  ungroup()
-
-
-mut_new <- mut_new %>%
-  mutate(Gene_Name = Gene) %>%
-  select(Gene_Name,everything(), -Gene)
-
-drivers <- c("TP53","KRAS","EGFR","PIK3CA","ALK","RET","MET","HER2","BRAF","ROS1","NTRK","NRG1","STK11", "KEAP1")
-genes_driver <- c("KRAS", "EGFR", "BRAF", "MET", "ALK", "ROS", "RET", "NTRK", "NRG1", "FGFR1", "FGFR2", "HRAS", "NRAS", "MAP2K1", "ERBB2", "ROS1", "PIK3CA", "NTRK1", "STK11")
-genes_sup <- c("TP53", "KEAP1","STK11","RB1","CDKN2A", "CDKN2B","NKX2", "NF1")
-
-drivers <- c(genes_driver, genes_sup)
-
-# check if they exist in our data
-# no data for:
-drivers[!drivers %in% mut_new$Gene_Name]
-
-drivers <- drivers[drivers %in% mut_new$Gene_Name]
-
-mut_new <- mut_new %>%
-  mutate(max = rowSums(mut_new[,-1])) %>%
-  arrange(desc(max)) %>%
-  select(-max)
-
-mut_new <- as.data.frame(mut_new)
-
-mut_new %>%
-  filter(Gene_Name == "EGFR")
-
-# clean up
-rownames(mut_new) <- mut_new$Gene_Name
-mut_new$Gene_Name <- NULL
-mut_new <- as.data.frame(t(as.matrix(as.data.frame(mut_new))))
-mut_new$immucan_id <- rownames(mut_new)
-rownames(mut_new) <- NULL
-mut_new <- mut_new %>%
-  mutate(immucan_id = gsub("\\.","\\-",immucan_id))
-
-# select two additional drivers
-nonsynSNV <- mut_new %>%
-  select(immucan_id, all_of(drivers))
-
-# change patient 0712 EGFR driver status to non-mut_newated
-nonsynSNV <- nonsynSNV %>%
-  mutate(EGFR = ifelse(immucan_id == "LUNG-NSCLC2-0712", 0, EGFR))
-
-# sometimes the count formutation is >1. we will fix this
-ids <- nonsynSNV$immucan_id
-dat <- apply(nonsynSNV[,-1], 2, function(x) sapply(x, function(y)ifelse(y > 1,1,y)))
-nonsynSNV <- as.data.frame(dat)
-nonsynSNV$immucan_id <- ids
-
-nonsynSNV <- nonsynSNV %>%
-  mutate(across(.cols = -immucan_id,.fns = function(x) ifelse(x == 0,FALSE,TRUE))) %>%
-  select(immucan_id,everything())
-
-write.csv(nonsynSNV,file = paste0(out_folder,"driver_mutations",".csv"), row.names = FALSE, quote = FALSE)
+nonsynSNV <- read.csv(file.path(out_folder,"driver_mutations.csv"))
 ```
 
 
-## merge data
+# merge data
 ```{r}
 traits <- left_join(clin_dat,tmb, "immucan_id")
 traits <- left_join(traits,PDL1_score,"immucan_id")
-traits <- left_join(traits,nonsynSNV,"immucan_id")
+traits <- left_join(traits,nonsynSNV,"immucan_id",)
 head(traits)
+
 ```
 
+# save traits
 ```{r}
 write_csv(traits,paste0(out_folder,"all_traits.csv"),col_names = TRUE)
 ```

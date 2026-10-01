@@ -114,6 +114,11 @@ df
 
 ## LUAD
 ```{r}
+pat_nums <- left_join(rna, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUAD")
+table(pat_nums[[cur_var]])
+
 dat_z <- left_join(rna, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUAD") %>%
@@ -125,7 +130,7 @@ result$data
 p_LUAD <- result$plot +
   ggtitle(paste0("RNA modules for ", title_name," in LUAD"))+
   coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))+
-  xlab("Δ enrichment score" )
+  xlab("Δ z-score" )
 p_LUAD
 cur_order <- result$data$name
 
@@ -133,6 +138,11 @@ cur_order <- result$data$name
 
 ## LUSC
 ```{r, fig.height=5, fig.width=15}
+pat_nums <- left_join(rna, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUSC")
+table(pat_nums[[cur_var]])
+
 dat_z <- left_join(rna, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUSC") %>%
@@ -143,7 +153,7 @@ p_LUSC <- result$plot+
   ggtitle(paste0("RNA modules for ", title_name," in LUSC"))+
   theme(axis.text.y = element_blank())+
   coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))+
-  xlab("Δ enrichment score" )
+  xlab("Δ z-score" )
 p_LUSC
 
 p <- plot_grid(p_LUAD, p_LUSC, nrow = 1, rel_widths = c(1.1, 0.6))
@@ -156,6 +166,11 @@ ggsave(plot = p, path = out_folder,filename = "3B_RNA_modules_for_TPS.pdf",width
 
 ## LUAD
 ```{r}
+pat_nums <- left_join(modules, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUAD")
+table(pat_nums[[cur_var]])
+
 dat_z <- left_join(modules, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUAD") %>%
@@ -172,6 +187,11 @@ cur_order <- result$data$name
 
 ## LUSC
 ```{r, fig.height=5, fig.width=15}
+pat_nums <- left_join(modules, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUSC")
+table(pat_nums[[cur_var]])
+
 dat_z <- left_join(modules, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUSC") %>%
@@ -271,6 +291,11 @@ rownames(rna_scores) <- NULL
 
 ## LUAD 
 ```{r }
+pat_nums <- left_join(rna_scores, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUAD")
+table(pat_nums[[cur_var]])
+
 dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUAD") %>%
@@ -292,6 +317,11 @@ cur_order <- result$data$name
 
 ## LUSC
 ```{r, fig.height=5, fig.width=15}
+pat_nums <- left_join(rna_scores, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUSC")
+table(pat_nums[[cur_var]])
+
 dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUSC") %>%
@@ -368,14 +398,18 @@ res <- left_join(inf_dat %>% dplyr::select(immucan_id,mean_inf_ratio_dicho) %>% 
 cm_LUSC <- coxph( Surv(time_to_event, censoring) ~  mean_inf_ratio_dicho ,data = as.data.frame(res) %>% filter(simple_histology == "Squamous cell carcinoma"))
 cm_LUAD <- coxph( Surv(time_to_event, censoring) ~  mean_inf_ratio_dicho ,data = as.data.frame(res) %>% filter(simple_histology == "Adenocarcinoma"))
 
+chk <- bind_rows(cm_LUAD$hr_continuous, cm_LUAD$hr_group) %>%
+  mutate(agree = (lower > 1 | upper < 1) == (p_lr < 0.05))
+filter(chk, !agree)
+
 dfLUAD <- data.frame(histology = "LUAD",
                      HR = summary(cm_LUAD)$coefficients[,"exp(coef)"],
-                     p.value = summary(cm_LUAD)$coefficients[, "Pr(>|z|)"],
+                     p.value = summary(cm_LUAD)$logtest["pvalue"],
                      lower_conf = summary(cm_LUAD)$conf.int[, "lower .95"],
                      upper_conf = summary(cm_LUAD)$conf.int[, "upper .95"]) 
 dfLUSC <- data.frame(histology = "LUSC",
                      HR = summary(cm_LUSC)$coefficients[,"exp(coef)"],
-                     p.value = summary(cm_LUSC)$coefficients[, "Pr(>|z|)"],
+                     p.value = summary(cm_LUSC)$logtest["pvalue"],
                      lower_conf = summary(cm_LUSC)$conf.int[, "lower .95"],
                      upper_conf = summary(cm_LUSC)$conf.int[, "upper .95"]) 
 df1 <- rbind(dfLUAD,dfLUSC)
@@ -400,7 +434,7 @@ p1 <- df1 %>%
         axis.title.y = element_blank(),
         plot.title = element_text(hjust = 0.5))+
   ggtitle("HR for low infiltration ratio")
-  p1
+p1
 
 ggsave(filename = paste0(out_folder,"3F_cox_model_infiltration.pdf"),
        plot = p1,
@@ -472,24 +506,36 @@ scores <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/sco
 
 scores <- left_join(scores, traits,"immucan_id")
 
-p <- scores %>%
+plot_dat <- scores %>%
   pivot_longer(cols = 1:3) %>% 
   filter(LUAD_vs_LUSC == "Adenocarcinoma",
-         !is.na(TPS_score)) %>%
-  ggplot(aes(x = TPS_score, y = value, fill = TPS_score))+
-  geom_boxplot()+
-  geom_jitter(aes(col = TPS_score),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
-  scale_fill_manual(values = alpha(c("positive" = "orange", "negative" = "darkgreen"),alpha = 0.6))+
-  scale_color_manual(values = c("positive" = "orange", "negative" = "darkgreen"))+
-  facet_wrap(~name)+
-  stat_compare_means(method = "t.test",label.y = 1, size = 3,label = "p.format")+
-  theme_bw()+
-  coord_cartesian(ylim = c(-0.7, 1))+
-  xlab("TPS score")+
-  ylab("Tumor type score")+
+         !is.na(TPS_score))
+
+pval_df <-  plot_dat%>%
+    group_by(name) %>%
+   summarise(
+    pvalue = tryCatch(t.test(value ~ TPS_score)$p.value, error = function(e) NA_real_),
+    .groups = "drop"
+  ) %>%
+    mutate(padj = p.adjust(pvalue, method = "BH"),
+           label = paste0("p = ", signif(pvalue, 2)),
+           label = ifelse(pvalue < 0.05 & padj < 0.1, label, "ns"))
+
+p <- plot_dat %>%
+  ggplot(aes(x = TPS_score, y = value, fill = TPS_score)) +
+  geom_boxplot() +
+  geom_jitter(aes(col = TPS_score), position = position_jitterdodge(jitter.width = 0.2), size = 0.5) +
+  scale_fill_manual(values = alpha(c("positive" = "orange", "negative" = "darkgreen"), alpha = 0.6)) +
+  scale_color_manual(values = c("positive" = "orange", "negative" = "darkgreen")) +
+  facet_wrap(~name) +
+  geom_text(data = pval_df, aes(x = 1.5, y = 0.95, label = label),
+            inherit.aes = FALSE, size = 3) +
+  theme_bw() +
+  coord_cartesian(ylim = c(-0.7, 1)) +
+  xlab("TPS score") +
+  ylab("Tumor type score") +
   theme(axis.text.x = element_text(angle = 90, vjust = .05, hjust = 1),
         axis.title.x = element_blank())
-  
 p
 ggsave(plot = p, path = out_folder,filename = "3G_tumor_types_for_TPS_LUAD.pdf",width = 4, height = 3.5,device = cairo_pdf)
 ```
@@ -501,24 +547,37 @@ scores <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/sco
 
 scores <- left_join(scores, traits,"immucan_id")
 
-p <- scores %>%
+plot_dat <- scores %>%
   pivot_longer(cols = 1:3) %>% 
   filter(LUAD_vs_LUSC == "Adenocarcinoma",
-         !is.na(TMB_score)) %>%
-  ggplot(aes(x = TMB_score, y = value, fill = TMB_score))+
-  geom_boxplot()+
-  geom_jitter(aes(col = TMB_score),position = position_jitterdodge(jitter.width = 0.2),size= 0.5)+
-  scale_fill_manual(values = alpha(c("high" = "blue", "low" = "red"),alpha = 0.6))+
-  scale_color_manual(values = c("high" = "blue", "low" = "red"))+
-  facet_wrap(~name)+
-  stat_compare_means(method = "t.test",label.y = 1, size = 3,label = "p.format")+
-  theme_bw()+
-  coord_cartesian(ylim = c(-0.7, 1))+
-  xlab("TPS score")+
-  ylab("Tumor type score")+
+         !is.na(TMB_score))
+
+pval_df <-  plot_dat%>%
+    group_by(name) %>%
+   summarise(
+    pvalue = tryCatch(t.test(value ~ TMB_score)$p.value, error = function(e) NA_real_),
+    .groups = "drop"
+  ) %>%
+    mutate(padj = p.adjust(pvalue, method = "BH"),
+           label = paste0("p = ", signif(pvalue, 2)),
+           label = ifelse(pvalue < 0.05 & padj < 0.1, label, "ns"))
+
+p <- plot_dat %>%
+  ggplot(aes(x = TMB_score, y = value, fill = TMB_score)) +
+  geom_boxplot() +
+  geom_jitter(aes(col = TMB_score), position = position_jitterdodge(jitter.width = 0.2), size = 0.5) +
+  scale_fill_manual(values = alpha(c("high" = "blue", "low" = "red"), alpha = 0.6)) +
+  scale_color_manual(values = c("high" = "blue", "low" = "red")) +
+  facet_wrap(~name) +
+  geom_text(data = pval_df, aes(x = 1.5, y = 0.95, label = label),
+            inherit.aes = FALSE, size = 3) +
+  theme_bw() +
+  coord_cartesian(ylim = c(-0.7, 1)) +
+  xlab("TPS score") +
+  ylab("Tumor type score") +
   theme(axis.text.x = element_text(angle = 90, vjust = .05, hjust = 1),
         axis.title.x = element_blank())
-  
+
 p
 ggsave(plot = p, path = out_folder,filename = "3H_tumor_types_for_TMB_LUAD.pdf",width = 4, height = 3.5,device = cairo_pdf)
 ```
@@ -576,6 +635,11 @@ fisher.test(table(cur_traits$TMB_score, cur_traits$LUAD_vs_LUSC))
 
 ## LUAD
 ```{r}
+pat_nums <- left_join(rna, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUAD")
+table(pat_nums[[cur_var]])
+
 dat_z <- left_join(rna, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUAD",
@@ -594,6 +658,11 @@ cur_order <- result$data$name
 
 ### LUSC
 ```{r, fig.height=5, fig.width=15}
+pat_nums <- left_join(rna, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUSC")
+table(pat_nums[[cur_var]])
+
 dat_z <- left_join(rna, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUSC",
@@ -616,6 +685,11 @@ ggsave(plot = p, path = out_folder,filename = "3I_RNA modues_for_TPS.pdf",width 
 
 ## LUAD
 ```{r}
+pat_nums <- left_join(modules, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUAD")
+table(pat_nums[[cur_var]])
+
 dat_z <- left_join(modules, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUAD",
@@ -633,6 +707,11 @@ result$data
 
 ### LUSC
 ```{r, fig.height=5, fig.width=15}
+pat_nums <- left_join(modules, traits, "immucan_id") %>%
+  mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+  filter(LUAD_vs_LUSC == "LUSC")
+table(pat_nums[[cur_var]])
+
 dat_z <- left_join(modules, traits, "immucan_id") %>%
   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
   filter(LUAD_vs_LUSC == "LUSC",

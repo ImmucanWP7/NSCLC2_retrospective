@@ -22,10 +22,11 @@ library(ggtext)
 # selected genes for NSCLC 
 
 ```{r}
-genes_sel <- c("KRAS", "EGFR", "BRAF", "MET", "ALK", "ROS", "RET", "NTRK", "NRG1", "FGFR1", "FGFR2", "HRAS", "NRAS", "MAP2K1", "ERBB2", "ROS1", "PIK3CA", "NTRK1", "STK11")
-genes_sup <- c("TP53", "KEAP1","STK11","RB1","CDKN2A", "CDKN2B","NKX2", "NF1")
+genes_sel <- c("KRAS", "EGFR", "BRAF", "MET", "ALK", "RET", "NRG1", "FGFR1", "FGFR2", "HRAS", "NRAS", "MAP2K1", "ERBB2", "ROS1", "PIK3CA", "NTRK1", "NTRK2", "NTRK3")
+genes_sup <- c("TP53", "KEAP1","STK11","RB1","CDKN2A", "CDKN2B","NKX2-1", "NF1")
 
 genes_sel <- c(genes_sel, genes_sup)
+unique(genes_sel)
 ```
 
 # availability of data vcf
@@ -151,6 +152,8 @@ ggplot(data=data_plot, aes(x=reorder(type,-n), y=n)) +
 unique(data_mut$type)
 keep_func = c("missense_variant", 
               "stop_gained", 
+              "splice_acceptor_variant",  
+              "splice_donor_variant",     
             #  "synonymous_variant", 
             #  "downstream_gene_variant", 
               "disruptive_inframe_insertion",
@@ -291,5 +294,5 @@ data_mut %>%
 # save
 
 ```{r}
-write.csv(x = data_mut,file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/Rout/20260210_mutations_all.csv",quote = FALSE,row.names = FALSE)
+write.csv(x = data_mut,file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/Rout/final_mutations_all.csv",quote = FALSE,row.names = FALSE)
 ```

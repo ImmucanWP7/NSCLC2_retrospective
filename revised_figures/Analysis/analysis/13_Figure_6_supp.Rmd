@@ -1125,7 +1125,7 @@ idx <- which.min(abs(post - 0.5))
 cut_point_HLADR <- counts_EGFRneg$HLADR[idx]
 cut_point_HLADR
 
-Cairo::CairoPNG(filename = paste0(out_folder,"S6C_HLADR_tumor_cell_EGFRmutated.png"),width = 1000, height = 500,units = "px")
+Cairo::CairoPNG(filename = paste0(out_folder,"S6D_HLADR_tumor_cell_EGFRmutated.png"),width = 1000, height = 500,units = "px")
 par(mfrow = c(1,2))
 LSD::heatscatter(x = counts_EGFR$Ecad, y = counts_EGFR$HLADR,main = "EGFR mutated")
 abline(h = cut_point_HLADR, lty = 2, lwd = 5)

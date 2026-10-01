@@ -82,18 +82,21 @@ table(traits$EGFR)/nrow(traits)
 # in LUAD
 cur_traits <- traits %>% 
   filter(simple_histology == "Adenocarcinoma")
-table(cur_traits$TP53)/nrow(cur_traits)
-table(cur_traits$KRAS)/nrow(cur_traits)
-table(cur_traits$KEAP1)/nrow(cur_traits)
-table(cur_traits$STK11)/nrow(cur_traits)
-table(cur_traits$EGFR)/nrow(cur_traits)
+luad_n <- sum(!is.na(cur_traits$EGFR))
+cat("LUAD TP53 (FALSE/TRUE): ",table(cur_traits$TP53)/luad_n,"\n")
+cat("LUAD EGFR (FALSE/TRUE): ",table(cur_traits$EGFR)/luad_n,"\n")
+cat("LUAD KRAS (FALSE/TRUE): ",table(cur_traits$KRAS)/luad_n,"\n")
+cat("LUAD STK11 (FALSE/TRUE): ",table(cur_traits$STK11)/luad_n,"\n")
+cat("LUAD KEAP1 (FALSE/TRUE): ",table(cur_traits$KEAP1)/luad_n,"\n")
 
 # in LUSC
 cur_traits <- traits %>% 
   filter(simple_histology == "Squamous cell carcinoma")
-table(cur_traits$TP53)/nrow(cur_traits)
-table(cur_traits$CDKN2A)/nrow(cur_traits)
-table(cur_traits$PIK3CA)/nrow(cur_traits)
+lusc_n <- sum(!is.na(cur_traits$PIK3CA))
+cat("LUSC TP53 (FALSE/TRUE): ",table(cur_traits$TP53)/lusc_n,"\n")
+cat("LUSC PIK3CA (FALSE/TRUE): ",table(cur_traits$PIK3CA)/lusc_n,"\n")
+cat("LUSC CDKN2A (FALSE/TRUE): ",table(cur_traits$CDKN2A)/lusc_n,"\n")
+
 ```
 
 
@@ -160,6 +163,7 @@ dat_z <- left_join(modules, traits, "immucan_id") %>%
          PIK3CA = ifelse(PIK3CA == TRUE, 1,0),
          CDKN2A = ifelse(CDKN2A == TRUE, 1, 0))
 
+
 # ---- 1. Config: EDIT these to match your actual column names ----
 tme_cols  <- modules_names
 histology_col  <- "LUAD_vs_LUSC"                              # expects values "LUAD" / "LUSC"
@@ -186,6 +190,12 @@ df_lusc <- df %>% filter(.data[[histology_col]] == "LUSC")
 
 cat(sprintf("\nLUAD n = %d, LUSC n = %d\n", nrow(df_luad), nrow(df_lusc)))
 
+# numbers
+table(df_luad$EGFR)
+table(df_luad$KRAS)
+table(df_luad$STK11)
+table(df_luad$KEAP1)
+table(df_luad$TP53)
 # ---- 2. Helper functions ----
 
 # Drops a mutation from testing if it has fewer than min_group_n carriers
@@ -225,6 +235,7 @@ kras_df_luad <- df_luad %>%
   mutate(co_mut = if_else(STK11 == 1 | KEAP1 == 1,
                            "STK11_or_KEAP1_altered", "KRAS_only"))
 
+table(kras_df_luad$co_mut)
 cat("\n--- [LUAD] Tier 2 group sizes (within KRAS-mutant tumors) ---\n")
 print(table(kras_df_luad$co_mut))
 
@@ -289,6 +300,9 @@ df_luad <- df_luad %>%
     KRAS_only          = as.integer(KRAS == 1 & STK11 == 0 & KEAP1 == 0),
     KRAS_co = as.integer(KRAS == 1 & (STK11 == 1 | KEAP1 == 1))
   )
+# numbers
+table(df_luad$KRAS_only)
+table(df_luad$KRAS_co)
 
 # Check whether STK11/KEAP1 mutations occur meaningfully outside the KRAS-
 # mutant group. Tested this on synthetic data: if STK11/KEAP1 occur almost
@@ -314,6 +328,10 @@ if (stk11_keap1_outside_kras < min_group_n) {
 
 tier4_luad <- run_tier4(df_luad, tme_cols, mut_cols_luad_v2)
 
+table(df_lusc$PIK3CA)
+table(df_lusc$CDKN2A)
+table(df_lusc$TP53)
+
 pluad <- tier4_luad %>%
   mutate(
     label = case_when(
@@ -330,7 +348,7 @@ pluad <- tier4_luad %>%
     #facet_wrap(~method) +
     theme_minimal() +
     labs(
-      title = "Drivers LUAD",
+      title = "Drivers/Suppressors LUAD",
       x = "Mutation", y = "Imaging module", fill = paste0("Δ z-score")
     )+
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
@@ -358,7 +376,7 @@ plusc <- tier4_lusc %>%
     #facet_wrap(~method) +
     theme_minimal() +
     labs(
-      title = "Drivers LUSC",
+      title = "Drivers/Suppressors LUSC",
       x = "Mutation", y = "Imaging module", fill = paste0("Δ z-score")
     )+
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
@@ -403,6 +421,13 @@ sce2 <- readRDS(paste0(mount_path,"data/IMC/Panel_2/Rout/sce.rds"))
 ```{r, fig.height=5, fig.width=5}
 p_Tumor_HLADR_EGFR <- bplot_cor(ct = "Tumor", markers = "HLADR_p1",mutation = "EGFR",histology = "Adenocarcinoma",stat_size = 2)
 
+ mean_exp %>%
+    filter(celltypes == "Tumor", name %in% "HLADR_p1") %>%
+    left_join(traits, by = "immucan_id") %>%
+    filter(simple_histology %in% "Adenocarcinoma", !is.na(.data[["EGFR"]])) %>%
+    mutate(across(all_of("EGFR"), ~ droplevels(factor(.x)))) %>%
+   dplyr::count(EGFR)
+ 
 p_Tumor_HLADR_EGFR
 
 ggsave(filename = paste0(out_folder,"4C_HLADR_on_tumor_cells_EGFR.pdf"),
@@ -621,15 +646,30 @@ ggsave(filename = paste0(out_folder,"4E_interactions_of_tumor_cells.pdf"),
 ```
 
 # 4F interaction quntification
-```{r}
+```{r, fig.height=6, fig.width=10}
 int_df <- int_dat %>%
   select(immucan_id,
-         Tumor.CD4__IF3_int, Tumor.CD8__IF3_int, Tumor.Treg__IF3_int,
-         Tumor.CD4__IMC1_int, Tumor.CD8__IMC1_int, Tumor.Treg__IMC1_int) %>%
+         Tumor.CD4__IF3_int, Tumor.CD8__IF3_int, Tumor.CD8__IF2_int, Tumor.Treg__IF3_int,
+         Tumor.CD4__IMC1_int, Tumor.CD8__IMC1_int, Tumor.Treg__IMC1_int, CD4.Tumor__IF3_int,CD4.Tumor__IMC1_int) %>%
   pivot_longer(-immucan_id) %>%
   mutate(name = gsub("_int", "", name)) %>%
   left_join(traits, "immucan_id") %>%
-  filter(!is.na(EGFR))
+  filter(!is.na(EGFR), 
+         simple_histology == "Adenocarcinoma")
+
+int_df <- int_dat %>%
+  select(immucan_id,
+         Tumor.CD4__IF3_int,
+         Tumor.CD4__IMC1_int,
+         Tumor.CD4__IMC2_int, 
+         CD4.Tumor__IF3_int,
+         CD4.Tumor__IMC1_int,
+         CD4.Tumor__IMC2_int) %>%
+  pivot_longer(-immucan_id) %>%
+  mutate(name = gsub("_int", "", name)) %>%
+  left_join(traits, "immucan_id") %>%
+  filter(!is.na(EGFR), 
+         simple_histology == "Adenocarcinoma")
 
 stopifnot(nrow(int_df) > 0)
 if (dplyr::n_distinct(int_df$EGFR) < 2)
@@ -652,12 +692,16 @@ stat.test <- stat.test %>%
     p < floor_p,
     sprintf("p < %s", format(floor_p, scientific = FALSE)),
     sprintf("p = %.*f", digits, p)
-  ))
+  ),
+  p.label = paste0(p.label, "\nFDR = F"))
 
 # only the comparisons that pass FDR get plotted
 stat.sig <- stat.test %>%
   filter(!is.na(p.adj), p.adj < fdr_cut) %>%
-  mutate(y.position = 0.75)            # fixed scale, so one height for all panels
+  mutate(y.position = 0.75)     # fixed scale, so one height for all panels
+stat.sig <- stat.test %>%
+  #filter(!is.na(p.adj), p.adj < fdr_cut) %>%
+  mutate(y.position = 1.8)     
 
 p <- ggplot(int_df, aes(x = EGFR, y = value, fill = EGFR)) +
   geom_boxplot(outliers = FALSE) +
@@ -666,12 +710,11 @@ p <- ggplot(int_df, aes(x = EGFR, y = value, fill = EGFR)) +
   scale_fill_manual(values = alpha(c("red", "blue"), alpha = 0.6)) +
   scale_color_manual(values = c("red", "blue")) +
   facet_wrap(. ~ name, nrow = 1) +
-  coord_cartesian(ylim = c(0, .8)) +
+  coord_cartesian(ylim = c(0, 2.2)) +
   theme_bw() +
   theme(legend.position = "none",
         axis.text.x  = element_text(size = 12, angle = 90, vjust = .5, hjust = 1),
-        axis.text.y  = element_text(size = 12),
-        axis.title.x = element_blank()) +
+        axis.text.y  = element_text(size = 12)) +
   ylab("Avg interactions")
 
 if (nrow(stat.sig) > 0) {
@@ -684,13 +727,69 @@ attr(p, "stat.test") <- stat.test   # full table for a supplementary table
 p
 
 
-ggsave(filename = paste0(out_folder,"4F_CD4_interactions_quantification.pdf"),
-       plot = p,
-       device = "pdf",
-       width = 8,
-       height = 3)
-```
 
+
+df <- left_join(dens_dat, traits,"immucan_id")
+p2 <- df %>%
+  filter(!is.na(EGFR),
+         simple_histology == "Adenocarcinoma") %>%
+  ggplot(aes(x = EGFR,y = CD4_density__IF3, fill = EGFR))+
+  geom_boxplot(outliers = FALSE)+
+  stat_compare_means()+
+   geom_jitter(aes(color = EGFR),
+              position = position_jitterdodge(jitter.width = 0.2), size = 1.5) +
+  scale_fill_manual(values = alpha(c("red", "blue"), alpha = 0.6)) +
+  scale_color_manual(values = c("red", "blue"))+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "none")+
+  ylab(bquote('CD4 T cell density '(mm^2)))
+
+pp <- plot_grid(p2, p, rel_widths = c(1,3.5))
+pp
+
+ggsave(filename = paste0(out_folder,"4F_CD4_interactions_quantification.pdf"),
+       plot = pp,
+       device = "pdf",
+       width = 10,
+       height = 3.5)
+
+# testing things
+# dat_z <- left_join(rna_scores, traits, "immucan_id") %>%
+#   mutate(LUAD_vs_LUSC = ifelse(LUAD_vs_LUSC == "Adenocarcinoma", "LUAD", "LUSC")) %>%
+#   filter(LUAD_vs_LUSC == "LUAD") %>%
+#   pivot_longer(cols = 1:11)
+# 
+# result <- lollipop_plot(dat_z, condition = "EGFR", var_A = TRUE, var_B = FALSE, col_A = "blue", col_B = "red", zscore_data = TRUE)
+# 
+# p_LUAD <- result$plot+
+#     ylab("Inflammation signatures")+
+#     ggtitle(paste0("Inflammation signatures for ", title_name,"\nin smokers in LUAD"))+
+#   coord_cartesian(xlim = c(min(result$data$delta_z)-0.1,max(result$data$delta_z)+0.1))+
+#   xlab("Δ enrichment score" )
+# 
+# p_LUAD
+# 
+# mean_exp %>%
+#   left_join(traits, "immucan_id") %>%
+#   filter(grepl("Lamp3", name),
+#          simple_histology == "Adenocarcinoma") %>%
+#   ggplot(aes(x = name, y = value, fill = EGFR))+
+#   geom_boxplot()
+# 
+# library(ggpmisc)
+# mean_exp %>%
+#   pivot_wider(id_cols = c(immucan_id, celltypes) ,values_from = value, names_from = name) %>%
+#   filter(celltypes  == "Tumor") %>%
+#   left_join(traits, "immucan_id") %>%
+#   filter(EGFR == "TRUE") %>%
+#   ggplot(aes(x = Lamp3_p2, y = HLADR_p1))+
+#   geom_point()+
+#     stat_poly_line() +
+#   stat_poly_eq() +
+#   geom_point()
+
+```
 
 # expression boxplots
 

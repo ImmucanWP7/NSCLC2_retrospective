@@ -356,10 +356,11 @@ write.csv(combined_df, paste0(MOFA_INPUT_PATH, "/expressions.csv"))
 # Binary
 ## driver mutations and scores
 ```{r}
-df <- read.csv(paste0(DATA_PATH, "/driver_mutations.csv"))
+# old data from before oncoKB selection
+#df <- read.csv(paste0(DATA_PATH, "/driver_mutations.csv"))
+df <- read.csv(paste0(mount_path,"/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/all_traits.csv"))
 
-
-driver_mutations <- df %>%
+driver_mutations <- df[,c(2,64:74)] %>%
   dplyr::rename(Immucan_id = immucan_id) %>%
   mutate(across(
     .cols = -Immucan_id,   # exclude Immucan_id column
@@ -367,7 +368,6 @@ driver_mutations <- df %>%
   ))%>%
   mutate(Immucan_id = gsub("\\-", "_", Immucan_id))
 
-df <- read.csv(paste0(mount_path,"/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/all_traits.csv"))
 
 df <- df %>%
   dplyr::rename(Immucan_id = immucan_id) %>%

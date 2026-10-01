@@ -39,7 +39,7 @@ FIGURES <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/"
 MIN_PATIENTS     <- 20     # drop features with fewer non-NA patients
 HC_METHOD        <- "ward.D2"
 N_FEAT_CLUSTERS  <- NULL   # NULL → TREE_HEIGHT auto-cut; integer overrides
-TREE_HEIGHT      <- 0.8    # cut on (1-r)/2 scale: 0.4 ≈ r > 0.2 within cluster
+TREE_HEIGHT      <- 0.8    # 
 MIN_CLUSTER_SIZE <- 3      # drop clusters smaller than this (noise / singletons)
 N_META_CLUSTERS  <- 7      # number of meta-clusters (group imaging clusters by RNA profile)
 
@@ -227,6 +227,9 @@ meta_col <- setNames(
 # Features in original co-variance dendrogram order (shows correlation blocks)
 feat_sorted  <- names(feat_cl)[feat_hc$labels[feat_hc$order] %in% names(feat_cl)]
 feat_sorted  <- feat_sorted[!is.na(feat_sorted)]
+ord <- feat_hc$labels[feat_hc$order]
+feat_sorted <- ord[ord %in% names(feat_cl)]
+
 cl_sorted    <- feat_cl[feat_sorted]
 meta_sorted  <- feat_meta[feat_sorted]
 panel_sorted <- sub("_.*", "", feat_sorted)

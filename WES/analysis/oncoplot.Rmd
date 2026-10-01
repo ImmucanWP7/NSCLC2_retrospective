@@ -21,7 +21,20 @@ library(ggtext)
 
 # read file
 ```{r}
-data_mut <- read_csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/Rout/20260210_mutations_all.csv")
+data_mut <- read_csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/Rout/final_mutations_all.csv")
+
+cat("unique patients with WES data: ", length(unique(data_mut$immucan_id)))
+```
+
+```{r}
+lost <- setdiff(unique(data_mut$immucan_id), unique(cur_dat$immucan_id))
+
+data_mut %>%
+  filter(immucan_id %in% lost) %>%
+  group_by(immucan_id) %>%
+  summarise(n_variants   = n(),
+            median_depth = median(gt_DP, na.rm = TRUE),
+            max_depth    = max(gt_DP, na.rm = TRUE))
 ```
 
 # filtering
@@ -30,53 +43,180 @@ min VAF: 5%
 ref VAF: < 1% (does not exist in this cohort)
 min coverage: 100 reads
 min variant reads: 8
+# Parameters
 
 ```{r}
-VAF <- 0.05
-#ref_VAF <- 0.01
-min_VAR_counts <- 8
-min_cov <- 100
+VAF                 <- 0.05
+min_VAR_counts      <- 8
+min_cov             <- 100
 disruptive_variants <- TRUE
+
+out_dir <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/WES/data/Rout/"
 ```
 
-# selected genes for NSCLC 
+# Selected driver genes for NSCLC
 
 ```{r}
-genes_sel <- c("KRAS", "EGFR", "BRAF", "MET", "ALK", "ROS", "RET", "NTRK", "NRG1", "FGFR1", "FGFR2", "HRAS", "NRAS", "MAP2K1", "ERBB2", "ROS1", "PIK3CA", "NTRK1", "STK11")
-genes_sup <- c("TP53", "KEAP1","STK11","RB1","CDKN2A", "CDKN2B","NKX2", "NF1")
-
-genes_sel <- c(genes_sel, genes_sup)
+drivers <- c(
+  # oncogenes
+  "KRAS", "EGFR", "BRAF", "MET", "ALK", "RET", "NRG1", "FGFR1", "FGFR2", "HRAS",
+  "NRAS", "MAP2K1", "ERBB2", "ROS1", "PIK3CA", "NTRK1", "NTRK2", "NTRK3", "NKX2-1",
+  # tumor suppressors
+  "STK11", "TP53", "KEAP1", "RB1", "CDKN2A", "CDKN2B", "NF1"
+)
 ```
 
-
-# Filtering
+# Variant filtering
 
 ```{r}
 cur_dat <- data_mut %>%
-  filter(gt_AF > VAF,
-         gt_DP > min_cov,
-         var_counts > min_VAR_counts,
-         if(disruptive_variants == TRUE) FILTER_type == "keep" else FILTER_type %in% c("keep", "remove"))
-cur_dat %>%
-  filter(gene == "EGFR")
+  filter(gt_AF >= VAF,
+         gt_DP >= min_cov,
+         var_counts >= min_VAR_counts,
+         gnomAD == FALSE,
+         if (disruptive_variants) FILTER_type == "keep" else FILTER_type %in% c("keep", "remove"))
+
+
+cat("patient count after filtering:",length(unique(cur_dat$immucan_id)))
+```
+
+# Export driver variants for OncoKB
+
+```{r}
+# convert VCF coordinates/alleles to MAF style (removes VCF padding base of indels)
+vcf_to_maf <- function(pos, ref, alt) {
+  n <- 0
+  while (n < min(nchar(ref), nchar(alt)) &&
+         substr(ref, n + 1, n + 1) == substr(alt, n + 1, n + 1)) n <- n + 1
+  r <- substring(ref, n + 1)
+  a <- substring(alt, n + 1)
+  if (r == "") {                      # insertion
+    start <- pos + n - 1; end <- start + 1; r <- "-"
+  } else {
+    start <- pos + n; end <- start + nchar(r) - 1
+  }
+  if (a == "") a <- "-"               # deletion
+  c(format(start, scientific = FALSE), format(end, scientific = FALSE), r, a)
+}
+
+conv <- t(mapply(vcf_to_maf, cur_dat$POS, cur_dat$REF, cur_dat$ALT))
+
+cur_dat <- cur_dat %>%
+  mutate(Chromosome        = sub("chr", "", CHROM),
+         Start_Position    = as.numeric(conv[, 1]),
+         End_Position      = as.numeric(conv[, 2]),
+         Reference_Allele  = conv[, 3],
+         Tumor_Seq_Allele2 = conv[, 4])
+
+maf_drivers <- cur_dat %>%
+  filter(gene %in% drivers) %>%
+  transmute(Tumor_Sample_Barcode = Sample,
+            Hugo_Symbol          = gene,
+            Chromosome,
+            Start_Position       = format(Start_Position, scientific = FALSE),
+            End_Position         = format(End_Position, scientific = FALSE),
+            Reference_Allele,
+            Tumor_Seq_Allele2)
+
+nrow(maf_drivers)
+
+write.table(maf_drivers, paste0(out_dir, "variants_for_oncokb_drivers.maf"),
+            sep = "\t", quote = FALSE, row.names = FALSE)
+```
+
+# OncoKB annotation (run on the server)
+
+```{bash, eval = FALSE}
+# OncoKB annotator: https://github.com/oncokb/oncokb-annotator (requires an OncoKB API token)
+python MafAnnotator.py \
+  -i variants_for_oncokb_drivers.maf \
+  -o drivers_oncoKB_annoateted.maf \
+  -b YOUR_TOKEN \
+  -q Genomic_Change \
+  -r GRCh38 \
+  -t NSCLC
+```
+
+# Merge OncoKB annotation back
+
+```{r}
+onco <- read.delim(paste0(out_dir, "drivers_oncoKB_annoateted.maf"))
+
+onco_keys <- onco %>%
+  transmute(immucan_id        = str_split_i(Tumor_Sample_Barcode, "-FIXT", 1),
+            Chromosome        = as.character(Chromosome),
+            Start_Position    = as.numeric(Start_Position),
+            End_Position      = as.numeric(End_Position),
+            Reference_Allele,
+            Tumor_Seq_Allele2,
+            ONCOGENIC,
+            MUTATION_EFFECT) %>%
+  distinct()
+
+cur_dat <- cur_dat %>%
+  left_join(onco_keys, by = c("immucan_id", "Chromosome", "Start_Position",
+                              "End_Position", "Reference_Allele", "Tumor_Seq_Allele2"))
+
+# check: every driver-gene variant should be annotated (expect 0)
+sum(is.na(cur_dat$ONCOGENIC[cur_dat$gene %in% drivers]))
+table(cur_dat$ONCOGENIC[cur_dat$gene %in% drivers], useNA = "ifany")
+
+# keep only oncogenic / likely oncogenic driver variants
+cur_dat_filt <- cur_dat %>%
+  filter(gene %in% drivers,
+         ONCOGENIC %in% c("Oncogenic", "Likely Oncogenic"))
+```
+
+# Comparison: all filtered vs OncoKB oncogenic
+
+```{r}
+# mutated patients per gene, before and after OncoKB filtering
+n_pat <- function(d) tapply(d$immucan_id, d$gene, function(x) length(unique(x)))
+
+before <- n_pat(filter(cur_dat, gene %in% drivers))
+after  <- n_pat(cur_dat_filt)
+cbind(before = before, after = after[names(before)])
 ```
 
 # Metadata
+
 ```{r}
-# Prepare meta data
-clin_dat <- read_csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/clinical.csv")
-
+clin_dat  <- read_csv("/mnt/immucan_volume/clinical_data/Lung_NSCLC2/2026_final/clinical.csv")
 data_meta <- as.data.frame(clin_dat)
-rownames(data_meta) <- data_meta[["immucan_id"]]
-data_meta
+rownames(data_meta) <- data_meta$immucan_id
+```
 
+# Driver mutation matrix (patient x gene, TRUE = oncogenic mutation)
+
+```{r}
+all_ids <- unique(cur_dat$immucan_id)   # all patients with WES data
+
+nonsynSNV <- cur_dat_filt %>%
+  distinct(immucan_id, gene) %>%                                   # one entry per patient and gene
+  mutate(mutated = TRUE) %>%
+  pivot_wider(names_from = gene, values_from = mutated, values_fill = FALSE) %>%
+  right_join(tibble(immucan_id = all_ids), by = "immucan_id") %>%  # add patients without drivers
+  mutate(across(-immucan_id, ~ replace_na(.x, FALSE))) %>%
+  select(immucan_id, any_of(drivers)) %>%
+  arrange(immucan_id)
+
+# drivers without any oncogenic mutation (not in the output)
+setdiff(drivers, names(nonsynSNV))
+
+# checks: one row per patient, mutated patients per gene
+nrow(nonsynSNV) == length(all_ids)
+colSums(nonsynSNV[, -1])
+
+write.csv(nonsynSNV,
+          "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/driver_mutations.csv",
+          row.names = FALSE, quote = FALSE)
 ```
 
 # Oncoprint selected genes
-no cosmic filter
+only oncoKB mutations
 ```{r}
 # Prepare plot data
-data_plot <- cur_dat %>% 
+data_plot <- cur_dat_filt %>% 
   filter(gene %in% genes_sel) %>%
   select(immucan_id, gene, type) %>%
   group_by(gene, immucan_id) %>%
@@ -239,15 +379,7 @@ data_plot[is.na(data_plot)] <- ""
 # compare with traits file
 ```{r}
 traits <- read_csv(paste0("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/all_traits.csv"))
-tt <- traits %>% select(immucan_id, KRAS)
-mt <- as.data.frame(t(data_plot))
 
-mt <- mt %>% 
-  mutate(immucan_id = rownames(mt))
-tt %>% left_join(mt, "immucan_id") %>%
-  select(immucan_id,KRAS.x, KRAS.y)
-
-data_plot$`LUNG-NSCLC2-0653`
 ```
 
 
@@ -276,7 +408,7 @@ ht <- ComplexHeatmap::oncoPrint(data_plot,
                     #, heatmap_legend_param = list(legend_gp = gpar(fontsize = 12))
   )
 ht
-pdf(file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_4/4A_oncoprint.pdf",width = 10,height = 9)
+pdf(file = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_4/4A_oncoprint_oncoKB.pdf",width = 10,height = 9)
 draw(ht,
     heatmap_legend_side = "bottom"
     ,annotation_legend_side = "bottom"

@@ -85,116 +85,6 @@ cox_luad %>%
   filter(name == "Cold_fibrotic")
 ```
 
-# S8B overlap between LUAD and LUSC
-```{r}
-library(ggVennDiagram)
-library(ggvenn)
-luad_names <- df %>% 
-  filter(p_lr < 0.05,
-         histology == "LUAD",
-         scale == "rank_INT") %>% 
-  pull(name)
-
-lusc_names <- df %>% 
-  filter(p_lr < 0.05,
-         histology == "LUSC",
-         scale == "rank_INT") %>% 
-  pull(name)
-
-p <- ggvenn(data =  list(LUAD = luad_names, LUSC = lusc_names),fill_color = c("LUAD" = "blue", "LUSC" = "orange"),set_name_size = 4)+
-  coord_flip()+
-  ggtitle("Feature overlap")
-p
-ggsave(plot = p, path = out_path,
-       filename = "S8B_overlap_LUAD_LUSC.pdf",
-       width = 2.15, 
-       height = 2.5,
-       device = cairo_pdf)
-```
-
-# S8C significance of overlab
-```{r}
-perm     <- readRDS(file.path(RESULTS_DIR, "spatial_enrichment_permutation.rds"))
-
-P_THRESH <- 0.05
-
-
-# Observed hit sets and overlap (matches 04_luad_lusc_survival.R's Venn:
-# pooled across ALL categories, rank_INT scale, no exclusions)
-
-hits_luad_obs <- unique(cox_luad$name[cox_luad$scale == "rank_INT" & !is.na(cox_luad$p_lr) & cox_luad$p_lr < P_THRESH])
-hits_lusc_obs <- unique(cox_lusc$name[cox_lusc$scale == "rank_INT" & !is.na(cox_lusc$p_lr) & cox_lusc$p_lr < P_THRESH])
-observed_overlap <- length(intersect(hits_luad_obs, hits_lusc_obs))
-
-# Null distribution of overlap: for each of LUAD's 200 permutations and
-# each of LUSC's 200 permutations independently, get that permutation's hit
-# set (features with permuted p<0.05), then compute all 200x200 pairwise
-# overlap sizes at once via a matrix product of 0/1 indicator matrices.
-
-all_feats <- union(colnames(perm$p_null_luad), colnames(perm$p_null_lusc))
-
-to_indicator <- function(p_mat, feats) {
-  ind <- matrix(0L, nrow = nrow(p_mat), ncol = length(feats), dimnames = list(NULL, feats))
-  ind[, colnames(p_mat)] <- (p_mat < P_THRESH) * 1L
-  ind[is.na(ind)] <- 0L
-  ind
-}
-A  <- to_indicator(perm$p_null_luad, all_feats)   ## 200 x n_feat, LUAD permutations
-Bm <- to_indicator(perm$p_null_lusc, all_feats)   ## 200 x n_feat, LUSC permutations
-
-overlap_null <- as.vector(A %*% t(Bm))  ## 200*200 = 40,000 pairwise overlap counts
-
-
-# Empirical p-values: is the observed overlap smaller (the actual
-# observation motivating this test: only 1.3% overlap) or larger than
-# chance alone would produce?
-
-emp_p_small <- (1 + sum(overlap_null <= observed_overlap)) / (1 + length(overlap_null))
-emp_p_large <- (1 + sum(overlap_null >= observed_overlap)) / (1 + length(overlap_null))
-
-result <- list(
-  hits_luad_obs = hits_luad_obs, hits_lusc_obs = hits_lusc_obs,
-  observed_overlap = observed_overlap, overlap_null = overlap_null,
-  emp_p_overlap_small = emp_p_small, emp_p_overlap_large = emp_p_large
-)
-saveRDS(result, file.path(RESULTS_DIR, "luad_lusc_overlap_permutation.rds"))
-
-ov <- readRDS(file.path(RESULTS_DIR, "luad_lusc_overlap_permutation.rds"))
-
-## null distribution is 40,000 values -- subsample for the jitter layer only
-## (plotting all 40,000 points would just be a solid blob); the boxplot and
-## p-value below still use the FULL null distribution, not the subsample.
-set.seed(1)
-jitter_sample <- sample(ov$overlap_null, min(2000, length(ov$overlap_null)))
-
-x_lab <- "LUAD & LUSC"
-null_df <- data.frame(x = x_lab, overlap = jitter_sample)
-obs_df  <- data.frame(x = x_lab, overlap = ov$observed_overlap,
-                       p_label = sprintf("p=%.2f", ov$emp_p_overlap_small))
-
-## view is capped near the 99th percentile of the null for readability (a
-## handful of the 40,000 permutation pairs reach much higher, up to the true
-## max -- noted in the subtitle; no data are removed, only the visible range)
-y_cap <- ceiling(quantile(ov$overlap_null, 0.99) / 5) * 5
-
-p <- ggplot(null_df, aes(x = x, y = overlap)) +
-  geom_boxplot(width = 0.4, fill = "grey70", color = "grey40", alpha = 0.3, outlier.shape = NA) +
-  geom_jitter(width = 0.12, height = 0, size = 0.5, alpha = 0.3, color = "grey40") +
-  geom_point(data = obs_df, aes(x = x, y = overlap), shape = 23, size = 3.5,
-             fill = "#d95f02", color = "black", inherit.aes = FALSE) +
-  geom_text(data = obs_df, aes(x = x, y = 30, label = p_label),
-            vjust = -1.3, size = 4.5, fontface = "italic", inherit.aes = FALSE) +
-  coord_cartesian(ylim = c(-1, y_cap)) +
-  labs(title = "LUAD/LUSC overlap \nsignificance",
-       x = NULL, y = "N overlapping nominal (p<0.05) hits") +
-  theme_bw(base_size = 11) +
-  theme(axis.text.x = element_text(size = 10),
-        plot.title = element_text(face = "bold", size = 10),
-        plot.subtitle = element_text(size = 8, color = "grey40"))
-p
-ggsave(file.path(out_path, "S8C_luad_lusc_overlap_permutation_ggplot.pdf"), p, width = 2, height = 3)
-```
-
 # S8B top survival features
 ## LUAD
 ```{r}
@@ -370,12 +260,12 @@ p <- ggplot(null_df, aes(x = category, y = rate, fill = histology, color = histo
   geom_point(data = obs_df, aes(x = category, y = hit_rate_obs_pct, fill = histology),
              position = dodge, shape = 23, size = 3.2, color = "red", inherit.aes = FALSE) +
   geom_text(data = obs_df, aes(x = category, y = 40, label = p_label, group = histology),
-            position = dodge, vjust = -1, size = 3, fontface = "italic", inherit.aes = FALSE) +
+            position = dodge, vjust = -1, size = 3.5, fontface = "italic", inherit.aes = FALSE) +
   scale_fill_manual(values = hist_col, name = "Histology") +
   scale_color_manual(values = hist_col, guide = "none") +
   scale_y_continuous(expand = expansion(mult = c(0.02, 0.15))) +
   labs(title = "Per-category permutation null vs. observed hit rate",
-       x = NULL, y = "Nominal (p<0.05) hit rate (%)") +
+       x = NULL,size= 4, y = "Nominal (p<0.05) hit rate (%)") +
   theme_bw(base_size = 11) +
   theme(axis.text.x = element_text(angle = 40, hjust = 1),
         legend.position = "right",
@@ -384,13 +274,14 @@ p
 ggsave(plot = p, path = out_path,
        filename = "S8D_category_hitrate_permutation_compact.pdf",
        width = 10, 
-       height = 3.25,
+       height = 3,
        device = cairo_pdf)
 ```
 
 
 # S8E sub-smapled survival relevance
 ```{r, fig.width=12, fig.height=5}
+library(survival)
 full_wide <- readRDS(file.path(RESULTS_DIR, "full_wide.rds"))
 
 cur_names_luad <- dat1 %>%
@@ -486,7 +377,7 @@ p1 <- subsample_luad %>%
   geom_tile()+
   geom_text(aes(label= pct_significant) )+
   scale_fill_viridis_c(limits = c(0,100))+
-  ylab("Top 20 features")+
+  labs(y = "Top 20 features", x = element_blank())+
   theme_bw()
 
 p2 <- subsample_lusc %>%
@@ -494,17 +385,16 @@ p2 <- subsample_lusc %>%
   geom_tile()+  
   geom_text(aes(label= pct_significant) )+
   scale_fill_viridis_c(limits = c(0,100))+
-  ylab("Top 20 features")+
+  labs(y = "Top 20 features", x = element_blank())+
   theme_bw()
 
-p <- cowplot::plot_grid(p1, p2, ncol = 2)
+p <- cowplot::plot_grid(p1+theme(legend.position = "none"), p2, ncol = 2, rel_widths = c(1,1.4))
 
-p2
 p
 
 ggsave(plot = p, path = out_path,
        filename = "S8E_subsampled_feature_relevance.pdf",
-       width = 6, 
+       width = 8, 
        height = 5,
        device = cairo_pdf)
 ```
@@ -518,7 +408,7 @@ hist_col <- c(LUAD = "blue", LUSC = "orange")
 
 stat_labels <- c(
   D    = "KS D  (LR-test p)",
-  diff = "Δ mean(-log10(p)"
+  diff = "Δ mean (-log10(p)"
 )
 
 ## --- null distributions, long format: one row per (histology, stat, permutation draw) ---
@@ -553,13 +443,14 @@ p <- ggplot(null_df, aes(x = histology, y = value, fill = histology, color = his
   scale_fill_manual(values = hist_col, name = "Histology") +
   scale_color_manual(values = hist_col, guide = "none") +
   scale_y_continuous(expand = expansion(mult = c(0.08, 0.18))) +
-  labs(title = "Spatial vs non-spatial: permutation null (p-value based)",
+  labs(title = "Spatial vs non-spatial (p-value)",
        x = NULL, y = NULL) +
   theme_bw(base_size = 11) +
-  theme(legend.position = "right", strip.text = element_text(size = 9),
-        plot.title = element_text(face = "bold", size = 9))
+  theme(legend.position = "bottom", strip.text = element_text(size = 9),
+        plot.title = element_text(face = "bold", size = 9),
+        strip.text.x = element_text(size = 6))
 p
-ggsave(file.path(out_path, "S8F_spatial_nonspatial_pvalue_permutation_ggplot.pdf"), p, width = 4, height = 3.25, device = cairo_pdf)
+ggsave(file.path(out_path, "S8F_spatial_nonspatial_pvalue_permutation_ggplot.pdf"), p, width = 2.5, height = 3.25, device = cairo_pdf)
 ```
 
 # spatial vs non spatial effect size
@@ -568,7 +459,7 @@ perm <- readRDS(file.path(RESULTS_DIR, "spatial_enrichment_permutation.rds"))
 
 stat_labels <- c(
     D    = "KS D (|coef|)",
-  diff = "Δ mean(|coef|)"
+  diff = "Δ mean (|coef|)"
 )
 
 ## --- null distributions, long format: one row per (histology, stat, permutation draw) ---
@@ -603,12 +494,13 @@ p <- ggplot(null_df, aes(x = histology, y = value, fill = histology, color = his
   scale_fill_manual(values = hist_col, name = "Histology") +
   scale_color_manual(values = hist_col, guide = "none") +
   scale_y_continuous(expand = expansion(mult = c(0.08, 0.18))) +
-  labs(title = "Spatial vs non-spatial: permutation null (effect-size based)",
+  labs(title = "Spatial vs non-spatial (effect-size)",
        x = NULL, y = NULL) +
   theme_bw(base_size = 11) +
-  theme(legend.position = "right", strip.text = element_text(size = 9),
-        plot.title = element_text(face = "bold", size = 9))
+  theme(legend.position = "bottom", strip.text = element_text(size = 9),
+        plot.title = element_text(face = "bold", size = 9),
+        strip.text.x = element_text(size = 6))
 p
-ggsave(file.path(out_path, "S8G_spatial_nonspatial_effectsize_permutation_ggplot.pdf"), p, width = 4, height = 3.25, device = cairo_pdf)
+ggsave(file.path(out_path, "S8G_spatial_nonspatial_effectsize_permutation_ggplot.pdf"), p, width = 2.5, height = 3.25, device = cairo_pdf)
 ```
 

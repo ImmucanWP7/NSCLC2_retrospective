@@ -85,6 +85,13 @@ conv_to_geojson <- function(json_file, outpath){
 
 ```
 
+```{r}
+# total ndpi files
+hes <- list.files("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/HE/data/")
+he_ids <- str_split_i(hes,"_#_",1)
+unique(he_ids)
+```
+
 
 # geojson for all raw json
 
@@ -96,6 +103,11 @@ json_files <- list.files("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/
 
 # transform to geojson
 lapply(json_files, function(x) conv_to_geojson(x,outpath = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/HE/hooknetTLS/raw-20260724T081937Z-1-001/raw_geojson"))
+
+# number of files found
+ids <- str_split_i(basename(json_files), "-FIXT",1)
+unique(ids)
+length(unique(ids))
 ```
 
 # geojson for all filtered json
@@ -109,6 +121,11 @@ json_files <- list.files("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/
 
 # generate geojson
 lapply(json_files, function(x) conv_to_geojson(x,outpath = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/HE/hooknetTLS/filtered-20260817T121553Z-1-001/filtered_geojson"))
+
+# number of files found
+ids <- str_split_i(basename(json_files), "-FIXT",1)
+unique(ids)
+length(unique(ids))
 ```
 
 
