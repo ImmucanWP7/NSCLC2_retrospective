@@ -256,6 +256,12 @@ num_fac <- 6
 num_features <- 5
 VIEWS <- MOFA2::views_names(model)
 view_order <- c("Densities","RNA","Cellohood","Expressions","Interactions","BINARY") 
+# View color palette (matching other plots)
+view_colors <- structure(
+  RColorBrewer::brewer.pal(length(VIEWS), "Set1"),
+  names = sort(VIEWS)
+)
+
 res <- plot_top_feature_heatmap(model, views = VIEWS, view_order, view_colors, "V6_minor", n_factors = num_fac, top_n = num_features)
 
 
@@ -466,10 +472,10 @@ res <- plot_top_feature_heatmap(model, views = VIEWS, view_order, view_colors, "
 
 
 # Set PDF output
-pdf(paste0(out_path, "7B_",num_fac,"factors_x_",num_features,"features_rotated.pdf"), width = 5, height = 15) 
+#pdf(paste0(out_path, "7B_",num_fac,"factors_x_",num_features,"features_rotated.pdf"), width = 5, height = 15) 
 draw(res$ht, heatmap_legend_side = "bottom", padding = unit(c(1, 2, 2, 10), "mm"))
 
-dev.off()
+#dev.off()
 ```
 
 
@@ -721,7 +727,7 @@ hist_col = structure(
   names = c("Adenocarcinoma", "Squamous cell carcinoma", "LCNEC","Other", "unknown", "Adenosquamous carcinoma")
 )
 
-gg <- ggplot(temp, aes(x = hist_group, y = Factor4)) +
+gg <- ggplot(temp, aes(x = hist_group, y = Factor5)) +
   geom_boxplot(outlier.shape = NA, alpha = 0.8) +
   geom_jitter(aes(color = simple_histology), width = 0.2, alpha = 0.6, size = 2) +
   #scale_shape_manual(values = shape_values, name = "Histology") +
@@ -743,7 +749,7 @@ gg <- ggplot(temp, aes(x = hist_group, y = Factor4)) +
     
     legend.position = "bottom"
   ) +
-  labs(y = "Factor4")+
+  labs(y = "Factor5")+
   coord_cartesian(ylim = c(-4,8))
 gg
 
@@ -940,12 +946,12 @@ p_LF1
 # ------------------------------------------------------------------
 # 1.  Pull out the Factor 5 row from each data-frame
 # ------------------------------------------------------------------
-plot_df_LF5 <- bind_rows(
+plot_df_LF4 <- bind_rows(
   df_luad %>%                        # LUAD results
-    dplyr::slice(match("Factor5", rownames(.))) %>% 
+    dplyr::slice(match("Factor4", rownames(.))) %>% 
     mutate(Cohort = "LUAD"),
   df_lusc %>%                        # LUSC results
-    dplyr::slice(match("Factor5", rownames(.))) %>% 
+    dplyr::slice(match("Factor4", rownames(.))) %>% 
     mutate(Cohort = "LUSC")
 ) %>% 
   select(Cohort, HR, lower_conf, upper_conf, p_lr, p.value)
@@ -953,7 +959,7 @@ plot_df_LF5 <- bind_rows(
 # ------------------------------------------------------------------
 # 2.  Forest plot on a log scale
 # ------------------------------------------------------------------
-p_LF5 <- ggplot(plot_df_LF5, aes(y = Cohort, x = HR, col = Cohort)) +
+p_LF4 <- ggplot(plot_df_LF4, aes(y = Cohort, x = HR, col = Cohort)) +
   geom_point(size = 3) +
   geom_errorbarh(aes(xmin = lower_conf, xmax = upper_conf), height = 0.25) +
   geom_vline(xintercept = 1, linetype = "dashed") +
@@ -964,19 +970,19 @@ p_LF5 <- ggplot(plot_df_LF5, aes(y = Cohort, x = HR, col = Cohort)) +
     title = "Factor 5",
     subtitle = sprintf(
       "LUAD p = %.3g   |   LUSC p = %.3g",
-      plot_df_LF5$p_lr[plot_df_LF5$Cohort == "LUAD"],
-      plot_df_LF5$p_lr[plot_df_LF5$Cohort == "LUSC"]
+      plot_df_LF4$p_lr[plot_df_LF4$Cohort == "LUAD"],
+      plot_df_LF4$p_lr[plot_df_LF4$Cohort == "LUSC"]
     )
   ) +
   theme_minimal(base_size = 11)+
   scale_color_manual(values = c("LUAD" = "blue", "LUSC" = "orange"))
 
-print(plot_df_LF5)
+print(plot_df_LF4)
 
 p_LF1
-p_LF5
+p_LF4
 
-p <- cowplot::plot_grid(p_LF1,p_LF5, ncol =1)
+p <- cowplot::plot_grid(p_LF1,p_LF4, ncol =1)
 p
 ggsave(paste0(out_path,"S7E_Factor1_LUAD_LUSC.pdf"), plot = p, device = "pdf", width = 3.5, height = 3.5)
 ```
