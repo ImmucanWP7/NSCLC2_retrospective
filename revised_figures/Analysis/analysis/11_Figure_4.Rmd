@@ -86,6 +86,8 @@ luad_n <- sum(!is.na(cur_traits$EGFR))
 cat("LUAD TP53 (FALSE/TRUE): ",table(cur_traits$TP53)/luad_n,"\n")
 cat("LUAD EGFR (FALSE/TRUE): ",table(cur_traits$EGFR)/luad_n,"\n")
 cat("LUAD KRAS (FALSE/TRUE): ",table(cur_traits$KRAS)/luad_n,"\n")
+cat("LUAD KRAS_co (FALSE/TRUE): ",table(cur_traits$KRAS_co)/luad_n,"\n")
+cat("LUAD KRAS_only (FALSE/TRUE): ",table(cur_traits$KRAS_only)/luad_n,"\n")
 cat("LUAD STK11 (FALSE/TRUE): ",table(cur_traits$STK11)/luad_n,"\n")
 cat("LUAD KEAP1 (FALSE/TRUE): ",table(cur_traits$KEAP1)/luad_n,"\n")
 
@@ -656,6 +658,8 @@ int_df <- int_dat %>%
   left_join(traits, "immucan_id") %>%
   filter(!is.na(EGFR), 
          simple_histology == "Adenocarcinoma")
+
+table(int_df$EGFR)/9
 
 int_df <- int_dat %>%
   select(immucan_id,

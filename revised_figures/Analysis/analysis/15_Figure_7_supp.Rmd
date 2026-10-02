@@ -967,7 +967,7 @@ p_LF4 <- ggplot(plot_df_LF4, aes(y = Cohort, x = HR, col = Cohort)) +
   labs(
     x = "HR",
     y = NULL,
-    title = "Factor 5",
+    title = "Factor 4",
     subtitle = sprintf(
       "LUAD p = %.3g   |   LUSC p = %.3g",
       plot_df_LF4$p_lr[plot_df_LF4$Cohort == "LUAD"],
@@ -985,6 +985,9 @@ p_LF4
 p <- cowplot::plot_grid(p_LF1,p_LF4, ncol =1)
 p
 ggsave(paste0(out_path,"S7E_Factor1_LUAD_LUSC.pdf"), plot = p, device = "pdf", width = 3.5, height = 3.5)
+
+plot_df_LF1
+plot_df_LF4
 ```
 
 # S7F
@@ -1015,7 +1018,7 @@ tcga <- readRDS(paste0(mount_path,"/tcga_LUAD_LUSC.rds"))
 
 # Convert to SCE
 sce <- as(tcga, "SingleCellExperiment")
-
+sce <-  sce[,sce$tissue_type != "Normal"]
 
 
 tpm_mat <- assay(tcga, "tpm_unstrand")
@@ -1238,7 +1241,7 @@ sizes <- lapply(c(5,10, 20, 50, 100), function(k) {
   dplyr::count(direction) %>%
     summarise(total_genes = sum(n)) %>%
     pull(total_genes), "\n")
-  res$hr_group %>%
+  res$hr_continuous %>%
     mutate(top_n = k)
 })
 

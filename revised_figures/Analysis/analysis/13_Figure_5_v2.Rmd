@@ -39,7 +39,7 @@ mount_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_f
 out_path <- "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_5/"
 
 
-model_path <- paste0(mount_path, '/mofa_V6_minor_20261001.rds')
+model_path <- paste0(mount_path, '/mofa_V6_minor.rds')
 
 if (!dir.exists(out_path)){
   dir.create(out_path)
@@ -471,6 +471,8 @@ df <- data.frame(HR = unlist(lapply(p.list, function(x){summary(x)$coefficients[
                  p.value = unlist(lapply(p.list, function(x){summary(x)$logtest["pvalue"]})),
                  lower_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "lower .95"]})),
                  upper_conf = unlist(lapply(p.list, function(x){summary(x)$conf.int[, "upper .95"]}))) 
+
+df
 
 ```
 
@@ -1084,8 +1086,7 @@ tcga <- readRDS(paste0(mount_path,"/tcga_LUAD_LUSC.rds"))
 
 # Convert to SCE
 sce <- as(tcga, "SingleCellExperiment")
-
-
+sce <-  sce[,sce$tissue_type != "Normal"]
 
 tpm_mat <- assay(tcga, "tpm_unstrand")
 tpm_mat <- as.matrix(tpm_mat)   # in case it's a DelayedArray/sparse matrix
@@ -1459,7 +1460,7 @@ plot_factor_hr_heatmap(res, "Factor1", show_top = 20)
 dev.off()
 ```
 
-## plot heatmap Factor 5
+## plot heatmap Factor 4
 ```{r}
 
 ## ---------------------------------------------------------------------------
