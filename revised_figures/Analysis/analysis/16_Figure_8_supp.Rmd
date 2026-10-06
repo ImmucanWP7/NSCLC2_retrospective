@@ -82,7 +82,8 @@ cox_luad %>%
 cox_luad %>%
   filter(fdr_global < 0.1)
 cox_luad %>%
-  filter(name == "Cold_fibrotic")
+  filter(name == "Neutrophil_density__IF1")
+cox_luad %>%
 ```
 
 # S8B top survival features
@@ -92,18 +93,21 @@ feat_number <- 20
 
 dat1 <- readRDS(file.path(RESULTS_DIR,"hit_dedup_full.rds"))
 
-cur_names_luad <- dat1 %>%
-  group_by(histology,cluster_id) %>%
-  mutate(density_filter   = category == "density",
-         final_selection  = if (any(density_filter)) density_filter else is_representative) %>%
-  ungroup() %>%
-  filter(final_selection == TRUE,
-         histology == "LUAD") %>%
-  arrange(p_lr) %>%
-  #filter(p_lr < 0.05) %>%
-  slice_head(n = feat_number) %>%
-  pull(name)
+## top features after redundancy pruning: within each correlation cluster
+## (per histology) density features are preferred, otherwise the representative
+select_top_names <- function(dedup, histology_label, n_top) {
+  dedup %>%
+    group_by(histology, cluster_id) %>%
+    mutate(final_selection = if (any(category == "density")) category == "density" else is_representative) %>%
+    ungroup() %>%
+    filter(final_selection, histology == histology_label) %>%
+    arrange(p_lr) %>%
+    slice_head(n = n_top) %>%
+    pull(name)
+}
 
+cur_names_luad <- select_top_names(dat1, "LUAD", feat_number)
+cur_names_lusc <- select_top_names(dat1, "LUSC", feat_number)
 
 
 # colors
@@ -155,24 +159,9 @@ p_luad
 
 ## LUSC
 ```{r}
-cur_names_lusc <- dat1 %>%
-  group_by(histology,cluster_id) %>%
-  mutate(density_filter   = category == "density",
-         final_selection  = if (any(density_filter)) density_filter else is_representative) %>%
-  ungroup() %>%
-  filter(final_selection == TRUE,
-         histology == "LUSC") %>%
-  arrange(p_lr) %>%
-  #filter(p_lr < 0.05) %>%
-  slice_head(n = feat_number) %>%
-  pull(name)
-
 cur_lusc <- cox_lusc %>%
   filter(name %in% cur_names_lusc,
          scale == "rank_INT") %>%
-   arrange(p_lr) %>%
-  #filter(p_lr < 0.05) %>%
-  slice_head(n = feat_number) %>%
   mutate(modality = str_split_i(string = name, pattern = "__", 2),
          modality = str_split_i(string = modality, pattern = "_", 1),
          feature = str_split_i(string = name, pattern = "__", 1))
@@ -204,16 +193,24 @@ p_lusc <- cur_lusc %>%
 p_lusc <- p_lusc+theme(legend.position = "bottom")+guides(color = guide_legend(nrow = 2))
 p_luad <- p_luad+theme(legend.position = "bottom")+guides(color = guide_legend(nrow = 2))
 p <- cowplot::plot_grid(p_luad, p_lusc, ncol = 2)
-p
+
+p_lusc
+p_luad
 ggsave(plot = p, path = out_path,
        filename = "S8B_top_features.pdf",
        width = 8, 
        height = 6.5,
        device = cairo_pdf)
+
+cox_lusc %>%
+  filter(grepl("CD8_PD1_CXCL13.CD8_BCL2|CD8_BCL2.CD8_PD1_CXCL13", name))
+cox_luad %>%
+  filter(grepl("CD8_PD1_CXCL13.CD8_BCL2|CD8_BCL2.CD8_PD1_CXCL13", name))
+
 ```
 
 
-# S8D null model overall
+# S8C null model overall
 
 ## compact sig plot
 NEW compact plot (round 6): same per-category permutation null as above,
@@ -272,43 +269,20 @@ p <- ggplot(null_df, aes(x = category, y = rate, fill = histology, color = histo
         plot.title = element_text(face = "bold"))
 p
 ggsave(plot = p, path = out_path,
-       filename = "S8D_category_hitrate_permutation_compact.pdf",
+       filename = "S8C_category_hitrate_permutation_compact.pdf",
        width = 10, 
        height = 3,
        device = cairo_pdf)
 ```
 
 
-# S8E sub-smapled survival relevance
+# S8D sub-smapled survival relevance
 ```{r, fig.width=12, fig.height=5}
+
 library(survival)
 full_wide <- readRDS(file.path(RESULTS_DIR, "full_wide.rds"))
 
-cur_names_luad <- dat1 %>%
-  group_by(cluster_id) %>%
-  mutate(density_filter   = category == "density",
-         final_selection  = if (any(density_filter)) density_filter else is_representative) %>%
-  ungroup() %>%
-  filter(final_selection == TRUE,
-         histology == "LUAD") %>%
-  arrange(p_lr) %>%
-  #filter(p_lr < 0.05) %>%
-  slice_head(n = feat_number) %>%
-  pull(name)
-
-cur_names_lusc <- dat1 %>%
-  group_by(cluster_id) %>%
-  mutate(density_filter   = category == "density",
-         final_selection  = if (any(density_filter)) density_filter else is_representative) %>%
-  ungroup() %>%
-  filter(final_selection == TRUE,
-         histology == "LUSC") %>%
-  arrange(p_lr) %>%
-  #filter(p_lr < 0.05) %>%
-  slice_head(n = feat_number) %>%
-  pull(name)
-
-
+## features: same as S8B (cur_names_luad / cur_names_lusc)
 top_overall <- function(res, n_top = 15, name_sel) {
   sub <- res[res$scale == "rank_INT" & res$name %in% name_sel, ]
   sub <- sub[order(sub$p_lr), ]
@@ -349,7 +323,7 @@ subsample_feature <- function(nm, d_base, orig_coef, frac = 0.7, B = 200) {
     if (sign(co) == sign(orig_coef)) n_same_dir <- n_same_dir + 1L
   }
   data.frame(name = nm, B = B, frac = frac, n_estimable = n_estimable,
-             pct_significant = 100 * n_sig / B,
+             pct_significant = 100 * n_sig / n_estimable,
              pct_same_direction = 100 * n_same_dir / n_estimable,
              stringsAsFactors = FALSE)
 }
@@ -375,7 +349,7 @@ subsample_lusc$histology <- "LUSC"
 p1 <- subsample_luad %>%
   ggplot(aes(y = factor(name, levels = subsample_luad %>% arrange(pct_significant) %>% pull(name)), x = histology, fill = pct_significant))+
   geom_tile()+
-  geom_text(aes(label= pct_significant) )+
+  geom_text(aes(label = round(pct_significant)))+
   scale_fill_viridis_c(limits = c(0,100))+
   labs(y = "Top 20 features", x = element_blank())+
   theme_bw()
@@ -383,7 +357,7 @@ p1 <- subsample_luad %>%
 p2 <- subsample_lusc %>%
   ggplot(aes(y = factor(name, levels = subsample_lusc %>% arrange(pct_significant) %>% pull(name)), x = histology, fill = pct_significant))+
   geom_tile()+  
-  geom_text(aes(label= pct_significant) )+
+  geom_text(aes(label = round(pct_significant)))+
   scale_fill_viridis_c(limits = c(0,100))+
   labs(y = "Top 20 features", x = element_blank())+
   theme_bw()
@@ -393,12 +367,52 @@ p <- cowplot::plot_grid(p1+theme(legend.position = "none"), p2, ncol = 2, rel_wi
 p
 
 ggsave(plot = p, path = out_path,
-       filename = "S8E_subsampled_feature_relevance.pdf",
+       filename = "S8D_subsampled_feature_relevance.pdf",
        width = 8, 
        height = 5,
        device = cairo_pdf)
 ```
 
+# KS test results spatial vs non-spatial
+```{r}
+SPATIAL_CATS    <- c("interaction", "cellohood")
+NONSPATIAL_CATS <- c("density", "RNA_gene", "RNA_module", "mutation", "biomarker")
+
+sp_df <- bind_rows(cox_luad, cox_lusc) %>%
+  filter(scale == "rank_INT",
+         category %in% c(SPATIAL_CATS, NONSPATIAL_CATS),
+         !is.na(p_lr)) %>%
+  mutate(class      = factor(ifelse(category %in% SPATIAL_CATS, "Spatial", "Non-spatial"),
+                             levels = c("Non-spatial", "Spatial")),
+         neglog10_p = -log10(p_lr),
+         abs_coef   = ifelse(category == "mutation", NA, abs(coef)))   # mutations: different scale
+
+## boxplot spatial vs non-spatial with KS p-value per histology
+plot_ks <- function(df, var, ylab) {
+  df <- df[!is.na(df[[var]]), ]
+  ks <- df %>%
+    group_by(histology) %>%
+    summarise(p = suppressWarnings(ks.test(.data[[var]][class == "Spatial"],
+                                           .data[[var]][class == "Non-spatial"])$p.value),
+              y = 1.05 * max(.data[[var]]),
+              .groups = "drop")
+
+  ggplot(df, aes(x = class, y = .data[[var]], fill = class)) +
+    geom_boxplot(outlier.size = 0.3, width = 0.6) +
+    geom_text(data = ks, aes(x = 1.5, y = y, label = paste0("KS p = ", signif(p, 2))),
+              inherit.aes = FALSE, size = 3) +
+    facet_wrap(~ histology) +
+    scale_fill_manual(values = c("Non-spatial" = "grey70", "Spatial" = "#2c7fb8")) +
+    labs(x = NULL, y = ylab) +
+    theme_bw() +
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+p_F <- plot_ks(sp_df, "neglog10_p", expression(-log[10]~italic(p)))
+p_G <- plot_ks(sp_df, "abs_coef",   "|log HR| per SD")
+p_F; p_G
+```
 
 # S8E Spatial vs non-spatial
 
@@ -450,10 +464,10 @@ p <- ggplot(null_df, aes(x = histology, y = value, fill = histology, color = his
         plot.title = element_text(face = "bold", size = 9),
         strip.text.x = element_text(size = 6))
 p
-ggsave(file.path(out_path, "S8F_spatial_nonspatial_pvalue_permutation_ggplot.pdf"), p, width = 2.5, height = 3.25, device = cairo_pdf)
+ggsave(file.path(out_path, "S8E_spatial_nonspatial_pvalue_permutation_ggplot.pdf"), p, width = 2.5, height = 3.25, device = cairo_pdf)
 ```
 
-# spatial vs non spatial effect size
+# S8F spatial vs non spatial effect size
 ```{r}
 perm <- readRDS(file.path(RESULTS_DIR, "spatial_enrichment_permutation.rds"))
 
@@ -501,6 +515,20 @@ p <- ggplot(null_df, aes(x = histology, y = value, fill = histology, color = his
         plot.title = element_text(face = "bold", size = 9),
         strip.text.x = element_text(size = 6))
 p
-ggsave(file.path(out_path, "S8G_spatial_nonspatial_effectsize_permutation_ggplot.pdf"), p, width = 2.5, height = 3.25, device = cairo_pdf)
+ggsave(file.path(out_path, "S8F_spatial_nonspatial_effectsize_permutation_ggplot.pdf"), p, width = 2.5, height = 3.25, device = cairo_pdf)
+```
+
+
+
+
+```{r}
+hist(sp_df %>%
+  filter(class == "Non-spatial",
+         histology == "LUAD") %>%
+  pull(p_lr))
+sp_df %>%
+  filter(class == "Spatial",
+         histology == "LUAD",
+         p_lr < 0.05)
 ```
 

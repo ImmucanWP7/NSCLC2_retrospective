@@ -19,8 +19,12 @@ library(circlize)
 # load data
 
 ```{r}
-rna_mat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_mat.rds")
-rna_mat <- t(rna_mat)
+#rna_mat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/TPM/log2tpm_filtered_combat.txt")
+rna_mat <- read.delim("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/RNASeq/Rout/tables/TPM/log2tpm_filtered_combat.txt")
+
+#rna_mat <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/rna_mat.rds")
+#rna_mat <- t(rna_mat)
+colnames(rna_mat) <- gsub("\\.","-", colnames(rna_mat))
 
 # split RNA mat by histology
 clin <- read.csv("/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/all_traits.csv")
@@ -33,32 +37,45 @@ clin <- clin %>%
     LUAD_vs_LUSC == "Squamous cell carcinoma" ~ "LUSC",
     TRUE                                       ~ "Other"
   ))
-#  clinical annotation
-clin$simple_histology
-clin$EGFR
-clin$KRAS
-clin$TP53
-clin$TPS_score
+
+rna_mat <- as.matrix(rna_mat)
 ```
 
 # predict subtypes
+
 ```{r}
-rna_LUAD <- rna_mat[,colnames(rna_mat) %in% LUAD]
-rna_LUSC <- rna_mat[,colnames(rna_mat) %in% LUSC]
+rna_LUAD <- rna_mat[, colnames(rna_mat) %in% LUAD]
+rna_LUSC <- rna_mat[, colnames(rna_mat) %in% LUSC]
 
-# Median-center your expression matrix first
-data_LUAD <- get_median_centered(rna_LUAD, log2 = FALSE)
-data_LUSC <- get_median_centered(rna_LUSC, log2 = FALSE)
+## log2 transform and median-center each gene within histology
+## (= OncoSubtype::get_median_centered(log2 = TRUE), which fails on plain matrices)
+median_center <- function(x) {
+  sweep(x, 1, apply(x, 1, median, na.rm = TRUE))
+}
+data_LUAD <- median_center(rna_LUAD)
+data_LUSC <- median_center(rna_LUSC)
 
-# LUAD: returns bronchioid / magnoid / squamoid (= TRU / PP / PI)
-output_luad <- centroids_subtype(data_LUAD, disease = 'LUAD')
+## nearest-centroid classification (Wilkerson et al.) using the full gene set
+## of the chosen centroids. OncoSubtype::centroids_subtype() always uses the
+## LUSC gene list, so for LUAD only 29 genes would be used.
+nearest_centroid <- function(data, centroids) {
+  centroids <- as.matrix(centroids)
+  feats  <- intersect(rownames(data), rownames(centroids))
+  scores <- cor(data[feats, ], centroids[feats, ], use = "complete")
+  list(subtypes = setNames(colnames(scores)[apply(scores, 1, which.max)], colnames(data)),
+       score    = scores,
+       n_genes  = length(feats))
+}
 
-# LUSC: returns basal / classical / secretory / primitive
-output_lusc <- centroids_subtype(data_LUSC, disease = 'LUSC')
+output_luad <- nearest_centroid(data_LUAD, luad_centroids)   # bronchioid / magnoid / squamoid
+output_lusc <- nearest_centroid(data_LUSC, lusc_centroids)   # basal / classical / secretory / primitive
 
-table(output_luad@subtypes)  # bronchioid / magnoid / squamoid
-table(output_lusc@subtypes)  # basal / classical / secretory / primitive
+## check: genes used vs genes in the centroids
+c(used = output_luad$n_genes, available = nrow(luad_centroids))
+c(used = output_lusc$n_genes, available = nrow(lusc_centroids))
 
+table(output_luad$subtypes)
+table(output_lusc$subtypes)
 
 # QC
 top_genes_LUAD <- luad_centroids %>%
@@ -72,24 +89,20 @@ top_genes_LUSC <- lusc_centroids %>%
 
 top_genes <- c(top_genes_LUAD, top_genes_LUSC)
 
-# ── Build subtype vector (patient ID → subtype label) ─────────────────────────
-# @subtypes may or may not be named; use input colnames to be safe
-luad_sub    <- setNames(as.character(output_luad@subtypes), colnames(rna_LUAD))
-# rename to more recent, TCGA subtypes:
-luad_sub <- gsub("squamoid", "PI", luad_sub)
-luad_sub <- gsub("bronchioid", "TRU", luad_sub)
-luad_sub <- gsub("magnoid", "PP", luad_sub)
-
-lusc_sub    <- setNames(as.character(output_lusc@subtypes), colnames(rna_LUSC))
+## subtype labels; LUAD renamed to the TCGA nomenclature
+luad_names <- c(bronchioid = "TRU", magnoid = "PP", squamoid = "PI")
+luad_sub   <- setNames(luad_names[output_luad$subtypes], names(output_luad$subtypes))
+lusc_sub   <- output_lusc$subtypes
 subtype_all <- c(luad_sub, lusc_sub)
 
-# get scores
-sc <- as.data.frame(output_luad@score)
+## scores
+sc <- as.data.frame(output_luad$score)
 sc$immucan_id <- rownames(sc)
 rownames(sc) <- NULL
-# export data
+
+## export
 tumor_subtypes <- data.frame(immucan_id = names(subtype_all),
-                             subtype = subtype_all)
+                             subtype    = unname(subtype_all))
 
 write.csv(tumor_subtypes,"/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/tumor_subtypes.csv", row.names = FALSE, quote = FALSE)
 write.csv(sc,"/mnt/immucan_volume/processed_data/NSCLC2_cohort/Figures/scores_for_sharing/tumor_subtype_scores.csv", row.names = FALSE, quote = FALSE)
@@ -219,4 +232,3 @@ draw(ht2)
 dev.off()
 ```
 
-# export scores

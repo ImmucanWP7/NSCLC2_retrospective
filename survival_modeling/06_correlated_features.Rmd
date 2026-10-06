@@ -156,67 +156,80 @@ saveRDS(hit_dedup_representatives, file.path(RESULTS_DIR, "hit_dedup_representat
 write.csv(hit_dedup_representatives, file.path(RESULTS_DIR, "hit_dedup_representatives.csv"), row.names = FALSE)
 ```
 
+# Bootstrap stability of top pruned features (not used in the paper)
 
-# bootstrap stability afer removing correlation
+Same feature selection as Figure S8B: within each correlation cluster
+(per histology), density features are preferred, otherwise the
+representative (lowest p). Top 20 per histology, stratified bootstrap
+(B = 200). % significant and % same direction are relative to the number
+of successfully fitted replicates.
 
 ```{r}
-feat_number <- 20
+library(dplyr)
+suppressWarnings(suppressMessages(library(survival)))
 
-dat1 <- readRDS(file.path(RESULTS_DIR,"hit_dedup_full.rds"))
+N_TOP    <- 20
+HIST_STR <- c(LUAD = "Adenocarcinoma", LUSC = "Squamous cell carcinoma")
 
-cur_names <- dat1 %>%
-  group_by(cluster_id) %>%
-  mutate(density_filter   = category == "density",
-         final_selection  = if (any(density_filter)) density_filter else is_representative) %>%
-  ungroup() %>%
-  filter(final_selection == TRUE,
-         histology == "LUAD") %>%
-  arrange(p_lr) %>%
-  #filter(p_lr < 0.05) %>%
-  slice_head(n = feat_number) %>%
-  pull(name)
+## same selection as in the figure script (S8B)
+select_top <- function(dedup, histology_label, n_top) {
+  dedup %>%
+    group_by(histology, cluster_id) %>%
+    mutate(final_selection = if (any(category == "density")) category == "density" else is_representative) %>%
+    ungroup() %>%
+    filter(final_selection, histology == histology_label) %>%
+    arrange(p_lr) %>%
+    slice_head(n = n_top)
+}
 
+inv_norm <- function(x) {
+  n <- sum(!is.na(x)); if (n < 3) return(rep(NA_real_, length(x)))
+  qnorm((rank(x, na.last = "keep", ties.method = "average") - 0.5) / n)
+}
 
+stratified_boot_idx <- function(status) {
+  idx <- seq_along(status)
+  idx0 <- idx[status == 0]; idx1 <- idx[status == 1]
+  c(sample(idx0, length(idx0), replace = TRUE), sample(idx1, length(idx1), replace = TRUE))
+}
 
-# colors
-col_vec <- c(pals::alphabet(n = 8))
-names(col_vec) <- c("IMC1", "IMC2", "IF1", "IF2", "IF3", "RNA", "cello1", "cello2")
-library(tidyverse)
-cur_luad <- cox_luad %>%
-  filter(name %in% cur_names,
-         scale == "rank_INT") %>%
-  mutate(modality = str_split_i(string = name, pattern = "__", 2),
-         modality = str_split_i(string = modality, pattern = "_", 1),
-         feature = str_split_i(string = name, pattern = "__", 1))
+bootstrap_feature <- function(nm, d_base, orig_coef, B = 200) {
+  d <- d_base[!is.na(d_base[[nm]]), c("time_to_event", "status", nm)]
+  colnames(d)[3] <- "x_raw"
+  n_sig <- 0L; n_same_dir <- 0L; n_estimable <- 0L
+  for (b in seq_len(B)) {
+    db <- d[stratified_boot_idx(d$status), ]
+    if (length(unique(db$x_raw)) < 3) next
+    db$x_rank <- inv_norm(db$x_raw)
+    fit <- try(coxph(Surv(time_to_event, status) ~ x_rank, data = db, ties = "efron"), silent = TRUE)
+    if (inherits(fit, "try-error") || !is.finite(stats::coef(fit))) next
+    n_estimable <- n_estimable + 1L
+    cf <- summary(fit)$coefficients
+    if (!is.na(cf["x_rank", "Pr(>|z|)"]) && cf["x_rank", "Pr(>|z|)"] < 0.05) n_sig <- n_sig + 1L
+    if (sign(cf["x_rank", "coef"]) == sign(orig_coef)) n_same_dir <- n_same_dir + 1L
+  }
+  data.frame(name = nm, B = B, n_estimable = n_estimable,
+             pct_significant    = 100 * n_sig / n_estimable,
+             pct_same_direction = 100 * n_same_dir / n_estimable,
+             stringsAsFactors = FALSE)
+}
 
-cur_ord_luad <- cur_luad %>%
-  group_by(category) %>%
-  arrange(desc(hr), .by_group = TRUE) %>%
-  pull(feature)
+boot_all <- do.call(rbind, lapply(names(HIST_STR), function(h) {
+  set.seed(12215)
+  top <- select_top(dedup_all, h, N_TOP)
+  d_base <- full_wide[full_wide$simple_histology == HIST_STR[[h]], ]
+  d_base <- d_base[!is.na(d_base$time_to_event) & d_base$time_to_event > 0 & !is.na(d_base$status), ]
+  res <- do.call(rbind, Map(function(nm, cf) bootstrap_feature(nm, d_base, cf), top$name, top$coef))
+  res$histology <- h
+  res
+}))
 
-p_luad <- cur_luad %>%
-  ggplot(aes(x = hr, y = factor(feature, cur_ord_luad), col = modality)) +
-  geom_point(size = 2) +
-  geom_errorbar(aes(xmin = lo, xmax = hi), lwd = 1, width = 0.3) +
-  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust = 1)) +
-  scale_x_log10(limits = c(-0.2, 6.5))+
-  theme_bw() +
-  scale_color_manual(values = col_vec)+
-  geom_vline(xintercept = 1, linetype = "dashed") +
-  geom_text(aes(label = paste0("p = ", round(p_lr, 3))),
-            x = Inf, hjust = 1.05, col = "black", size = 3)+
-    geom_text(aes(label = ifelse(fdr_within_category < 0.1, "*", ""),
-            x = hr, vjust = 0.3, col = "black"), size = 5)+
-  facet_wrap(.~category, scales = "free_y", space = "free_y",strip.position = "top") +
-
-  theme(
-    strip.text       = element_text(size = 10, face = "bold", margin = margin(3, 3, 3, 3)),
-    strip.background = element_rect(fill = "grey90", color = NA),
-    panel.spacing    = unit(0.8, "lines"))+
-  labs(y = "Feature", x = "HR")
-
-p_luad
+saveRDS(boot_all, file.path(RESULTS_DIR, "bootstrap_stability_top_features_dedup.rds"))
+write.csv(boot_all, file.path(RESULTS_DIR, "bootstrap_stability_top_features_dedup.csv"), row.names = FALSE)
+boot_all
 ```
+
+
 
 
 # 6. Bootstrap stability of top features
