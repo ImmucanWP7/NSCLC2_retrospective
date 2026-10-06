@@ -1088,12 +1088,12 @@ tcga <- readRDS(paste0(mount_path,"/tcga_LUAD_LUSC.rds"))
 sce <- as(tcga, "SingleCellExperiment")
 sce <-  sce[,sce$tissue_type != "Normal"]
 
-tpm_mat <- assay(tcga, "tpm_unstrand")
+tpm_mat <- assay(sce, "tpm_unstrand")
 tpm_mat <- as.matrix(tpm_mat)   # in case it's a DelayedArray/sparse matrix
 
 # if your gene set is symbols rather than Ensembl IDs, map via rowData
 if ("gene_name" %in% colnames(rowData(tcga))) {
-  symbols <- rowData(tcga)$gene_name
+  symbols <- rowData(sce)$gene_name
   keep <- !is.na(symbols) & !duplicated(symbols)   # drop NA + duplicate symbols
   tpm_mat <- tpm_mat[keep, ]
   rownames(tpm_mat) <- symbols[keep]

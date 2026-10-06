@@ -198,7 +198,7 @@ p1 <- cur_dat %>%
   scale_size(range = c(1,6))+
   new_scale_colour() +
   geom_point(data =cur_dat, shape = 1,aes(x = mutation,size = -log10(p.value), col = sig), stroke =1.75)+
-  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","UP_trend" = "#e73032","NOTSIG" = "snow2"), name = "stats")+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#6a9ec7","NOTSIG" = "snow2"), name = "stats")+
   theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
         axis.text.y = element_text(size = 10),
         legend.text = element_text(size = 10),
@@ -280,7 +280,7 @@ p <- cur_dat_LUAD %>%
   scale_size(range = c(1,6))+
   new_scale_colour() +
   geom_point(shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.75)+
-  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","UP_trend" = "#e73032","NOTSIG" = "snow2"), name = "stats")+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#6a9ec7","NOTSIG" = "snow2"), name = "stats")+
   theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
         axis.text.y = element_text(size = 10),
         legend.text = element_text(size = 10),
@@ -354,7 +354,7 @@ p <- cur_dat_LUSC %>%
   scale_size(range = c(1,6))+
   new_scale_colour() +
   geom_point(shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.75)+
-  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","UP_trend" = "#e73032","NOTSIG" = "snow2"), name = "stats")+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#6a9ec7","NOTSIG" = "snow2"), name = "stats")+
   theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
         axis.text.y = element_text(size = 10),
         legend.text = element_text(size = 10),
@@ -396,7 +396,7 @@ p <- cur_dat %>%
   scale_size(range = c(1,6))+
   new_scale_colour() +
   geom_point(data = cur_dat ,shape = 1,aes(size = -log10(p.value), col = sig), stroke =1.75)+
-  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","UP_trend" = "#e73032","NOTSIG" = "snow2"), name = "stats")+
+  scale_color_manual(values = c("UP" = "#9f1214","UP_trend" = "#e73032","DOWN" = "#25567d","DOWN_trend" = "#6a9ec7","NOTSIG" = "snow2"), name = "stats")+
   theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1,size = 10),
         axis.text.y = element_text(size = 10),
         legend.text = element_text(size = 10),

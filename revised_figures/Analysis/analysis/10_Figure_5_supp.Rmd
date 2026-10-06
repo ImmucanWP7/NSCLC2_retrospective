@@ -472,7 +472,7 @@ p2 <- dat %>%
   xlab("GC count (H&E)")+
   geom_smooth(method='lm', formula = y~x) +
   stat_cor(aes(label = paste(..r.label.., ..p.label.., sep = "~`,`~")),
-           label.x = 2.5, label.y = 600, size = 4, method = "pearson")
+           label.x = 2.5, label.y = 600, size = 4, method = "pearson",p.accuracy = 0.001)
 p2
 ```
 
@@ -485,7 +485,7 @@ p3 <- dat %>%
   ylab("GC count (H&E)")+
   geom_smooth(method='lm', formula = y~x) +
   stat_cor(aes(label = paste(..r.label.., ..p.label.., sep = "~`,`~")),
-           label.x = 5, label.y = 15, size = 4, method = "pearson")
+           label.x = 5, label.y = 15, size = 4, method = "pearson",p.accuracy = 0.001)
 p3
 ```
 
@@ -498,6 +498,24 @@ ggsave(plot = p,filename = "S5C_D_E.pdf",device = "pdf",path = out_folder,width 
 # S5F size of patches by location
 check if patches are larger in border
 ```{r}
+# we will calculate the p-value across patients to account for independence
+patch_size <- TLS_summary %>%
+  as.data.frame() %>%
+  mutate(immucan_id = str_split_i(sample_id, "-FIXT", 1),
+         location   = ifelse(TLS_dist_to_tumor > 500, "outside", "in_tumor")) %>%
+  filter(!is.na(location)) %>%
+  distinct(immucan_id, TLS.ID, location, size)
+
+## per-patient median size, only patients with patches in both locations
+size_pat <- patch_size %>%
+  group_by(immucan_id, location) %>%
+  summarise(median_size = median(size), .groups = "drop") %>%
+  pivot_wider(names_from = location, values_from = median_size) %>%
+  filter(!is.na(in_tumor), !is.na(outside))
+
+nrow(size_pat)                                                    # patients used
+p_val <- wilcox.test(size_pat$in_tumor, size_pat$outside, paired = TRUE)   # paired, patient level
+
 p <- TLS_summary %>%
   as.data.frame() %>%
   mutate(immucan_id = str_split_i(sample_id,"-FIXT",1)) %>%
@@ -510,7 +528,7 @@ p <- TLS_summary %>%
   ggplot(aes(y = (size),x = location, col= location))+
   geom_boxplot()+
   scale_y_log10()+
-  stat_compare_means(label = "p.signif",method = "wilcox.test")+
+  annotate("text", x = 1.5, y = 1e5, label = paste0("p = ",round(p_val$p.value, digits = 3)), size = 5) +
    stat_summary(fun = median, geom = "text",
                aes(label = round(after_stat(y), 2), colour = location),
                vjust = -0.5, size = 6, show.legend = FALSE)+
@@ -534,6 +552,7 @@ ggsave(filename = paste0(out_folder,"S5F_patch_size.pdf"),
        device = "pdf",
        width = 3,
        height = 5)
+
 ```
 
 
@@ -541,6 +560,22 @@ ggsave(filename = paste0(out_folder,"S5F_patch_size.pdf"),
 # S5G T and B cell proportions in Patches by location
 composition of outside TLS
 ```{r, fig.height=6, fig.width=6}
+frac_pat <- TLS_summary %>%
+  as.data.frame() %>%
+  filter(name %in% c("B", "T")) %>%
+  mutate(immucan_id = str_split_i(sample_id, "-FIXT", 1),
+         location   = ifelse(TLS_dist_to_tumor > 500, "outside", "in_tumor")) %>%
+  filter(!is.na(location)) %>%
+  group_by(immucan_id, name, location) %>%
+  summarise(median_frac = median(value), .groups = "drop") %>%
+  pivot_wider(names_from = location, values_from = median_frac) %>%
+  filter(!is.na(in_tumor), !is.na(outside))
+
+p_lab <- frac_pat %>%
+  group_by(name) %>%
+  summarise(p = wilcox.test(in_tumor, outside, paired = TRUE)$p.value) %>%
+  mutate(label = paste0("p = ", signif(p, 2)))
+
 p <- TLS_summary %>%
   as.data.frame() %>%
   filter(name %in% c("B","T")) %>%
@@ -549,7 +584,8 @@ p <- TLS_summary %>%
   filter(!is.na(location)) %>%
   ggplot(aes(x = location,y = value, fill=location))+
   geom_boxplot(outliers = TRUE)+
-  stat_compare_means(label.y = 1, label = "p.signif")+
+  geom_text(data = p_lab, aes(x = 1.5, y = 1, label = label),
+            inherit.aes = FALSE, size = 5) +
   facet_wrap(.~name, scales = "free",ncol = 2)+
   theme_bw()+
   theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust = 1, size = 14),
@@ -565,6 +601,7 @@ p <- TLS_summary %>%
   coord_cartesian(ylim = c(0,1.1))
 
 p
+
 
 ggsave(filename = paste0(out_folder,"S5G_B_and_T_cell_by_location.pdf"),
        plot = p,
@@ -849,7 +886,7 @@ bin_cols <- c("TPS_score","TMB_score","age_dicho", "gender","stage_1_2","stage_1
 condition <- c("positive","high","low", "Female","I","I","II","Current smoker","Non-smoker","Current smoker", "node_neg", "met_neg", "alive","T1")
 
 y_labels <- c("TPS_positive", "TMB_highhigh","low_age","Female","stage_1_over_2","stage_1_over_3","stage_2_over_3","current_over_never-smoker","never_over_ex-smoker","Current_over_ex-smoker","node_negative","met_negative","alive","T1_tumor")
-names(y_labels) <- bin_cols
+
 names(condition) <- bin_cols
 
 gc_cols <- c("tls","gc","in_tumor","outside")
@@ -912,8 +949,11 @@ for (feat in names(condition)) {
 cor_df <- bind_rows(p.list) %>%
   group_by(gc_feature) %>%
   mutate(padj_BH = p.adjust(p_value, method = "BH"))   # one FDR family, at the end
-cor_df %>%
-  filter(gc_feature == "in_tumor")
+cor_df <- cor_df %>%
+  mutate(gc_feature = case_when(gc_feature == "outside" ~ "B patch outside tumor",
+                                gc_feature == "in_tumor" ~ "B patch inside tumor",
+                                gc_feature == "gc" ~ "H&E GC",
+                                gc_feature == "tls" ~ "H&E TLS"))
 
 lim <- max(abs(cor_df$r_rb), na.rm = TRUE)
 

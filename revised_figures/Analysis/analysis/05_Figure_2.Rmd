@@ -590,13 +590,14 @@ p <- dat_z %>%
   scale_color_manual(values = c("1" = "palevioletred3", "2" = "darkseagreen3", "3" = "dodgerblue"))+
   theme_bw()+
   theme(axis.text.x = element_text(angle = 90,vjust= 0.5, hjust = 1),
-        axis.title.x = element_blank())+
+        axis.title.x = element_blank(),
+        title = element_text(size = 10))+
   guides(fill=guide_legend(title="Stage"),
          col=guide_legend(title="Stage"))+
   geom_text(data = summary_dat, aes(x = name,y=1,label = paste0("fdr: ",sig_fdr)), inherit.aes = FALSE, size =3)+
   geom_text(data = summary_dat, aes(x = name,y=1.12,label = paste0("p : ",round(p.value,digits = 3))), inherit.aes = FALSE, size = 3)+
   #coord_cartesian(ylim = c(-0.35, 0.5))+
-  ggtitle(label = "RNA module differences in LUAD")+
+  ggtitle(label = "Tumor subtypes across stages in LUAD")+
   labs(y = "Tumor subtype score")
 p  
 ggsave(plot = p, path = out_folder,filename = "2G_tumor_types_for_stages_LUAD.pdf",width = 3.5, height = 3.5,device = cairo_pdf)
