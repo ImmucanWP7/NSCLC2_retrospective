@@ -1451,12 +1451,12 @@ plot_factor_hr_heatmap <- function(res,
 ```{r}
 
 ## ---------------------------------------------------------------------------
-res <- mofa_factor_survival(model, sce, ranked_data, top_n = 20)
+res <- mofa_factor_survival(model, sce, ranked_data, top_n = 10)
 #
-plot_factor_hr_heatmap(res, "Factor1", show_top = 20)
+plot_factor_hr_heatmap(res, "Factor1", show_top = 10)
 
-pdf(paste0(out_path, "5D_TCGA_validation_Factor1.pdf"), width = 6.5, height = 3.5)  # adjust width/height as needed
-plot_factor_hr_heatmap(res, "Factor1", show_top = 20)
+pdf(paste0(out_path, "5D_TCGA_validation_Factor1.pdf"), width = 6.6, height = 2.55)  # adjust width/height as needed
+plot_factor_hr_heatmap(res, "Factor1", show_top = 10)
 dev.off()
 ```
 
@@ -1464,12 +1464,12 @@ dev.off()
 ```{r}
 
 ## ---------------------------------------------------------------------------
-res <- mofa_factor_survival(model, sce, ranked_data, top_n = 20)
+res <- mofa_factor_survival(model, sce, ranked_data, top_n = 10)
 #
-plot_factor_hr_heatmap(res, "Factor4", show_top = 20)
+plot_factor_hr_heatmap(res, "Factor4", show_top = 10)
 
-pdf("/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_7_supp/S7F_TCGA_validation_Factor4.pdf", width = 6.5, height = 3.5)  # adjust width/height as needed
-plot_factor_hr_heatmap(res, "Factor4", show_top = 20)
+pdf("/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_7_supp/S7F_TCGA_validation_Factor4.pdf", width = 6.5, height = 2.75)  # adjust width/height as needed
+plot_factor_hr_heatmap(res, "Factor4", show_top = 10)
 dev.off()
 
 res$hr_continuous

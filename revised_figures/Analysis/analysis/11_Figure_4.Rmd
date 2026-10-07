@@ -90,14 +90,21 @@ cat("LUAD KRAS_co (FALSE/TRUE): ",table(cur_traits$KRAS_co)/luad_n,"\n")
 cat("LUAD KRAS_only (FALSE/TRUE): ",table(cur_traits$KRAS_only)/luad_n,"\n")
 cat("LUAD STK11 (FALSE/TRUE): ",table(cur_traits$STK11)/luad_n,"\n")
 cat("LUAD KEAP1 (FALSE/TRUE): ",table(cur_traits$KEAP1)/luad_n,"\n")
+cat("LUAD PIK3CA (FALSE/TRUE): ",table(cur_traits$PIK3CA)/luad_n,"\n")
+cat("LUAD CDKN2A (FALSE/TRUE): ",table(cur_traits$CDKN2A)/luad_n,"\n")
 
+
+table(cur_traits$TP53,cur_traits$KRAS)
 # in LUSC
 cur_traits <- traits %>% 
   filter(simple_histology == "Squamous cell carcinoma")
 lusc_n <- sum(!is.na(cur_traits$PIK3CA))
 cat("LUSC TP53 (FALSE/TRUE): ",table(cur_traits$TP53)/lusc_n,"\n")
+cat("LUSC KRAS (FALSE/TRUE): ",table(cur_traits$KRAS)/lusc_n,"\n")
+cat("LUSC EGFR (FALSE/TRUE): ",table(cur_traits$EGFR)/lusc_n,"\n")
 cat("LUSC PIK3CA (FALSE/TRUE): ",table(cur_traits$PIK3CA)/lusc_n,"\n")
 cat("LUSC CDKN2A (FALSE/TRUE): ",table(cur_traits$CDKN2A)/lusc_n,"\n")
+cat("LUSC STK11 (FALSE/TRUE): ",table(cur_traits$STK11)/lusc_n,"\n")
 
 ```
 

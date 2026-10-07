@@ -1,8 +1,7 @@
 ---
-title: "scRNAseq_HLADR_validation"
-author: "Daniel Schulz"
-date: "2026-08-25"
+title: "scRNAseq analysis"
 output: html_document
+date: "2026-08-28"
 ---
 
 ```{r setup, include=FALSE}
@@ -12,12 +11,18 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r}
 library(SingleCellExperiment)
 library(tidyverse)
+library(dittoSeq)
+library(ggplot2)
 ```
+
 
 ```{r}
 sce <- readRDS("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/scRNAseq/Rout/egfr_sce.rds")
+table(sce$cell_type)
+sce_tum <- sce[,sce$cell_type == "malignant cell"]
+```
 
-# patient definition
+```{r}
 lee <- readxl::read_xlsx("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/scRNAseq/data/Kim_Lee_2020_metadata.xlsx", skip = 1)
 lee_pats_mutated <- lee %>% 
   filter(EGFR != "na", 
@@ -26,6 +31,12 @@ lee_pats_mutated <- lee %>%
          `Patient id` = paste0("Kim_Lee_2020_",`Patient id`)) %>%
   select(`Patient id`, EGFR_mutation)
 
+lee_mut <- lee_pats_mutated %>%
+  filter(EGFR_mutation == "mutated") %>%
+  pull(`Patient id`)
+lee_not_mut <- lee_pats_mutated %>%
+  filter(EGFR_mutation == "not mutated") %>%
+  pull(`Patient id`)
 
 may <- readxl::read_xlsx("/mnt/immucan_volume/processed_data/NSCLC2_cohort/data/scRNAseq/data/Maynard_et_al_patient_metadata.xlsx", sheet = 2)
 may_pats <- may %>%
@@ -38,59 +49,101 @@ may_pats <- may %>%
   select(`Patient ID`, EGFR_mutation)
 
 
-sce[,sce$donor_id %in% may_pa]
+
+# clean  up object
 cur_dat <- as.data.frame(colData(sce))
+table(sce$origin)
 unique(cur_dat$EGFR_mutation)
-pats <- cur_dat %>%
-  filter(EGFR_mutation %in% c("mutated", "not mutated")) %>%
-  pull(donor_id) %>%
-  unique() %>%
-  as.character()
+cur_dat <- cur_dat %>%
+  mutate(EGFR_mutation = as.character(EGFR_mutation)) %>%
+  mutate(EGFR_mutation = ifelse(donor_id %in% lee_mut, "mutated", EGFR_mutation),
+         EGFR_mutation = ifelse(donor_id %in% lee_not_mut, "not mutated", EGFR_mutation),
+         EGFR_mutation = ifelse(donor_id %in% may_pats$`Patient ID`, "mutated", EGFR_mutation))
+
+table(cur_dat$study,cur_dat$EGFR_mutation)
+colData(sce) <- DataFrame(cur_dat)
+
+table(sce$study, sce$EGFR_mutation)
+
+# filter only tumor
+
+tumor <- sce[,sce$origin == "tumor_primary"]
+met <- sce[,sce$origin == "tumor_metastasis"]
+
+
+tumor <- tumor[,tumor$cell_type_major == "Tumor cells"]
+met <- met[,met$cell_type_major == "Tumor cells"]
+
+rownames(tumor) <- rowData(tumor)$feature_name
+rownames(met) <- rowData(met)$feature_name
+
+table(tumor$study, tumor$EGFR_mutation)
+table(met$study, met$EGFR_mutation)
+
+
+ may %>%
+  filter(Histolgy == "Adenocarcinoma",
+         grepl("EGFR", `Oncogenic Driver Mutation`))
+```
+
+# primary tumor
+
+```{r}
+studies <- as.character(unique(colData(tumor)["study"])$study)
+dittoBoxPlot(tumor,var = c("HLA-DRA","HLA-DRB1"),group.by = "EGFR_mutation")
+for(i in studies) {
+  print(dittoBoxPlot(tumor[,tumor$study == i],var = c("HLA-DRA","HLA-DRB1"),group.by = "EGFR_mutation")+ggtitle(paste0(i,"_", unique(tumor[,tumor$study == i]$assay))))
+}
+
+# excluding He_Fan
+dittoBoxPlot(tumor[, tumor$study != "He_Fan_2021"],var = c("HLA-DRA","HLA-DRB1"),group.by = "EGFR_mutation")+ggtitle("excluding He_Fan study")
+
+```
+
+# metastasis tumor
+
+```{r}
+studies <- as.character(unique(colData(met)["study"])$study)
+table(met$EGFR_mutation, met$study)
+dittoBoxPlot(met,var = c("HLA-DRA","HLA-DRB1"),group.by = "EGFR_mutation")
+for(i in studies) {
+  print(dittoBoxPlot(met[,met$study == i],var = c("HLA-DRA","HLA-DRB1"),group.by = "EGFR_mutation")+ggtitle(paste0(i,"_", unique(tumor[,tumor$study == i]$assay))))
+}
+colnames(colData(met))
+table(met$is_primary_data)
+# excluding He_Fan
+dittoBoxPlot(tumor[, tumor$study != "He_Fan_2021"],var = c("HLA-DRA","HLA-DRB1"),group.by = "EGFR_mutation")+ggtitle("excluding He_Fan study")
+
+```
+
+# sanity checks
+```{r}
+cur_dat <- as.data.frame(colData(sce))
+cur_dat <- cur_dat %>%
+  filter(origin %in% c("tumor_primary", "tumor_metastasis"))
+head(cur_dat)
+table(cur_dat$origin, cur_dat$tissue)
+
+prim <- cur_dat %>%
+  filter(origin %in% c("tumor_primary"))
+table(prim$origin, prim$tissue)
+prim <- prim %>%
+  filter(cell_type_major == "Tumor cells")
+vars <- c("origin", "study","platform", "tissue","assay","tissue_type", "cell_type")
+for(i in vars){
+  cat("for: `", i, "` there are :", as.character(unique(prim[[i]])), "\n")
+}
 
 ```
 
 
 ```{r}
-
-table(sce$cell_type)
-
-sce_tum <- sce[,sce$cell_type == "malignant cell"]
-
-dittoBoxPlot(luad,var = c("HLA-DRA","HLA-DRB1"),group.by = "EGFR_mutation")
-
-
-library(dittoSeq)
-studies <- unique(colData(sce_tum)["study"])$study
-for(i in studies) {
-  print(dittoBoxPlot(sce_tum[,sce_tum$study == i],var = c("HLA-DRA","HLA-DRB1"),group.by = "EGFR_mutation"))
-}
-dittoBoxPlot(sce_tum[,sce_tum$study == studies[3] & sce_tum$tissue == "lung"],var = c("HLA-DRA","HLA-DRB1"),group.by = "EGFR_mutation")
-
-cd <- colData(sce_tum)
-colnames(cd)
-for(i in colnames(cd)){
-  cat(i, unique(cd[,i], "\n"))
-}
-
-cd %>%
-  as.data.frame() %>%
-  dplyr::filter(study == studies[3]) %>%
-  distinct()
-
-# select treatment naive samples in Maynard study
-
-maynard_sce <- sce_tum[,grepl(paste(naive,collapse = "|"),sce_tum$sample)]
-dittoBoxPlot(maynard_sce,var = c("HLA-DRA","HLA-DRB1"),group.by = "EGFR_mutation")
-
-
-cur_sce <- sce_tum[,sce_tum$study == studies[2]]
-unique(cur_sce$study)
-cd <- as.data.frame(colData(cur_sce)) %>%
-  filter(study == studies[2])
-dim()
-table(cd$sample,cd$EGFR_mutation)
-unique(cd$sample)
+plot_df <- lee %>%
+  filter(`Tissue origins` == "tLung",
+         Histology == "ADC")
+table(lee$EGFR, lee$`Tissue origins`)
 ```
+
 
 
 ```{r}
@@ -190,7 +243,7 @@ tumor_markers <- c("EPCAM", "KRT7", "KRT8", "KRT18", "KRT19",
                     "EGFR", "KRAS", "STK11", "KEAP1")
 
 
-cd_tum  <- as.data.frame(colData(sce_tum))
+cd_tum  <- as.data.frame(colData(tumor))
 message(sprintf("Tumour cells: %d", ncol(sce_tum)))
 
 # ── 4. EGFR status in tumour cells ───────────────────────────────────────────
@@ -210,30 +263,22 @@ if ("EGFR_mutant" %in% names(cd_tum)) {
 
 message("\n=== Scoring HLA-DR and antigen presentation genes ===")
 
-cd_tum$score_HLA_DR  <- score_gene_set(sce_tum, hla_dr_genes)
-cd_tum$score_MHC_II  <- score_gene_set(sce_tum, mhc_ii_broad)
-cd_tum$score_APC     <- score_gene_set(sce_tum, antigen_presentation)
-cd_tum$score_IFN     <- score_gene_set(sce_tum, ifn_response)
+cd_tum$score_HLA_DR  <- score_gene_set(tumor, hla_dr_genes)
+cd_tum$score_MHC_II  <- score_gene_set(tumor, mhc_ii_broad)
+cd_tum$score_APC     <- score_gene_set(tumor, antigen_presentation)
+cd_tum$score_IFN     <- score_gene_set(tumor, ifn_response)
 
 # Individual HLA-DR gene expression
 for (gene in c("HLA-DRA", "HLA-DRB1", "HLA-DRB5", "CD74", "B2M")) {
   cd_tum[[paste0("expr_", gsub("-", "_", gene))]] <-
-    get_gene_expr(sce_tum, gene)
+    get_gene_expr(tumor, gene)
 }
 
-# Save per-cell table
-write.csv(cd_tum[, c(names(cd_tum)[1:min(5, ncol(cd_tum))],
-                      "EGFR_mutant",
-                      "score_HLA_DR", "score_MHC_II", "score_APC", "score_IFN",
-                      grep("^expr_", names(cd_tum), value = TRUE))],
-          file.path(OUT_DIR, "tumor_hladr_scores.csv"), row.names = FALSE)
-message("Saved: tumor_hladr_scores.csv")
-
 # ── 6. Statistical comparison: EGFR-mut vs. EGFR-WT ─────────────────────────
-
+egfr_available <- TRUE
 if (egfr_available) {
-  egfr_mut <- cd_tum$EGFR_mutant == TRUE  & !is.na(cd_tum$EGFR_mutant)
-  egfr_wt  <- cd_tum$EGFR_mutant == FALSE & !is.na(cd_tum$EGFR_mutant)
+  egfr_mut <- cd_tum$EGFR_mutation == "mutated"  & !is.na(cd_tum$EGFR_mutation)
+  egfr_wt  <-  cd_tum$EGFR_mutation == "not mutated"  & !is.na(cd_tum$EGFR_mutation)
 
   test_cols <- c("score_HLA_DR", "score_MHC_II", "score_APC", "score_IFN",
                  grep("^expr_", names(cd_tum), value = TRUE))
@@ -262,18 +307,15 @@ if (egfr_available) {
   stats_df$p_adj <- p.adjust(stats_df$p_value, method = "BH")
   stats_df <- stats_df[order(stats_df$p_adj), ]
   print(stats_df)
-  write.csv(stats_df, file.path(OUT_DIR, "tumor_hladr_egfr_stats.csv"),
-            row.names = FALSE)
-  message("Saved: tumor_hladr_egfr_stats.csv")
+  #write.csv(stats_df, file.path(OUT_DIR, "tumor_hladr_egfr_stats.csv"),
+  #          row.names = FALSE)
 }
 
 # ── 7. Plots ──────────────────────────────────────────────────────────────────
 
-message("\n=== Generating HLA-DR tumour plots ===")
-
 plot_tum <- cd_tum %>%
-  filter(!is.na(EGFR_mutant)) %>%
-  mutate(EGFR_group = ifelse(EGFR_mutant, "EGFR-mut", "EGFR-WT"))
+  filter(!is.na(EGFR_mutation)) %>%
+  mutate(EGFR_group = ifelse(EGFR_mutation == "mutated", "EGFR-mut", "EGFR-WT"))
 
 egfr_colours <- c("EGFR-mut" = "#e31a1c", "EGFR-WT" = "#1f78b4")
 
@@ -306,117 +348,187 @@ violin_panel <- (p_hladr | p_mhcii | p_apc | p_ifn) /
     subtitle = sprintf("n = %d tumour cells", nrow(plot_tum))
   )
 
-ggsave(file.path(OUT_DIR, "hladr_tumor_violin.png"), violin_panel,
-       width = 16, height = 9, dpi = 150)
-message("Saved: hladr_tumor_violin.png")
-
-# 7b. Dot plot: MHC-II and APM genes, EGFR-mut vs. WT
-dot_genes_hla <- intersect(
-  c(hla_dr_genes, "HLA-DQA1", "HLA-DQB1", "HLA-DPA1", "HLA-DPB1",
-    "CD74", "B2M", "TAP1", "TAP2", "TAPBP", "STAT1", "IRF1"),
-  rownames(sce_tum)
-)
-
-if (length(dot_genes_hla) >= 3) {
-  assay_use <- Filter(function(a) a %in% assayNames(sce_tum),
-                      c("logcounts", "X", "count", "counts_length_scaled"))[1]
-
-  dot_mat <- as.matrix(assay(sce_tum[dot_genes_hla, ], assay_use))
-  dot_df  <- as.data.frame(t(dot_mat))
-  dot_df$EGFR_group <- ifelse(cd_tum$EGFR_mutant == TRUE, "EGFR-mut", "EGFR-WT")
-  dot_df  <- dot_df[!is.na(dot_df$EGFR_group), ]
-
-  dot_long <- dot_df %>%
-    pivot_longer(-EGFR_group, names_to = "gene", values_to = "expr") %>%
-    group_by(EGFR_group, gene) %>%
-    summarise(
-      mean_expr   = mean(expr, na.rm = TRUE),
-      pct_express = 100 * mean(expr > 0, na.rm = TRUE),
-      .groups = "drop"
-    )
-
-  p_dot <- ggplot(dot_long,
-                  aes(x = EGFR_group, y = gene,
-                      size = pct_express, colour = mean_expr)) +
-    geom_point() +
-    scale_size_continuous(range = c(1, 9), name = "% expressing") +
-    scale_colour_viridis_c(option = "magma", name = "Mean expr") +
-    labs(title = "MHC-II / antigen presentation machinery in tumour cells",
-         x = NULL, y = NULL) +
-    theme_bw(base_size = 11) +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-  ggsave(file.path(OUT_DIR, "hladr_tumor_dotplot.png"), p_dot,
-         width = 6, height = 8, dpi = 150)
-  message("Saved: hladr_tumor_dotplot.png")
-}
-
-# 7c. UMAP: HLA-DR score on full dataset, tumour cells highlighted
-umap_name <- if ("X_umap" %in% reducedDimNames(sce)) "X_umap" else
-             if ("UMAP"   %in% reducedDimNames(sce)) "UMAP" else NULL
-
-if (!is.null(umap_name)) {
-  umap_all        <- as.data.frame(reducedDim(sce, umap_name))
-  names(umap_all) <- c("UMAP1", "UMAP2")
-  umap_all$is_tumor     <- tumor_mask
-  umap_all$EGFR_group   <- "Non-tumour"
-  umap_all$EGFR_group[tumor_mask & cd$EGFR_mutant == TRUE  & !is.na(cd$EGFR_mutant)] <- "EGFR-mut"
-  umap_all$EGFR_group[tumor_mask & cd$EGFR_mutant == FALSE & !is.na(cd$EGFR_mutant)] <- "EGFR-WT"
-
-  umap_all$HLA_DR_score <- NA_real_
-  umap_all$HLA_DR_score[tumor_mask] <- cd_tum$score_HLA_DR
-
-
-# 7d. % HLA-DR-positive tumour cells per patient, by EGFR group
-id_col <- c("patient_id", "patient", "PatientID", "sample_id",
-            "sample", "donor", "orig.ident")[
-  c("patient_id", "patient", "PatientID", "sample_id",
-    "sample", "donor", "orig.ident") %in% names(cd_tum)][1]
-
-if (!is.na(id_col) && egfr_available) {
-  hladr_thr <- 0   # any detectable HLA-DRA expression
-  patient_summary <- cd_tum %>%
-    filter(!is.na(EGFR_mutant)) %>%
-    mutate(EGFR_group  = ifelse(EGFR_mutant, "EGFR-mut", "EGFR-WT"),
-           HLA_DR_pos  = expr_HLA_DRA > hladr_thr) %>%
-    group_by(.data[[id_col]], EGFR_group) %>%
-    summarise(
-      n_tumor_cells  = n(),
-      pct_HLA_DR_pos = round(100 * mean(HLA_DR_pos, na.rm = TRUE), 1),
-      mean_HLA_DR    = round(mean(score_HLA_DR,  na.rm = TRUE), 4),
-      mean_MHC_II    = round(mean(score_MHC_II,  na.rm = TRUE), 4),
-      .groups        = "drop"
-    )
-
-  print(patient_summary)
-  write.csv(patient_summary, file.path(OUT_DIR, "tumor_hladr_per_patient.csv"),
-            row.names = FALSE)
-  message("Saved: tumor_hladr_per_patient.csv")
-
-  # Box plot: % HLA-DR+ cells per patient, grouped by EGFR status
-  p_pat <- ggplot(patient_summary,
-                  aes(x = EGFR_group, y = pct_HLA_DR_pos, fill = EGFR_group)) +
-    geom_boxplot(outlier.shape = NA, alpha = 0.7) +
-    geom_jitter(width = 0.15, size = 2, alpha = 0.7) +
-    scale_fill_manual(values = egfr_colours) +
-    labs(title   = "% HLA-DR+ tumour cells per patient",
-         x = NULL, y = "% HLA-DRA+ cells",
-         caption = "Each point = one patient") +
-    theme_bw(base_size = 12) +
-    theme(legend.position = "none")
-
-  ggsave(file.path(OUT_DIR, "hladr_pct_positive_per_patient.png"), p_pat,
-         width = 5, height = 5, dpi = 150)
-  message("Saved: hladr_pct_positive_per_patient.png")
-}
-
-message("\n=== HLA-DR tumour analysis complete ===")
-message("\nAll outputs written to: ", OUT_DIR)
-
+ggsave(file.path("/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_4/", "hladr_tumor_violin.pdf"),device = "pdf",
+       violin_panel,width = 10, height = 6)
 ```
+
+
+# remove one study without EGFR WT samples
 
 ```{r}
-table(colData(sce_tum)[,"study"])
+cur_tumor <- tumor[,tumor$study != "He_Fan_2021"]
+cd_tum  <- as.data.frame(colData(cur_tumor))
+message(sprintf("Tumour cells: %d", ncol(sce_tum)))
 
-colnames(colData(sce_tum))
+# ── 5. Compute HLA-DR and related scores for each tumour cell ────────────────
+
+message("\n=== Scoring HLA-DR and antigen presentation genes ===")
+
+cd_tum$score_HLA_DR  <- score_gene_set(cur_tumor, hla_dr_genes)
+cd_tum$score_MHC_II  <- score_gene_set(cur_tumor, mhc_ii_broad)
+cd_tum$score_APC     <- score_gene_set(cur_tumor, antigen_presentation)
+cd_tum$score_IFN     <- score_gene_set(cur_tumor, ifn_response)
+
+# Individual HLA-DR gene expression
+for (gene in c("HLA-DRA", "HLA-DRB1", "HLA-DRB5", "CD74", "B2M")) {
+  cd_tum[[paste0("expr_", gsub("-", "_", gene))]] <-
+    get_gene_expr(cur_tumor, gene)
+}
+
+
+# ── 6. Statistical comparison: EGFR-mut vs. EGFR-WT ─────────────────────────
+egfr_available <- TRUE
+if (egfr_available) {
+  egfr_mut <- cd_tum$EGFR_mutation == "mutated"  & !is.na(cd_tum$EGFR_mutation)
+  egfr_wt  <-  cd_tum$EGFR_mutation == "not mutated"  & !is.na(cd_tum$EGFR_mutation)
+
+  test_cols <- c("score_HLA_DR", "score_MHC_II", "score_APC", "score_IFN",
+                 grep("^expr_", names(cd_tum), value = TRUE))
+
+  cat("\n=== Wilcoxon tests: EGFR-mut vs EGFR-WT (tumour cells) ===\n")
+  stats_list <- lapply(test_cols, function(col) {
+    x_mut <- cd_tum[[col]][egfr_mut]
+    x_wt  <- cd_tum[[col]][egfr_wt]
+    x_mut <- x_mut[!is.na(x_mut)]
+    x_wt  <- x_wt[!is.na(x_wt)]
+    if (length(x_mut) < 3 || length(x_wt) < 3) return(NULL)
+    wt <- wilcox.test(x_mut, x_wt, exact = FALSE)
+    data.frame(
+      feature      = col,
+      n_EGFRmut    = length(x_mut),
+      n_EGFRwt     = length(x_wt),
+      median_mut   = round(median(x_mut), 4),
+      median_wt    = round(median(x_wt),  4),
+      pct_pos_mut  = round(100 * mean(x_mut > 0), 1),
+      pct_pos_wt   = round(100 * mean(x_wt  > 0), 1),
+      p_value      = wt$p.value,
+      stringsAsFactors = FALSE
+    )
+  })
+  stats_df <- do.call(rbind, Filter(Negate(is.null), stats_list))
+  stats_df$p_adj <- p.adjust(stats_df$p_value, method = "BH")
+  stats_df <- stats_df[order(stats_df$p_adj), ]
+  print(stats_df)
+  #write.csv(stats_df, file.path(OUT_DIR, "tumor_hladr_egfr_stats.csv"),
+  #          row.names = FALSE)
+}
+
+# ── 7. Plots ──────────────────────────────────────────────────────────────────
+
+message("\n=== Generating HLA-DR tumour plots ===")
+
+plot_tum <- cd_tum %>%
+  filter(!is.na(EGFR_mutation)) %>%
+  mutate(EGFR_group = ifelse(EGFR_mutation == "mutated", "EGFR-mut", "EGFR-WT"))
+
+egfr_colours <- c("EGFR-mut" = "#e31a1c", "EGFR-WT" = "#1f78b4")
+
+# 7a. Violin plots for HLA-DR score, MHC-II, APC, IFN
+make_violin <- function(data, y_col, y_label) {
+  ggplot(data, aes(x = EGFR_group, y = .data[[y_col]], fill = EGFR_group)) +
+    geom_violin(alpha = 0.75, scale = "width") +
+    geom_boxplot(width = 0.1, outlier.shape = NA, fill = "white", alpha = 0.6) +
+    scale_fill_manual(values = egfr_colours) +
+    labs(x = NULL, y = y_label, fill = NULL) +
+    theme_bw(base_size = 11) +
+    theme(legend.position = "none")
+}
+
+p_hladr  <- make_violin(plot_tum, "score_HLA_DR", "HLA-DR score")
+p_mhcii  <- make_violin(plot_tum, "score_MHC_II", "MHC-II broad score")
+p_apc    <- make_violin(plot_tum, "score_APC",    "Antigen presentation score")
+p_ifn    <- make_violin(plot_tum, "score_IFN",    "IFN-response score")
+
+# Individual gene violins
+p_hla_dra  <- make_violin(plot_tum, "expr_HLA_DRA",  "HLA-DRA expression")
+p_hla_drb1 <- make_violin(plot_tum, "expr_HLA_DRB1", "HLA-DRB1 expression")
+p_cd74     <- make_violin(plot_tum, "expr_CD74",      "CD74 expression")
+p_b2m      <- make_violin(plot_tum, "expr_B2M",       "B2M expression")
+
+violin_panel <- (p_hladr | p_mhcii | p_apc | p_ifn) /
+                (p_hla_dra | p_hla_drb1 | p_cd74 | p_b2m) +
+  plot_annotation(
+    title    = "HLA-DR / antigen presentation in tumour cells",
+    subtitle = sprintf("n = %d tumour cells", nrow(plot_tum))
+  )
+
+ggsave(file.path("/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_4/", "hladr_tumor_violin_removed_one_study.pdf"),device = "pdf",
+       violin_panel,width = 10, height = 6)
 ```
+
+
+# mean exp
+```{r, fig.height=6, fig.width=10}
+ag_sce <- aggregateAcrossCells(tumor, ids = tumor$donor_id, statistics = "mean",use.assay.type = "X")
+ag_sce
+dittoBoxPlot(ag_sce,var = c("HLA-DRA","HLA-DRB1"),group.by = "EGFR_mutation")+ggtitle("excluding He_Fan study")
+dittoBoxPlot(ag_sce[,ag_sce$study != "He_Fan_2021"& !is.na(ag_sce$EGFR_mutation)],var = c("HLA-DRA","HLA-DRB1","HLA-DRB5"),group.by = "EGFR_mutation")+ggtitle("excluding He_Fan study")
+ag_sce$EGFR_mutation
+```
+
+
+```{r, fig.height=5, fig.width=10}
+library(ggpubr)
+geneset <- c("HLA-DRA", "HLA-DRB1","HLA-DRB5", "HLA-DQA1", "HLA-DQB1", "HLA-DPA1", "HLA-DPB1", "HLA-DMA", "HLA-DMB","CD74")
+geneset <- c("HLA-DRA", "HLA-DRB1")
+exp <- as.data.frame(t(assay(ag_sce[geneset,],"X")))
+
+cdat <- as.data.frame(colData(ag_sce))
+exp$donor_id <- rownames(exp)
+exp <- left_join(exp, cdat,"donor_id")
+exp %>%
+  filter(!study %in%  c("He_Fan_2021")) %>%
+  select(all_of(geneset),donor_id,EGFR_mutation, study) %>%
+  pivot_longer(cols = -c(EGFR_mutation, donor_id, study)) %>%
+  group_by(name) %>%
+  summarise(pw_wt = list(pairwise.wilcox.test(value,as.factor(EGFR_mutation),
+                                              p.adjust.method = "BH"))) %>% 
+  ungroup() %>%
+  mutate(pw_wt_t = map(pw_wt, broom::tidy)) %>% 
+  unnest(pw_wt_t)
+
+exp %>%
+  filter(!study %in%  c("He_Fan_2021")) %>%
+  filter(!is.na(EGFR_mutation)) %>%
+  select(all_of(geneset),donor_id,EGFR_mutation, study) %>%
+  pivot_longer(cols = -c(EGFR_mutation, donor_id, study)) %>%
+  ggplot(aes(x = name,y = value, fill = EGFR_mutation))+
+  geom_boxplot(outliers = FALSE)+
+   geom_point(position = position_jitterdodge(jitter.width = 0.1,
+                                             dodge.width = 0.7))+
+  theme_bw()+
+  stat_compare_means(method = "wilcox.test",label.y = 3, label = "p.format")+
+  coord_cartesian(ylim =c(0,3))+
+    scale_fill_manual(values = alpha(c("red", "blue"),alpha = 0.6))+
+  scale_color_manual(values = c("red", "blue"))
+
+
+
+p <- exp %>%
+  filter(!study %in%  c("He_Fan_2021")) %>%
+  filter(!is.na(EGFR_mutation)) %>%
+  select(all_of(geneset),donor_id,EGFR_mutation, study) %>%
+  pivot_longer(cols = -c(EGFR_mutation, donor_id, study)) %>%
+  mutate(EGFR_mutation = ifelse(EGFR_mutation == "mutated", TRUE, FALSE)) %>%
+  ggplot(aes(x = EGFR_mutation,y = value, fill = EGFR_mutation))+
+  geom_boxplot(outliers = FALSE)+
+  theme_bw()+
+  facet_wrap(.~name)+
+  stat_compare_means(method = "wilcox.test",label.y = 3, label = "p.format", size = 3)+
+  coord_cartesian(ylim =c(0,3.2))+
+  geom_jitter(aes(color = EGFR_mutation),position = position_jitterdodge(jitter.width = 0.2), size= 1.5)+
+  scale_fill_manual(values = alpha(c("red", "blue"),alpha = 0.6))+
+  scale_color_manual(values = c("red", "blue"))+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "none")+
+xlab("EGFR")
+
+p
+ggsave(filename = "/mnt/immucan_volume/processed_data/NSCLC2_cohort/revised_figures/Figure_4/4D_scRNAseq_validation.pdf",
+       plot = p,
+       device = "pdf",
+       width = 2,
+       height = 2.5)
+```
+
+
